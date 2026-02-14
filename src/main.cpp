@@ -131,6 +131,9 @@ void setup() {
     Serial.println("[BOOT] initializing my_basic global");
     int mb_rc = mb_init();
     Serial.printf("[BOOT] mb_init rc=%d\n", mb_rc);
+
+    // small pause to let peripherals stabilize and reduce boot race conditions
+    delay(200);
     
     manager.init();
     Serial.println("[BOOT] manager init ok");
