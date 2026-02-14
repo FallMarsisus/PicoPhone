@@ -16,10 +16,7 @@ enum AppID {
     APP_2048,
     APP_SKETCH,
     APP_CALC,
-    APP_SETTINGS,
-    APP_BASIC_RUNNER,
-    APP_FILE_EXPLORER,
-    APP_FILE_TRANSFER
+    APP_SETTINGS
 };
 
 class AppManager {

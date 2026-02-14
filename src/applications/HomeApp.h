@@ -30,9 +30,6 @@ private:
     static void open_calc(lv_event_t* e) { AppManager::switchTo(APP_CALC); }
     static void open_wifi(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
     static void open_settings(lv_event_t* e) { AppManager::switchTo(APP_SETTINGS); }
-    static void open_basic(lv_event_t* e) { AppManager::switchTo(APP_BASIC_RUNNER); }
-    static void open_files(lv_event_t* e) { AppManager::switchTo(APP_FILE_EXPLORER); }
-    static void open_transfer(lv_event_t* e) { AppManager::switchTo(APP_FILE_TRANSFER); }
 
     // Swipe down = Control Center
     static void screen_touch_event(lv_event_t* e) {
@@ -151,9 +148,6 @@ public:
         createIcon(grid, "Calcul",   lv_color_hex(0xFF3B30), LV_SYMBOL_EDIT,     open_calc);
         createIcon(grid, "Systeme",  lv_color_hex(0x8E8E93), LV_SYMBOL_REFRESH,  open_bl);
         createIcon(grid, "Reglages", lv_color_hex(0x636366), LV_SYMBOL_SETTINGS, open_settings);
-        createIcon(grid, "BASIC",    lv_color_hex(0xAF52DE), LV_SYMBOL_PLAY,     open_basic);
-        createIcon(grid, "Fichiers", lv_color_hex(0x32ADE6), LV_SYMBOL_DIRECTORY,open_files);
-        createIcon(grid, "Upload",   lv_color_hex(0x30D158), LV_SYMBOL_UPLOAD,   open_transfer);
     }
 
     void update() override {

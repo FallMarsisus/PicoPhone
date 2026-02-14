@@ -1,13 +1,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoOTA.h>
-#include <LittleFS.h>
 #include <pico/mutex.h>
 #include "Hardware.h"
 #include "AppManager.h"
 #include "WifiStore.h"
 #include "system/Settings.h"
-#include "system/BasicRuntime.h"
 #include "applications/HomeApp.h"
 #include "applications/BootloaderApp.h"
 #include "applications/WifiApp.h"
@@ -19,9 +17,6 @@
 #include "applications/SketchApp.h"
 #include "applications/CalculatorApp.h"
 #include "applications/SettingsApp.h"
-#include "applications/BasicRunnerApp.h"
-#include "applications/FileExplorerApp.h"
-#include "applications/FileTransferApp.h"
 
 App* currentApp = nullptr;
 auto_init_mutex(myMutex); 
@@ -73,15 +68,6 @@ void loadApp(AppID id) {
         case APP_SETTINGS:
             currentApp = new SettingsApp();
             break;
-        case APP_BASIC_RUNNER:
-            currentApp = new BasicRunnerApp();
-            break;
-        case APP_FILE_EXPLORER:
-            currentApp = new FileExplorerApp();
-            break;
-        case APP_FILE_TRANSFER:
-            currentApp = new FileTransferApp();
-            break;
         default:
             currentApp = new HomeApp();
             break;
@@ -119,21 +105,6 @@ void setup() {
     // Charger les paramètres et appliquer la luminosité
     settings::applyBrightness();
     Serial.println("[BOOT] settings ok");
-
-    if (!LittleFS.begin()) {
-        Serial.println("[BOOT] LittleFS mount failed; will continue without FS");
-    } else {
-        basicfs::ensureDefaultScripts();
-        Serial.println("[BOOT] littlefs ok");
-    }
-
-    // Initialize my_basic once globally to avoid intermittent failures
-    Serial.println("[BOOT] initializing my_basic global");
-    int mb_rc = mb_init();
-    Serial.printf("[BOOT] mb_init rc=%d\n", mb_rc);
-
-    // small pause to let peripherals stabilize and reduce boot race conditions
-    delay(200);
     
     manager.init();
     Serial.println("[BOOT] manager init ok");
