@@ -128,43 +128,57 @@ private:
         return cont;
     }
 
-    lv_obj_t* createSliderRow(lv_obj_t* parent, const char* icon, int min_val, int max_val, int init_val, lv_event_cb_t cb, lv_obj_t** val_label) {
-        lv_obj_t* row = lv_obj_create(parent);
-        lv_obj_set_size(row, 280, 52);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    // Dans src/system/ControlCenter.h
 
-        lv_obj_t* l_icon = lv_label_create(row);
-        lv_label_set_text(l_icon, icon);
-        lv_obj_set_style_text_color(l_icon, lv_color_white(), 0);
-        lv_obj_align(l_icon, LV_ALIGN_LEFT_MID, 0, 0);
+lv_obj_t* createSliderRow(lv_obj_t* parent, const char* icon, int min_val, int max_val, int init_val, lv_event_cb_t cb, lv_obj_t** val_label) {
+    lv_obj_t* row = lv_obj_create(parent);
+    // On augmente un peu la hauteur du conteneur pour accommoder le slider plus gros
+    lv_obj_set_size(row, 280, 60); 
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        lv_obj_t* slider = lv_slider_create(row);
-        lv_obj_set_size(slider, 185, 16);
-        lv_obj_align(slider, LV_ALIGN_CENTER, 5, 0);
-        lv_slider_set_range(slider, min_val, max_val);
-        lv_slider_set_value(slider, init_val, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(slider, lv_color_hex(0x3a3a3c), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(slider, lv_color_hex(0x007AFF), LV_PART_INDICATOR);
-        lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
-        lv_obj_set_style_border_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
-        lv_obj_set_style_outline_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
-        lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB);
-        lv_obj_add_event_cb(slider, cb, LV_EVENT_VALUE_CHANGED, this);
 
-        *val_label = lv_label_create(row);
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d%%", init_val);
-        lv_label_set_text(*val_label, buf);
-        lv_obj_set_style_text_color(*val_label, lv_color_hex(0xBBBBBB), 0);
-        lv_obj_set_style_text_font(*val_label, &lv_font_montserrat_12, 0);
-        lv_obj_align(*val_label, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_t* slider = lv_slider_create(row);
+    // CHANGEMENT MAJEUR ICI : Hauteur passée de 16 à 28 (plus épais style iOS)
+    lv_obj_set_size(slider, 220, 45); 
+    lv_obj_align(slider, LV_ALIGN_CENTER, -30, -5);
+    lv_slider_set_range(slider, min_val, max_val);
+    lv_slider_set_value(slider, init_val, LV_ANIM_OFF);
+    
+    // Style de la barre de fond (grise)
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x3a3a3c), LV_PART_MAIN);
+    // Assure que le rayon est suffisant pour faire une "pilule" parfaite
+    lv_obj_set_style_radius(slider, 15, LV_PART_MAIN); 
+    
+    // Style de la partie active (bleue)
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x007AFF), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(slider, 15, LV_PART_INDICATOR);
+    
+    // Suppression complète du "bouton" (knob) visible pour faire comme iOS
+    lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB); // Pas de marge pour le bouton
+    
+    // IMPORTANT : Enlever le padding interne du slider pour que la couleur remplisse tout
+    lv_obj_set_style_pad_all(slider, 0, LV_PART_MAIN);
 
-        return slider;
-    }
+    lv_obj_add_event_cb(slider, cb, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t* l_icon = lv_label_create(row);
+    lv_label_set_text(l_icon, icon);
+    lv_obj_set_style_text_color(l_icon, lv_color_white(), 0);
+    lv_obj_align(l_icon, LV_ALIGN_CENTER, -109, -5);
+
+    *val_label = lv_label_create(row);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", init_val);
+    lv_label_set_text(*val_label, buf);
+    lv_obj_set_style_text_color(*val_label, lv_color_hex(0xBBBBBB), 0);
+    lv_obj_set_style_text_font(*val_label, &lv_font_montserrat_12, 0);
+    lv_obj_align(*val_label, LV_ALIGN_RIGHT_MID, 0, -5);
+
+    return slider;
+}
 
     void createUI() {
         if (ui_created) return;

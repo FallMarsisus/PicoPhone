@@ -89,6 +89,11 @@ private:
         app->setting_new_pin = true;
         app->showPinPanel("Nouveau code PIN:");
     }
+
+    static void bootloader_event(lv_event_t* e) {
+        // Redémarrage en mode bootloader
+        rp2040.rebootToBootloader();
+    }
     
     // --- UI Helpers ---
     
@@ -224,6 +229,15 @@ private:
         
         // ===== SECTION: INFO =====
         createSection(list_cont, "INFORMATIONS");
+
+
+        lv_obj_t* row_bl = createSettingRow(list_cont, "Bootloader");
+        lv_obj_t* chevron_bl = lv_label_create(row_bl);
+        lv_label_set_text(chevron_bl, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_bl, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_bl, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_bl, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_bl, bootloader_event, LV_EVENT_CLICKED, this);
         
         lv_obj_t* row_ver = createSettingRow(list_cont, "Version");
         lv_obj_t* lbl_ver = lv_label_create(row_ver);

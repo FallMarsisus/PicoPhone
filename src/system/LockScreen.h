@@ -74,8 +74,10 @@ private:
             lv_coord_t dy = self->touch_start_y - p.y;
             
             if (dy > 80) {
+                settings::applyBrightness();
                 if (settings::isPinEnabled()) {
                     self->showPinScreen();
+                    
                 } else {
                     self->unlock();
                 }
@@ -313,6 +315,8 @@ public:
         
         // Par défaut caché
         lv_obj_add_flag(bg, LV_OBJ_FLAG_HIDDEN);
+
+        
     }
 
     void lock() {
@@ -323,6 +327,7 @@ public:
         memset(pin_input, 0, sizeof(pin_input));
         pin_error = false;
         
+        analogWrite(13, 50);
         showMainScreen();
         lv_obj_clear_flag(bg, LV_OBJ_FLAG_HIDDEN);
         updateTime();

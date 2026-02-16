@@ -11,9 +11,9 @@
 #include <ArduinoJson.h>  
 #include <vector>
 #include <time.h>
+#include "../system/Secrets.h"
 
 // --- CONFIG ---
-#define TG_BOT_TOKEN "8209914447:AAFEifvz7uOOxDDksB6buj3hsK3cBkHDzkc"
 #define CHECK_INTERVAL 3000 
 #define MAX_HISTORY 10      // On garde 10 messages
 
@@ -749,32 +749,7 @@ public:
         if ((now - last_check) < CHECK_INTERVAL) return;
         last_check = now;
 
-        int numNew = bot->getUpdates(bot->last_message_received + 1);
-        if (numNew <= 0) return;
-
-        // Push vers la UI avec backpressure
-        for (int i = 0; i < numNew; i++) {
-            NetEvt ev{};
-            ev.type = EVT_INCOMING;
-
-            // IMPORTANT: ne jamais garder un c_str() sur un temporaire.
-            const String cid_s = String(bot->messages[i].chat_id);
-            const String nm_s = String(bot->messages[i].from_name);
-            const String tx_s = String(bot->messages[i].text);
-            long ts = bot->messages[i].date.toInt();
-            if(ts == 0) { time_t tnow; time(&tnow); ts = (long)tnow; }
-
-            if (cid_s.length() > 0) strncpy(ev.chat_id, cid_s.c_str(), sizeof(ev.chat_id) - 1);
-            if (nm_s.length() > 0) strncpy(ev.from_name, nm_s.c_str(), sizeof(ev.from_name) - 1);
-            else strncpy(ev.from_name, "Inconnu", sizeof(ev.from_name) - 1);
-            strncpy(ev.text, tx_s.c_str(), sizeof(ev.text) - 1);
-            ev.ts = ts;
-
-            if (!netq_push(ev)) {
-                // Queue pleine: on arrête ici pour ne pas bloquer core1
-                break;
-            }
-        }
+        // Poll entrant desactive ici: gere par TelegramNotifyService (global background).
     }
 
     void stop() override {

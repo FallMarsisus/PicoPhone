@@ -30,6 +30,8 @@ private:
     static void open_calc(lv_event_t* e) { AppManager::switchTo(APP_CALC); }
     static void open_wifi(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
     static void open_settings(lv_event_t* e) { AppManager::switchTo(APP_SETTINGS); }
+    static void open_contacts(lv_event_t* e) { AppManager::switchTo(APP_CONTACTS); }
+    static void open_timer(lv_event_t* e) { AppManager::switchTo(APP_TIMER); }
 
     // Swipe down = Control Center
     static void screen_touch_event(lv_event_t* e) {
@@ -140,14 +142,16 @@ public:
 
         // --- ICONES ---
         createIcon(grid, "Meteo",    lv_color_hex(0xFF9500), LV_SYMBOL_CHARGE,   open_weather);
-        createIcon(grid, "Telegram", lv_color_hex(0x0088CC), LV_SYMBOL_KEYBOARD, open_telegram);
+        createIcon(grid, "Telegram", lv_color_hex(0x0088CC), LV_SYMBOL_GPS, open_telegram);
         createIcon(grid, "Velib'",   lv_color_hex(0x34C759), LV_SYMBOL_IMAGE,    open_velib);
         createIcon(grid, "2048",     lv_color_hex(0xFF375F), LV_SYMBOL_SHUFFLE,  open_2048);
         createIcon(grid, "Ardoise",  lv_color_hex(0x5AC8FA), LV_SYMBOL_EDIT,     open_sketch);
         createIcon(grid, "WiFi",     lv_color_hex(0x007AFF), LV_SYMBOL_WIFI,     open_wifi);
-        createIcon(grid, "Calcul",   lv_color_hex(0xFF3B30), LV_SYMBOL_EDIT,     open_calc);
+        createIcon(grid, "Calcul",   lv_color_hex(0xFF3B30), LV_SYMBOL_PLUS,     open_calc);
         createIcon(grid, "Systeme",  lv_color_hex(0x8E8E93), LV_SYMBOL_REFRESH,  open_bl);
         createIcon(grid, "Reglages", lv_color_hex(0x636366), LV_SYMBOL_SETTINGS, open_settings);
+        createIcon(grid, "Contacts", lv_color_hex(0x5856D6), LV_SYMBOL_LIST, open_contacts);
+        createIcon(grid, "Timer",    lv_color_hex(0xFF9F0A), LV_SYMBOL_BELL, open_timer);
     }
 
     void update() override {

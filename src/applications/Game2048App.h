@@ -281,6 +281,7 @@ public:
                 lv_obj_set_style_radius(tile_obj[r][c], 8, 0);
                 lv_obj_set_style_border_width(tile_obj[r][c], 0, 0);
                 lv_obj_clear_flag(tile_obj[r][c], LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_clear_flag(tile_obj[r][c], LV_OBJ_FLAG_CLICKABLE);
 
                 tile_lbl[r][c] = lv_label_create(tile_obj[r][c]);
                 lv_obj_set_style_text_font(tile_lbl[r][c], &lv_font_montserrat_14, 0);

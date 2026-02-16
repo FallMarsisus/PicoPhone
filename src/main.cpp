@@ -2,36 +2,69 @@
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <pico/mutex.h>
+#include <hardware/watchdog.h>
 #include "Hardware.h"
 #include "AppManager.h"
 #include "WifiStore.h"
 #include "system/Settings.h"
+#include "system/NotificationCenter.h"
+#include "system/BackgroundServices.h"
 #include "applications/HomeApp.h"
 #include "applications/BootloaderApp.h"
 #include "applications/WifiApp.h"
 #include "applications/TouchCalibApp.h"
 #include "applications/WeatherApp.h"
 #include "applications/TelegramApp.h"
+#include "applications/ContactsApp.h"
+#include "applications/TimerApp.h"
 #include "applications/VelibApp.h"
 #include "applications/Game2048App.h"
 #include "applications/SketchApp.h"
 #include "applications/CalculatorApp.h"
 #include "applications/SettingsApp.h"
+#include "services/TelegramNotifyService.h"
+#include "services/TimerService.h"
 
 App* currentApp = nullptr;
 auto_init_mutex(myMutex); 
 auto_init_mutex(app_switch_mutex);
 AppManager manager;
+static volatile bool g_system_ready = false;
+
+// --- ANTI-FREEZE ---
+static volatile uint32_t core0_heartbeat = 0;
+static volatile uint32_t core1_heartbeat = 0;
+static uint32_t last_mem_check = 0;
+
+// Watchdog : nourrir régulièrement sinon reboot auto
+static inline void feed_watchdog() {
+    watchdog_update();
+}
+
+// Vérifie la mémoire libre et log si critique
+static void check_heap_health() {
+    if (millis() - last_mem_check < 10000) return;
+    last_mem_check = millis();
+    uint32_t free_heap = rp2040.getFreeHeap();
+    if (free_heap < 8192) {
+        Serial.printf("[WARN] Heap critique: %u bytes libres\n", free_heap);
+    }
+}
 
 void loadApp(AppID id) {
     mutex_enter_blocking(&app_switch_mutex);
+
+    // Animation de transition (fade out)
+    lv_obj_t* scr = lv_scr_act();
+    
+
     // 1. Nettoyage
     if (currentApp != nullptr) {
         currentApp->stop();
         delete currentApp;
         currentApp = nullptr;
     }
-    lv_obj_clean(lv_scr_act()); // Vide l'écran LVGL
+    lv_obj_clean(scr); // Vide l'écran LVGL
 
     // 2. Création (Factory)
     switch (id) {
@@ -68,6 +101,12 @@ void loadApp(AppID id) {
         case APP_SETTINGS:
             currentApp = new SettingsApp();
             break;
+        case APP_CONTACTS:
+            currentApp = new ContactsApp();
+            break;
+        case APP_TIMER:
+            currentApp = new TimerApp();
+            break;
         default:
             currentApp = new HomeApp();
             break;
@@ -77,10 +116,9 @@ void loadApp(AppID id) {
     if (currentApp) {
         currentApp->start(lv_scr_act());
     }
-    
-    // Reset du flag
-    AppManager::switchRequested = false;
 
+
+    // Reset du flag
     mutex_exit(&app_switch_mutex);
 }
 
@@ -108,25 +146,50 @@ void setup() {
     
     manager.init();
     Serial.println("[BOOT] manager init ok");
+
+    background_services::manager().registerService(&telegram_service::instance());
+    background_services::manager().registerService(&timer_service::instance());
+    background_services::manager().begin();
+
     loadApp(APP_HOME);
     Serial.println("[BOOT] home loaded");
+
+    // Watchdog matériel RP2040 : reboot si pas nourri pendant 8.3s
+    watchdog_enable(8300, true);
+    Serial.println("[BOOT] watchdog enabled (8.3s)");
+
+    __atomic_store_n(&g_system_ready, true, __ATOMIC_RELEASE);
     mutex_exit(&myMutex);
     Serial.println("[BOOT] setup done");
-
 }
 
 void loop() {
+    if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) {
+        delay(1);
+        return;
+    }
+
+    // --- ANTI-FREEZE : nourrir le watchdog à chaque tour ---
+    feed_watchdog();
+    core0_heartbeat = millis();
+
     lv_timer_handler();
+    yield();
 
     // Auto-connexion WiFi (non bloquant, respecte les paramètres)
     if (settings::isWifiEnabled()) {
         wifi_store::autoconnect_tick();
     }
 
+    feed_watchdog(); // Nourrir aussi après WiFi (peut être lent)
+
     manager.update();
+    background_services::manager().update();
+    notifications::center().update();
     
-    if (AppManager::switchRequested) {
-        loadApp(AppManager::nextAppID);
+    AppID requestedApp;
+    if (AppManager::consumeSwitchRequest(requestedApp)) {
+        loadApp(requestedApp);
     }
 
     // Update de l'app courante
@@ -134,19 +197,31 @@ void loop() {
         currentApp->update();
     }
 
-    // 5ms limite rapidement le FPS perçu; 1-2ms garde une UI plus fluide.
-    delay(1);
+    // Santé mémoire
+    check_heap_health();
+
+    yield();
+    delay(2);
 }
 
 void setup1() {
-  mutex_enter_blocking(&myMutex);
-  mutex_exit(&myMutex);
+    while (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) {
+        delay(1);
+    }
 }
 
 void loop1() {
-    if (AppManager::switchRequested) return;
-  if(mutex_try_enter(&app_switch_mutex, nullptr) == true) {
-    if (currentApp) currentApp->update1();
-    mutex_exit(&app_switch_mutex);
-  }
+    if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) return;
+
+    core1_heartbeat = millis();
+
+    background_services::manager().update1();
+
+    if (mutex_try_enter(&app_switch_mutex, nullptr) == true) {
+        if (currentApp) currentApp->update1();
+        mutex_exit(&app_switch_mutex);
+    }
+
+    yield();
+    delay(1);
 }

@@ -16,7 +16,9 @@ enum AppID {
     APP_2048,
     APP_SKETCH,
     APP_CALC,
-    APP_SETTINGS
+    APP_SETTINGS,
+    APP_CONTACTS,
+    APP_TIMER
 };
 
 class AppManager {
@@ -26,17 +28,26 @@ private:
 
 public:
     // --- GESTION DU CHANGEMENT D'APP (Statique) ---
-    static AppID nextAppID;
-    static bool switchRequested;
-    static bool ccOpenRequested;
+    static volatile AppID nextAppID;
+    static volatile bool switchRequested;
+    static volatile bool ccOpenRequested;
 
     static void switchTo(AppID id) {
-        nextAppID = id;
-        switchRequested = true;
+        __atomic_store_n(&nextAppID, id, __ATOMIC_RELEASE);
+        __atomic_store_n(&switchRequested, true, __ATOMIC_RELEASE);
+    }
+
+    static bool consumeSwitchRequest(AppID& outId) {
+        if (!__atomic_load_n(&switchRequested, __ATOMIC_ACQUIRE)) {
+            return false;
+        }
+        outId = __atomic_load_n(&nextAppID, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&switchRequested, false, __ATOMIC_RELEASE);
+        return true;
     }
     
     static void openControlCenter() {
-        ccOpenRequested = true;
+        __atomic_store_n(&ccOpenRequested, true, __ATOMIC_RELEASE);
     }
 
     // --- GESTION DU SYSTEME ---
@@ -50,8 +61,7 @@ public:
         lockScreen.update();
         
         // Ouvrir le Control Center si demandé (et pas verrouillé)
-        if (ccOpenRequested) {
-            ccOpenRequested = false;
+        if (__atomic_exchange_n(&ccOpenRequested, false, __ATOMIC_ACQ_REL)) {
             if (!lockScreen.isLocked()) {
                 controlCenter.toggle();
             }
@@ -63,8 +73,8 @@ public:
 };
 
 // Initialisation des variables statiques
-AppID AppManager::nextAppID = APP_HOME;
-bool AppManager::switchRequested = false;
-bool AppManager::ccOpenRequested = false;
+volatile AppID AppManager::nextAppID = APP_HOME;
+volatile bool AppManager::switchRequested = false;
+volatile bool AppManager::ccOpenRequested = false;
 
 #endif
