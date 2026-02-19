@@ -80,7 +80,7 @@ public:
         lv_obj_t* title = lv_label_create(header);
         lv_label_set_text(title, "Timer");
         lv_obj_set_style_text_color(title, lv_color_white(), 0);
-        lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
         lv_obj_center(title);
 
         lv_obj_t* card = lv_obj_create(parent);

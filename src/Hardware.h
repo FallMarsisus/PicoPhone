@@ -7,6 +7,8 @@
 #include <hardware/gpio.h>
 #include <hardware/spi.h>
 #include <AudioOutputI2S.h>
+#include <I2S.h> 
+#include <hardware/vreg.h>
 
 #include "system/Battery.h"
 
@@ -23,17 +25,172 @@
 #define I2S_OUT_WS   27 
 #define I2S_OUT_DIN  28
 
+// Pour le INMP441 (Entrée)
+#define I2S_IN_BCLK  2
+#define I2S_IN_WS    3
+#define I2S_IN_DOUT  4
+
+// Pour le SIM800L (UART0)
+#define SIM800_TX    0 // TX du Pico
+#define SIM800_RX    1 // RX du Pico
+
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
 // Taille du buffer (ne pas augmenter si on manque de RAM, le DMA compense)
-static constexpr uint32_t LV_BUF_PIXELS = 320u * 60u;
+static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
+
+auto_init_mutex(spi_mutex);
+
 
 static inline void audio_pins_quiet() {
     pinMode(I2S_OUT_DIN, INPUT_PULLDOWN);
     pinMode(I2S_OUT_BCLK, INPUT_PULLDOWN);
     pinMode(I2S_OUT_WS, INPUT_PULLDOWN);
+    pinMode(I2S_IN_DOUT, INPUT_PULLDOWN);
+    pinMode(I2S_IN_BCLK, INPUT_PULLDOWN);
+    pinMode(I2S_IN_WS, INPUT_PULLDOWN);
+}
+
+// --- TEST AUDIO (Micro -> Haut-parleur) avec DSP propre ---
+// --- TEST AUDIO (Micro -> Haut-parleur) ---
+void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
+    const int SAMPLE_RATE = 16000;
+    const int SECONDS = 2; // On enregistre 2 secondes
+    const int NUM_SAMPLES = SAMPLE_RATE * SECONDS;
+    
+    // On réserve 64 Ko de RAM pour stocker l'audio
+    int16_t *audio_buffer = (int16_t*)malloc(NUM_SAMPLES * sizeof(int16_t));
+    if (!audio_buffer) {
+        disp.println("Erreur: Pas assez de RAM !");
+        Serial.println("Erreur RAM pour l'audio");
+        return;
+    }
+
+    // ==========================================
+    // PHASE 1 : ENREGISTREMENT (Silence total)
+    // ==========================================
+    disp.fillScreen(TFT_BLACK);
+    disp.setCursor(0, 0);
+    disp.setTextColor(TFT_RED, TFT_BLACK);
+    disp.println("ENREGISTREMENT !");
+    disp.println("Parlez maintenant...");
+    Serial.println("ENREGISTREMENT (2 sec)...");
+
+    I2S i2sIn(INPUT);
+    i2sIn.setBCLK(I2S_IN_BCLK); 
+    i2sIn.setDATA(I2S_IN_DOUT);
+    i2sIn.setBitsPerSample(32); 
+    i2sIn.begin(SAMPLE_RATE);
+
+    int32_t l32 = 0, r32 = 0;
+    int16_t filtered_sample = 0;
+
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        // On force la lecture
+        while (!i2sIn.read32(&l32, &r32)) { yield(); }
+        
+        int16_t raw = (int16_t)(l32 >> 16); 
+
+        // Gain x6 avec limiteur
+        int32_t boosted = (int32_t)raw * 6; 
+        if (boosted > 32760) boosted = 32760;
+        if (boosted < -32760) boosted = -32760;
+        raw = (int16_t)boosted;
+
+        // Filtre passe-bas doux
+        filtered_sample = (raw * 3 + filtered_sample) / 4;
+        
+        // Stockage en RAM
+        audio_buffer[i] = filtered_sample;
+    }
+    i2sIn.end(); // On coupe le micro !
+
+    // ==========================================
+    // PHASE 2 : LECTURE
+    // ==========================================
+    disp.setTextColor(TFT_GREEN, TFT_BLACK);
+    disp.println("\nLECTURE...");
+    Serial.println("LECTURE...");
+
+    static AudioOutputI2S out;
+    out.SetRate(SAMPLE_RATE);
+    out.SetBitsPerSample(16);
+    out.SetChannels(2);
+    out.SetOutputModeMono(true);
+    out.SetGain(0.4f); // Volume de sortie à 40%
+    out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+    out.begin();
+
+    int16_t sample[2];
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        sample[0] = audio_buffer[i];
+        sample[1] = audio_buffer[i];
+        
+        while (!out.ConsumeSample(sample)) { yield(); }
+    }
+
+    out.stop();
+    free(audio_buffer); // On libère la RAM
+    audio_pins_quiet();
+    
+    disp.println("\nTest termine !");
+    Serial.println("Test termine !");
+}
+// --- TEST SIM800L (Affichage direct sur TFT ET Serial) ---
+void test_sim800l(TFT_eSPI &disp) {
+    disp.println("--- TEST SIM800L ---");
+    disp.println("> Envoi: AT");
+    
+    Serial.println("--- TEST SIM800L ---");
+    Serial.println("> Envoi: AT");
+    
+    Serial1.setTX(SIM800_TX);
+    Serial1.setRX(SIM800_RX);
+    Serial1.begin(9600); 
+    
+    // Vider le buffer
+    while (Serial1.available()) Serial1.read();
+
+    // Envoi de la commande
+    Serial1.println("AT");
+
+    uint32_t start = millis();
+    bool got_response = false;
+    
+    disp.setTextColor(TFT_YELLOW, TFT_BLACK);
+    disp.print("< Retour: ");
+    Serial.print("< Retour: ");
+    
+    // Lecture caractère par caractère
+    while (millis() - start < 2000) {
+        while (Serial1.available()) {
+            got_response = true;
+            char c = Serial1.read();
+            
+            Serial.print(c); // Sécurité : on affiche dans la console USB aussi
+            
+            // Formatage propre pour l'écran TFT
+            if (c == '\r') {
+                continue; 
+            } else if (c == '\n') {
+                disp.println(); 
+                disp.print("  "); 
+            } else {
+                disp.print(c);
+            }
+        }
+    }
+    
+    if (!got_response) {
+        disp.setTextColor(TFT_RED, TFT_BLACK);
+        disp.println("TIMEOUT / PAS DE REPONSE");
+        Serial.println("TIMEOUT / PAS DE REPONSE");
+    }
+    disp.setTextColor(TFT_WHITE, TFT_BLACK); 
+    disp.println("--------------------\n");
+    Serial.println("\n--------------------");
 }
 
 // --- FONCTION SONORE ---
@@ -133,6 +290,8 @@ void touch_read_spi_sdk(uint16_t& x, uint16_t& y, uint16_t& z) {
 }
 
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+    mutex_enter_blocking(&spi_mutex);
+
     uint16_t x_raw = 0, y_raw = 0, z_raw = 0;
     
     // Le TFT doit avoir libéré le bus avant de toucher au SPI
@@ -142,7 +301,7 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     
     if (z_raw > 200) {
         data->state = LV_INDEV_STATE_PR;
-        long map_x = map(x_raw, 3840, 280, 0, 320);
+        long map_x = map(x_raw, 3840, 300, 0, 320);
         long map_y = map(y_raw, 3960, 240, 0, 480);
         
         if(map_x < 0) map_x = 0; if(map_x > 319) map_x = 319;
@@ -153,20 +312,29 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     } else {
         data->state = LV_INDEV_STATE_REL;
     }
+
+
+    mutex_exit(&spi_mutex); 
 }
 
 // === AFFICHAGE OPTIMISÉ DMA ===
 void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+    mutex_enter_blocking(&spi_mutex);
+
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
     
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-
-    // Envoi en DMA : Le CPU est libre de calculer la prochaine frame LVGL pendant le transfert
+    
     tft.pushPixelsDMA((uint16_t *)&color_p->full, w * h);
     
+    // Attendre explicitement que le DMA ait fini avant de libérer le buffer (ou pas)
+    // tft.dmaWait(); 
+    
     tft.endWrite();
+    mutex_exit(&spi_mutex);
+
     lv_disp_flush_ready(disp);
 }
 
@@ -174,6 +342,8 @@ void hardware_init() {
     Serial.begin(115200);
     audio_pins_quiet();
     battery::begin();
+
+    vreg_set_voltage(VREG_VOLTAGE_1_20);
     
     pinMode(13, OUTPUT); digitalWrite(13, HIGH);
     gpio_init(TP_CS); gpio_set_dir(TP_CS, GPIO_OUT); gpio_put(TP_CS, 1);
@@ -187,8 +357,42 @@ void hardware_init() {
     tft.init();
     tft.initDMA(); // Activation du DMA pour l'écran
     tft.setRotation(0);
+    
+    // ==========================================
+    // DEBUT DES TESTS HARDWARE AU DEMARRAGE
+    // ==========================================
     tft.fillScreen(TFT_BLACK);
     
+    // Tracer un carré rouge brut pour s'assurer que l'écran est bien allumé.
+    // Si vous voyez le carré rouge mais AUCUN texte, c'est que les polices
+    // de TFT_eSPI sont désactivées dans votre User_Setup.h !
+    tft.fillRect(280, 0, 40, 40, TFT_RED); 
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(2); 
+    tft.setCursor(0, 0);
+
+    
+    
+    // 2. Test Audio Loopback
+    tft.println("Test Micro en cours...");
+    tft.println("Parlez ! (4 secondes)");
+    Serial.println("Test Micro en cours... Parlez !");
+    
+    
+    test_audio_loopback(tft, 4000); 
+
+    // 1. Test du SIM800L
+    test_sim800l(tft);
+    
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("Test Audio termine !");
+    Serial.println("Test Audio termine !");
+
+    delay(3000); // On laisse 3 secondes pour lire l'écran
+    tft.fillScreen(TFT_BLACK); // Nettoie l'ecran pour LVGL
+    // ==========================================
+
     lv_init();
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LV_BUF_PIXELS);
 

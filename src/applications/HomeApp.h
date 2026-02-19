@@ -1,5 +1,5 @@
-#ifndef HOME_APP_H
-#define HOME_APP_H
+#ifndef OLD_HOME_APP_H
+#define OLD_HOME_APP_H
 
 #include <Arduino.h>
 #include <time.h>
@@ -32,6 +32,8 @@ private:
     static void open_settings(lv_event_t* e) { AppManager::switchTo(APP_SETTINGS); }
     static void open_contacts(lv_event_t* e) { AppManager::switchTo(APP_CONTACTS); }
     static void open_timer(lv_event_t* e) { AppManager::switchTo(APP_TIMER); }
+    static void open_explorer(lv_event_t* e) { AppManager::switchTo(APP_EXPLORER); }
+    static void open_new_home(lv_event_t* e) { AppManager::switchTo(APP_OLD_HOME); }
 
     // Swipe down = Control Center
     static void screen_touch_event(lv_event_t* e) {
@@ -143,15 +145,17 @@ public:
         // --- ICONES ---
         createIcon(grid, "Meteo",    lv_color_hex(0xFF9500), LV_SYMBOL_CHARGE,   open_weather);
         createIcon(grid, "Telegram", lv_color_hex(0x0088CC), LV_SYMBOL_GPS, open_telegram);
-        createIcon(grid, "Velib'",   lv_color_hex(0x34C759), LV_SYMBOL_IMAGE,    open_velib);
-        createIcon(grid, "2048",     lv_color_hex(0xFF375F), LV_SYMBOL_SHUFFLE,  open_2048);
+        createIcon(grid, "Velib'",   lv_color_hex(0x34C759), "V",    open_velib);
+        createIcon(grid, "2048",     lv_color_hex(0xFF375F), "2048",  open_2048);
         createIcon(grid, "Ardoise",  lv_color_hex(0x5AC8FA), LV_SYMBOL_EDIT,     open_sketch);
         createIcon(grid, "WiFi",     lv_color_hex(0x007AFF), LV_SYMBOL_WIFI,     open_wifi);
         createIcon(grid, "Calcul",   lv_color_hex(0xFF3B30), LV_SYMBOL_PLUS,     open_calc);
-        createIcon(grid, "Systeme",  lv_color_hex(0x8E8E93), LV_SYMBOL_REFRESH,  open_bl);
+        // createIcon(grid, "Systeme",  lv_color_hex(0x8E8E93), LV_SYMBOL_REFRESH,  open_bl);
         createIcon(grid, "Reglages", lv_color_hex(0x636366), LV_SYMBOL_SETTINGS, open_settings);
         createIcon(grid, "Contacts", lv_color_hex(0x5856D6), LV_SYMBOL_LIST, open_contacts);
         createIcon(grid, "Timer",    lv_color_hex(0xFF9F0A), LV_SYMBOL_BELL, open_timer);
+        createIcon(grid, "Explorer", lv_color_hex(0x32D74B), LV_SYMBOL_DIRECTORY, open_explorer);
+        createIcon(grid, "New Home", lv_color_hex(0xAF52DE), LV_SYMBOL_HOME, open_new_home);
     }
 
     void update() override {
@@ -168,12 +172,13 @@ public:
         }
 
         // Heure toutes les minutes
-        static int last_min = -1;
+        static int last_update = millis() - 1000;
         struct tm timeinfo;
         time_t now = time(nullptr);
         if (now > 0 && localtime_r(&now, &timeinfo) != nullptr) {
-            if (timeinfo.tm_min != last_min) {
-                last_min = timeinfo.tm_min;
+            if (millis() - last_update > 1000) { // Update toutes les minutes
+                
+                last_update = millis();
                 char buf[6];
                 snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
                 lv_label_set_text(timel, buf);

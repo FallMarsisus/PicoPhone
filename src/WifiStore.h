@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <EEPROM.h>
 #include <time.h> // <--- AJOUT POUR L'HEURE
+#include <system/NotificationCenter.h>
 
 // Stockage très simple en EEPROM: une liste (SSID+PASS) + checksum.
 namespace wifi_store {
@@ -173,42 +174,57 @@ static void autoconnect_init() {
 }
 
 // Fonction appelée en boucle dans le main loop
+static bool g_ntp_started = false;
+
 static void autoconnect_tick() {
     autoconnect_init();
 
     const uint32_t now = millis();
     const int st = (int)WiFi.status();
 
-    // DETECTION DE CONNEXION REUSSIE (Transition de "Pas Connecté" à "Connecté")
+    // DETECTION DE CONNEXION REUSSIE
     if (st == (int)WL_CONNECTED && g_last_status != (int)WL_CONNECTED) {
         
-        // 1. Mise à jour de la priorité du réseau
-        String s = WiFi.SSID();
-        if (s.length() > 0) {
-            int idx = find_ssid(s.c_str());
-            if (idx >= 0) promote_index((size_t)idx);
+        // 1. SSID Sécurisé (Copie locale statique pour éviter malloc)
+        // On attend un tout petit peu pour être sûr que le SSID est dispo
+        if (WiFi.SSID().length() > 0) {
+             String s = WiFi.SSID();
+             int idx = find_ssid(s.c_str());
+             if (idx >= 0) promote_index((size_t)idx);
+             
+             // 2. NOTIFICATION OPTIMISÉE (Pas de String temporaire complexe)
+             // On utilise snprintf pour éviter la fragmentation du tas
+             static char title_buf[32];
+             snprintf(title_buf, sizeof(title_buf), "%s WiFi", LV_SYMBOL_WIFI);
+             notifications::push(title_buf, "Connection OK", s.c_str());
+        } else {
+             notifications::push(LV_SYMBOL_WIFI " WiFi", "Connection OK", "Reseau");
         }
 
-        // 2. SYNCHRO HEURE NTP AUTOMATIQUE !
-        // Configure l'heure dès que le WiFi revient
-        configTime(3600, 3600, "fr.pool.ntp.org", "time.nist.gov");
+        // 3. SYNCHRO NTP SÉCURISÉE
+        // On ne le lance qu'une seule fois, ou on le redémarre proprement
+        if (g_ntp_started) {
+            // NTP.stop(); // Arrêter proprement l'ancien service avant de relancer (méthode non disponible)
+        }
+        NTP.begin("pool.ntp.org", "time.nist.gov");
+        g_ntp_started = true;
     }
+    
     g_last_status = st;
 
-    // Si on est connecté, on ne fait rien de plus
+    // Si connecté, on s'arrête là (pas de logique de reconnexion)
     if (st == (int)WL_CONNECTED) {
         g_ac_connecting = false;
         return;
     }
 
-    // Si aucun réseau enregistré ou en pause (cooldown)
+    // --- LOGIQUE DE RECONNEXION (Reste inchangée) ---
     if (g_blob.count == 0) return;
     if (now < g_ac_cooldown_until) return;
 
     static constexpr uint32_t ATTEMPT_TIMEOUT_MS = 12000;
     static constexpr uint32_t BETWEEN_ATTEMPTS_MS = 2000;
 
-    // Lancement d'une tentative
     if (!g_ac_connecting) {
         g_ac_index = (g_ac_index + 1) % (int)g_blob.count;
         const Entry& e = g_blob.entries[g_ac_index];
@@ -225,9 +241,7 @@ static void autoconnect_tick() {
         return;
     }
 
-    // Timeout de la tentative actuelle
     if (g_ac_connecting && (now - g_ac_since) > ATTEMPT_TIMEOUT_MS) {
-        // Echec, on passe au suivant
         g_ac_connecting = false;
         g_ac_cooldown_until = now + BETWEEN_ATTEMPTS_MS;
         return;

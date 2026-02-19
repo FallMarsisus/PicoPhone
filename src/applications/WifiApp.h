@@ -329,7 +329,7 @@ public:
 
         lv_obj_t* t = lv_label_create(header);
         lv_label_set_text(t, "Wi-Fi");
-        lv_obj_set_style_text_font(t, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(t, &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(t, lv_color_hex(0xFFFFFF), 0);
         lv_obj_align(t, LV_ALIGN_CENTER, 0, 0);
 
@@ -386,8 +386,8 @@ public:
 
         // Liste
         list = lv_list_create(parent);
-        lv_obj_set_size(list, 320, 270);
-        lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -45);
+        lv_obj_set_size(list, 320, 345);
+        lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -5);
         lv_obj_set_style_bg_color(list, lv_color_hex(COL_BG), 0);
         lv_obj_set_style_border_width(list, 0, 0);
         lv_obj_set_scroll_dir(list, LV_DIR_VER);

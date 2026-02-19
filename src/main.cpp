@@ -8,6 +8,7 @@
 #include "WifiStore.h"
 #include "system/Settings.h"
 #include "system/NotificationCenter.h"
+#include "system/LockScreen.h"
 #include "system/BackgroundServices.h"
 #include "applications/HomeApp.h"
 #include "applications/BootloaderApp.h"
@@ -18,12 +19,15 @@
 #include "applications/ContactsApp.h"
 #include "applications/TimerApp.h"
 #include "applications/VelibApp.h"
+#include "applications/NewHomeApp.h"
 #include "applications/Game2048App.h"
 #include "applications/SketchApp.h"
 #include "applications/CalculatorApp.h"
 #include "applications/SettingsApp.h"
+#include "applications/FileExplorerApp.h"
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
+
 
 App* currentApp = nullptr;
 auto_init_mutex(myMutex); 
@@ -41,34 +45,66 @@ static inline void feed_watchdog() {
     watchdog_update();
 }
 
-// Vérifie la mémoire libre et log si critique
-static void check_heap_health() {
-    if (millis() - last_mem_check < 10000) return;
-    last_mem_check = millis();
-    uint32_t free_heap = rp2040.getFreeHeap();
-    if (free_heap < 8192) {
-        Serial.printf("[WARN] Heap critique: %u bytes libres\n", free_heap);
+// --- ANIMATION DE DEMARRAGE ---
+void playBootAnimation() {
+    // Fond noir
+    tft.fillScreen(TFT_BLACK);
+    
+    
+    const char* title = "PicOS";
+    int centerX = tft.width() / 2;
+    int centerY = tft.height() / 2 - 20;
+
+    // 2. Barre de chargement "System"
+    int barWidth = 160;
+    int barHeight = 6;
+    int barX = (tft.width() - barWidth) / 2;
+    int barY = centerY + 30;
+
+    tft.drawRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4, TFT_WHITE);
+    
+    // Remplissage progressif
+    for(int i = 0; i <= barWidth; i += 4) {
+        tft.fillRect(barX, barY, i, barHeight, TFT_GREEN);
+        
+        // Simulation de chargement non linéaire
+        if (i % 40 == 0) delay(100); 
+        else delay(5);
     }
+    
+    
 }
 
+
 void loadApp(AppID id) {
-    mutex_enter_blocking(&app_switch_mutex);
+    // 1. On essaie de prendre le mutex sans bloquer le Watchdog
+    // Si Core 1 bloque, on nourrit le chien en attendant
+    while (!mutex_try_enter(&app_switch_mutex, nullptr)) {
+        feed_watchdog();
+        delay(10);
+    }
 
-    // Animation de transition (fade out)
+    // --- ZONE CRITIQUE ---
+
     lv_obj_t* scr = lv_scr_act();
-    
 
-    // 1. Nettoyage
+    // 2. CORRECTION MAJEURE : On nettoie LVGL *AVANT* de tuer l'App
+    // Ainsi, si un widget envoie un événement lors de sa destruction, l'App est encore là.
+    lv_obj_clean(scr); 
+
+    // 3. Maintenant que l'écran est vide, on peut tuer l'App C++ en sécurité
     if (currentApp != nullptr) {
         currentApp->stop();
         delete currentApp;
         currentApp = nullptr;
     }
-    lv_obj_clean(scr); // Vide l'écran LVGL
 
+    // 4. On force un petit nettoyage mémoire LVGL (optionnel mais sain)
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
     // 2. Création (Factory)
     switch (id) {
-        case APP_HOME:
+        case APP_OLD_HOME:
             currentApp = new HomeApp();
             break;
         case APP_BOOTLOADER:
@@ -107,8 +143,14 @@ void loadApp(AppID id) {
         case APP_TIMER:
             currentApp = new TimerApp();
             break;
+        case APP_EXPLORER:
+            currentApp = new FileExplorerApp();
+            break;
+        case APP_HOME:
+            currentApp = new NewHomeApp();
+            break;
         default:
-            currentApp = new HomeApp();
+            currentApp = new NewHomeApp();
             break;
     }
 
@@ -129,13 +171,9 @@ void setup() {
     hardware_init();
     Serial.println("[BOOT] hardware_init ok");
 
-    // i2s_play_test_tone(440, 200); 
-    
-    // Ecran de chargement
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawCentreString("Booting OS...", 160, 240, 2);
 
+    playBootAnimation();
+    
     // WiFi (auto-connect en arrière-plan)
     wifi_store::autoconnect_init();
     Serial.println("[BOOT] wifi init ok");
@@ -153,6 +191,7 @@ void setup() {
 
     loadApp(APP_HOME);
     Serial.println("[BOOT] home loaded");
+    
 
     // Watchdog matériel RP2040 : reboot si pas nourri pendant 8.3s
     watchdog_enable(8300, true);
@@ -177,9 +216,7 @@ void loop() {
     yield();
 
     // Auto-connexion WiFi (non bloquant, respecte les paramètres)
-    if (settings::isWifiEnabled()) {
-        wifi_store::autoconnect_tick();
-    }
+    
 
     feed_watchdog(); // Nourrir aussi après WiFi (peut être lent)
 
@@ -197,11 +234,8 @@ void loop() {
         currentApp->update();
     }
 
-    // Santé mémoire
-    check_heap_health();
-
     yield();
-    delay(2);
+    delay(1);
 }
 
 void setup1() {
@@ -215,6 +249,10 @@ void loop1() {
 
     core1_heartbeat = millis();
 
+    if (settings::isWifiEnabled()) {
+        wifi_store::autoconnect_tick();
+    }
+
     background_services::manager().update1();
 
     if (mutex_try_enter(&app_switch_mutex, nullptr) == true) {
@@ -223,5 +261,5 @@ void loop1() {
     }
 
     yield();
-    delay(1);
+    delay(5);
 }

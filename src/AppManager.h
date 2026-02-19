@@ -18,7 +18,9 @@ enum AppID {
     APP_CALC,
     APP_SETTINGS,
     APP_CONTACTS,
-    APP_TIMER
+    APP_TIMER, 
+    APP_EXPLORER, 
+    APP_OLD_HOME,
 };
 
 class AppManager {

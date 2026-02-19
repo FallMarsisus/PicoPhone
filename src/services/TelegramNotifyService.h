@@ -170,7 +170,7 @@ public:
             char body[96];
             strncpy(body, text.c_str(), sizeof(body) - 1);
             body[sizeof(body) - 1] = '\0';
-            notifications::push("Telegram", from_name.c_str(), body);
+            notifications::push(String(String(LV_SYMBOL_GPS) + " Telegram").c_str(), from_name.c_str(), body);
         }
     }
 };
