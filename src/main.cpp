@@ -19,7 +19,10 @@
 #include "applications/ContactsApp.h"
 #include "applications/TimerApp.h"
 #include "applications/VelibApp.h"
+#include "applications/PhoneApp.h"
+#include "applications/SmsApp.h"
 #include "applications/NewHomeApp.h"
+#include "applications/WebRadioApp.h"
 #include "applications/Game2048App.h"
 #include "applications/SketchApp.h"
 #include "applications/CalculatorApp.h"
@@ -27,6 +30,7 @@
 #include "applications/FileExplorerApp.h"
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
+#include "services/SmsNotifyService.h"
 
 
 App* currentApp = nullptr;
@@ -149,6 +153,15 @@ void loadApp(AppID id) {
         case APP_HOME:
             currentApp = new NewHomeApp();
             break;
+        case APP_PHONE:
+            currentApp = new PhoneApp();
+            break;
+        case APP_SMS:
+            currentApp = new SmsApp();
+            break;
+        case APP_WEBRADIO: 
+            currentApp = new WebRadioApp();
+            break;
         default:
             currentApp = new NewHomeApp();
             break;
@@ -187,6 +200,7 @@ void setup() {
 
     background_services::manager().registerService(&telegram_service::instance());
     background_services::manager().registerService(&timer_service::instance());
+    background_services::manager().registerService(&sms_service::instance());
     background_services::manager().begin();
 
     loadApp(APP_HOME);

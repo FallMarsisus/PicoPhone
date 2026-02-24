@@ -21,6 +21,9 @@ enum AppID {
     APP_TIMER, 
     APP_EXPLORER, 
     APP_OLD_HOME,
+    APP_PHONE, 
+    APP_SMS,
+    APP_WEBRADIO
 };
 
 class AppManager {

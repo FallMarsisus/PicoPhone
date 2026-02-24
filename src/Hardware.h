@@ -21,9 +21,9 @@
 #define LCD_CS_PIN 9
 
 // Pour le MAX98357A (Sortie)
-#define I2S_OUT_BCLK 26
-#define I2S_OUT_WS   27 
-#define I2S_OUT_DIN  28
+#define I2S_OUT_BCLK 6
+#define I2S_OUT_WS   7 
+#define I2S_OUT_DIN  14
 
 // Pour le INMP441 (Entrée)
 #define I2S_IN_BCLK  2
@@ -140,57 +140,40 @@ void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
 }
 // --- TEST SIM800L (Affichage direct sur TFT ET Serial) ---
 void test_sim800l(TFT_eSPI &disp) {
-    disp.println("--- TEST SIM800L ---");
-    disp.println("> Envoi: AT");
-    
     Serial.println("--- TEST SIM800L ---");
     Serial.println("> Envoi: AT");
     
     Serial1.setTX(SIM800_TX);
     Serial1.setRX(SIM800_RX);
     Serial1.begin(9600); 
-    
-    // Vider le buffer
-    while (Serial1.available()) Serial1.read();
+}
 
-    // Envoi de la commande
-    Serial1.println("AT");
+void run_sim_diagnostic(TFT_eSPI &disp) {
+    Serial.println("--- DIAGNOSTIC SIM800L ---");
 
-    uint32_t start = millis();
-    bool got_response = false;
-    
-    disp.setTextColor(TFT_YELLOW, TFT_BLACK);
-    disp.print("< Retour: ");
-    Serial.print("< Retour: ");
-    
-    // Lecture caractère par caractère
-    while (millis() - start < 2000) {
-        while (Serial1.available()) {
-            got_response = true;
-            char c = Serial1.read();
-            
-            Serial.print(c); // Sécurité : on affiche dans la console USB aussi
-            
-            // Formatage propre pour l'écran TFT
-            if (c == '\r') {
-                continue; 
-            } else if (c == '\n') {
-                disp.println(); 
-                disp.print("  "); 
-            } else {
-                disp.print(c);
+    String cmds[] = {
+        "AT+CPIN?", // Test 1: La SIM est-elle lue et débloquée ?
+        "AT+CSQ",   // Test 2: Qualité du signal de l'antenne (0 à 31)
+        "AT+CREG?", // Test 3: Statut d'enregistrement sur le réseau
+        "AT+COPS?",  // Test 4: Nom de l'opérateur trouvé
+
+        "AT+CPIN?", // Test 1: La SIM est-elle lue et débloquée ?
+    };
+
+    for(int i=0; i<5; i++) {
+        Serial.print("\n> "); Serial.println(cmds[i]);
+        
+        Serial1.println(cmds[i]);
+        uint32_t t = millis();
+        
+        // Attendre la réponse 2 secondes
+        while(millis() - t < 2000) {
+            while(Serial1.available()) {
+                char c = Serial1.read();
+                if(c != '\r') Serial.print(c); // Afficher la réponse
             }
         }
     }
-    
-    if (!got_response) {
-        disp.setTextColor(TFT_RED, TFT_BLACK);
-        disp.println("TIMEOUT / PAS DE REPONSE");
-        Serial.println("TIMEOUT / PAS DE REPONSE");
-    }
-    disp.setTextColor(TFT_WHITE, TFT_BLACK); 
-    disp.println("--------------------\n");
-    Serial.println("\n--------------------");
 }
 
 // --- FONCTION SONORE ---
@@ -343,7 +326,7 @@ void hardware_init() {
     audio_pins_quiet();
     battery::begin();
 
-    vreg_set_voltage(VREG_VOLTAGE_1_20);
+    // vreg_set_voltage(VREG_VOLTAGE_1_20);
     
     pinMode(13, OUTPUT); digitalWrite(13, HIGH);
     gpio_init(TP_CS); gpio_set_dir(TP_CS, GPIO_OUT); gpio_put(TP_CS, 1);
@@ -374,22 +357,13 @@ void hardware_init() {
 
     
     
-    // 2. Test Audio Loopback
-    tft.println("Test Micro en cours...");
-    tft.println("Parlez ! (4 secondes)");
-    Serial.println("Test Micro en cours... Parlez !");
-    
-    
-    test_audio_loopback(tft, 4000); 
+    // test_audio_loopback(tft, 4000); 
 
     // 1. Test du SIM800L
     test_sim800l(tft);
+    delay(200);
+    // run_sim_diagnostic(tft);
     
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.println("Test Audio termine !");
-    Serial.println("Test Audio termine !");
-
-    delay(3000); // On laisse 3 secondes pour lire l'écran
     tft.fillScreen(TFT_BLACK); // Nettoie l'ecran pour LVGL
     // ==========================================
 
