@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include "../system/Battery.h"
 #include "../system/Settings.h"
+#include "../system/LTE.h"
 
 LV_IMG_DECLARE(fondecran);
 
@@ -30,7 +31,9 @@ private:
     lv_obj_t* wifi_label;
     lv_obj_t* time_label;
     lv_obj_t* batt_icon;
-    
+    lv_obj_t* signal_icon = nullptr;
+    lv_obj_t* operator_label = nullptr;
+
     // Bottom Quick Actions
     lv_obj_t* quick_actions_cont;
 
@@ -321,17 +324,32 @@ private:
         lv_obj_set_style_border_opa(top_bar_cont, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(top_bar_cont, LV_OBJ_FLAG_SCROLLABLE);
 
+        // Le nom de l'opérateur au milieu
+        operator_label = lv_label_create(top_bar_cont);
+        lv_label_set_text(operator_label, "Recherche...");
+        lv_obj_set_style_text_color(operator_label, lv_color_hex(0x323232), 0);
+        lv_obj_set_style_text_font(operator_label, &lv_font_montserrat_14, 0);
+        lv_obj_align(operator_label, LV_ALIGN_CENTER, 0, 0);
+
+        // Zone d'icônes à droite (élargie pour le réseau)
         lv_obj_t* icon_zone = lv_obj_create(top_bar_cont);
-        lv_obj_set_size(icon_zone, 100, 20);
+        lv_obj_set_size(icon_zone, 120, 20); // <-- Élargi de 100 à 120
         lv_obj_align(icon_zone, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_set_style_border_opa(icon_zone, LV_OPA_TRANSP, 0);
         lv_obj_set_style_bg_opa(icon_zone, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(icon_zone, LV_OBJ_FLAG_SCROLLABLE);
 
+        // Barres de réseau 4G
+        signal_icon = lv_label_create(icon_zone);
+        lv_label_set_text(signal_icon, "||||");
+        lv_obj_set_style_text_color(signal_icon, lv_color_hex(0x323232), 0);
+        lv_obj_set_style_text_font(signal_icon, &lv_font_montserrat_12, 0);
+        lv_obj_align(signal_icon, LV_ALIGN_LEFT_MID, 0, 0);
+
         wifi_label = lv_label_create(icon_zone);
         lv_label_set_text(wifi_label, LV_SYMBOL_WIFI);
         lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x323232), 0);
-        lv_obj_align(wifi_label, LV_ALIGN_LEFT_MID, 5, 0);
+        lv_obj_align(wifi_label, LV_ALIGN_LEFT_MID, 30, 0);
         
         time_label = lv_label_create(top_bar_cont);
         lv_label_set_text(time_label, "00:00");
@@ -341,7 +359,7 @@ private:
         batt_icon = lv_label_create(icon_zone);
         lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_FULL);
         lv_obj_set_style_text_color(batt_icon, lv_color_hex(0x323232), 0);
-        lv_obj_align(batt_icon, LV_ALIGN_LEFT_MID, 60, 0);
+        lv_obj_align(batt_icon, LV_ALIGN_LEFT_MID, 75, 0);
     }
 
     void createQuickActionApps(lv_obj_t* parent) {
@@ -449,7 +467,28 @@ public:
             else if (p > 20) lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_1);
             else lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_EMPTY);
         }
+
+        static unsigned long last_lte_check = 0;
+        if (millis() - last_lte_check > 2000) {
+            last_lte_check = millis();
+            
+            if (!LTE::isEnabled()) {
+                lv_label_set_text(operator_label, "Mode Avion");
+                lv_label_set_text(signal_icon, "X");
+            } else {
+                lv_label_set_text(operator_label, LTE::getOperator().c_str());
+                int sig = LTE::getSignal();
+                // Utilisation de barres simples (pipe) pour simuler les barres de réseau
+                if (sig == 0) lv_label_set_text(signal_icon, "!");
+                else if (sig == 1) lv_label_set_text(signal_icon, "|");
+                else if (sig == 2) lv_label_set_text(signal_icon, "||");
+                else if (sig == 3) lv_label_set_text(signal_icon, "|||");
+                else lv_label_set_text(signal_icon, "||||");
+            }
+        }
     }
+
+    
 
     void stop() override {
         // kill ongoing animations

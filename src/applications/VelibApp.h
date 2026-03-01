@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <pico/mutex.h>
+#include "../system/LTE.h"
 
 // --- CONFIGURATION ---
 // On prend plusieurs résultats puis on filtre côté code station exact
@@ -251,6 +252,22 @@ private:
         }
     }
     
+    // Helper : GET via WiFi ou fallback 4G
+    static String netGet(const String& url) {
+        if (WiFi.status() == WL_CONNECTED) {
+            HTTPClient http;
+            http.setTimeout(8000);
+            http.begin(url);
+            int code = http.GET();
+            String result = (code == 200) ? http.getString() : "";
+            http.end();
+            return result;
+        } else if (LTE::isEnabled() && !LTE::isAirplaneMode()) {
+            return LTE::httpGetBlocking(url);
+        }
+        return "";
+    }
+
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
 
 public:
@@ -398,28 +415,18 @@ public:
 
     // --- CORE 1 : RESEAU ---
     void update1() override {
-        if(WiFi.status() != WL_CONNECTED) return;
+        bool net_ok = (WiFi.status() == WL_CONNECTED) ||
+                      (LTE::isEnabled() && !LTE::isAirplaneMode());
+        if (!net_ok) return;
 
-       // A. RECHERCHE (Core 1 : Télécharge seulement)
+       // A. RECHERCHE
         if (pending_code_search != "") {
             searching_code = pending_code_search;
             pending_code_search = "";
 
-            HTTPClient http;
-            http.setTimeout(8000);
-            // On demande 1 seul résultat pour que ça soit léger
-            http.begin(String(API_BASE) + searching_code);
-            int httpCode = http.GET();
-            
-            if(httpCode == 200) {
-                // On stocke le texte brut pour que le Core 0 le traite
-                search_payload = http.getString();
-            } else {
-                search_payload = ""; // Erreur
-            }
-            
-            http.end();
-            search_finished = true; // On dit au Core 0 : "J'ai fini, à toi de jouer"
+            String payload = netGet(String(API_BASE) + searching_code);
+            search_payload = payload;
+            search_finished = true;
             return;
         }
 
@@ -429,26 +436,24 @@ public:
             
             mutex_enter_blocking(&velibMutex);
             if (!stations.empty()) {
-                if (current_fetch_index >= stations.size()) current_fetch_index = 0;
+                if (current_fetch_index >= (int)stations.size()) current_fetch_index = 0;
                 targetCode = stations[current_fetch_index].code;
             }
             mutex_exit(&velibMutex);
 
             if(targetCode.length() > 0) {
-                HTTPClient http;
-                http.setTimeout(8000);
-                http.begin(String(API_BASE) + targetCode);
-                int httpCode = http.GET();
-                if(httpCode == 200) {
+                String payload = netGet(String(API_BASE) + targetCode);
+                if (payload.length() > 0) {
                     JsonDocument doc;
-                    deserializeJson(doc, http.getString());
+                    deserializeJson(doc, payload);
                     if (doc["records"].is<JsonArray>() && doc["records"].size() > 0) {
                         JsonObject fields = doc["records"][0]["fields"];
                         int mech = 0, elec = 0, park = 0;
                         extract_counts(fields, mech, elec, park);
                         
                         mutex_enter_blocking(&velibMutex);
-                        if (current_fetch_index < stations.size() && stations[current_fetch_index].code == targetCode) {
+                        if (current_fetch_index < (int)stations.size() &&
+                            stations[current_fetch_index].code == targetCode) {
                             stations[current_fetch_index].mech = mech;
                             stations[current_fetch_index].elec = elec;
                             stations[current_fetch_index].park = park;
@@ -457,7 +462,6 @@ public:
                         mutex_exit(&velibMutex);
                     }
                 }
-                http.end();
             }
             last_update = millis();
             current_fetch_index++;

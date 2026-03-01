@@ -8,6 +8,7 @@
 #include <math.h> 
 #include <vector>
 #include <pico/mutex.h>
+#include "../system/LTE.h"
 
 // --- CONFIG ---
 #define API_KEY "8fdaebc1c5f040d39d2178f811adfeaa"
@@ -266,35 +267,38 @@ public:
 
     // --- CORE 1 : TRAVAIL RÉSEAU (Lent) ---
     void update1() override {
-        if (refresh_requested && WiFi.status() == WL_CONNECTED) {
-            
-            // --- 1. REQUETE CURRENT WEATHER ---
-            WeatherData newData;
-            newData.success = false;
+        if (!refresh_requested) return;
 
+        bool use_wifi = (WiFi.status() == WL_CONNECTED);
+        bool use_lte  = (!use_wifi && LTE::isEnabled() && !LTE::isAirplaneMode());
+        if (!use_wifi && !use_lte) return;
+
+        WeatherData newData;
+        newData.success = false;
+
+        String url1 = "http://api.openweathermap.org/data/2.5/weather?q=" CITY_NAME "," COUNTRY_CODE "&appid=" API_KEY "&units=metric&lang=fr";
+        String url2 = "http://api.openweathermap.org/data/2.5/forecast?q=" CITY_NAME "," COUNTRY_CODE "&appid=" API_KEY "&units=metric&cnt=8";
+
+        if (use_wifi) {
+            // --- Chemin WiFi (HTTPClient) ---
             HTTPClient http;
-            http.setTimeout(8000);         // Timeout lecture 8s
-            String url = "http://api.openweathermap.org/data/2.5/weather?q=" CITY_NAME "," COUNTRY_CODE "&appid=" API_KEY "&units=metric&lang=fr";
-            
-            http.begin(url);
+            http.setTimeout(8000);
+            http.begin(url1);
             int httpCode = http.GET();
             if (httpCode == 200) {
                 String payload = http.getString();
                 JsonDocument doc;
                 deserializeJson(doc, payload);
-
-                newData.cityName = doc["name"].as<String>();
-                newData.currentTemp = doc["main"]["temp"];
-                newData.currentIcon = doc["weather"][0]["icon"].as<String>();
-                newData.success = true; // Semi-success pour l'instant
+                newData.cityName     = doc["name"].as<String>();
+                newData.currentTemp  = doc["main"]["temp"];
+                newData.currentIcon  = doc["weather"][0]["icon"].as<String>();
+                newData.success      = true;
             }
             http.end();
 
-            // --- 2. REQUETE FORECAST ---
             if (newData.success) {
                 HTTPClient http2;
                 http2.setTimeout(8000);
-                String url2 = "http://api.openweathermap.org/data/2.5/forecast?q=" CITY_NAME "," COUNTRY_CODE "&appid=" API_KEY "&units=metric&cnt=8"; 
                 http2.begin(url2);
                 int httpCode2 = http2.GET();
                 if (httpCode2 == 200) {
@@ -303,14 +307,11 @@ public:
                     filter["list"][0]["dt"] = true;
                     filter["list"][0]["main"]["temp"] = true;
                     filter["list"][0]["weather"][0]["icon"] = true;
-
                     JsonDocument doc;
                     deserializeJson(doc, *stream, DeserializationOption::Filter(filter));
-                    JsonArray list = doc["list"];
-                    
-                    for (JsonObject item : list) {
+                    for (JsonObject item : doc["list"].as<JsonArray>()) {
                         ForecastItem fItem;
-                        fItem.dt = item["dt"];
+                        fItem.dt   = item["dt"];
                         fItem.temp = item["main"]["temp"];
                         fItem.icon = item["weather"][0]["icon"].as<String>();
                         newData.forecastList.push_back(fItem);
@@ -318,15 +319,38 @@ public:
                 }
                 http2.end();
             }
-
-            // --- 3. LIVRAISON AU CORE 0 ---
-            mutex_enter_blocking(&weatherMutex);
-            sharedData = newData;
-            has_new_data = true; // DRAPEAU LEVÉ
-            mutex_exit(&weatherMutex);
-
-            refresh_requested = false; // Travail terminé
+        } else {
+            // --- Chemin 4G (AT+HTTP) ---
+            String payload = LTE::httpGetBlocking(url1);
+            if (payload.length() > 0) {
+                JsonDocument doc;
+                deserializeJson(doc, payload);
+                newData.cityName    = doc["name"].as<String>();
+                newData.currentTemp = doc["main"]["temp"];
+                newData.currentIcon = doc["weather"][0]["icon"].as<String>();
+                newData.success     = true;
+            }
+            if (newData.success) {
+                String payload2 = LTE::httpGetBlocking(url2);
+                if (payload2.length() > 0) {
+                    JsonDocument doc;
+                    deserializeJson(doc, payload2);
+                    for (JsonObject item : doc["list"].as<JsonArray>()) {
+                        ForecastItem fItem;
+                        fItem.dt   = item["dt"];
+                        fItem.temp = item["main"]["temp"];
+                        fItem.icon = item["weather"][0]["icon"].as<String>();
+                        newData.forecastList.push_back(fItem);
+                    }
+                }
+            }
         }
+
+        mutex_enter_blocking(&weatherMutex);
+        sharedData   = newData;
+        has_new_data = true;
+        mutex_exit(&weatherMutex);
+        refresh_requested = false;
     }
 };
 

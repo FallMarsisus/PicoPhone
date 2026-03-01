@@ -31,6 +31,7 @@
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
 #include "services/SmsNotifyService.h"
+#include "system/LTE.h"
 
 
 App* currentApp = nullptr;
@@ -169,6 +170,9 @@ void setup() {
     manager.init();
     Serial.println("[BOOT] manager init ok");
 
+    LTE::init();
+    Serial.println("[BOOT] LTE init ok");
+
     background_services::manager().registerService(&telegram_service::instance());
     background_services::manager().registerService(&timer_service::instance());
     background_services::manager().registerService(&sms_service::instance());
@@ -231,6 +235,12 @@ void setup1() {
 
 void loop1() {
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) return;
+    LTE::update();
+
+    // Synchro heure via modem si WiFi pas dispo
+    if (WiFi.status() != WL_CONNECTED) {
+        LTE::update();
+    }
 
     core1_heartbeat = millis();
 
