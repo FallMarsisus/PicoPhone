@@ -118,6 +118,33 @@ private:
         f.close();
     }
 
+    void delete_conversation(String number) {
+        if (!fs_ok) return;
+        String path = "/sms_" + number + ".json";
+        if (LittleFS.exists(path)) LittleFS.remove(path);
+
+        // Remove contact from in-memory list
+        for (auto it = contacts.begin(); it != contacts.end(); ++it) {
+            if (it->number == number) {
+                contacts.erase(it);
+                break;
+            }
+        }
+
+        // Persist updated contacts to /sms_contacts.json
+        DynamicJsonDocument doc(2048);
+        JsonArray arr = doc.to<JsonArray>();
+        for (const auto &c : contacts) {
+            JsonObject obj = arr.add<JsonObject>();
+            obj["id"] = c.number;
+            obj["n"] = c.name;
+            obj["p"] = c.last_msg_preview;
+        }
+        File fw = LittleFS.open("/sms_contacts.json", "w");
+        if (fw) { serializeJson(arr, fw); fw.close(); }
+        
+    }
+
     static void go_back_event(lv_event_t* e) {
         SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
         if (app->current_contact_idx != -1) {
@@ -144,17 +171,31 @@ private:
 
     static void kb_send_event(lv_event_t* e) {
         SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
-        const char* text = lv_textarea_get_text(app->ta_visible);
         
-        lv_obj_add_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
+        // --- SÉCURITÉ 1 : On bloque si un envoi est DÉJÀ en cours ---
+        // Évite que l'utilisateur clique 2 fois et fasse crasher le Core 1
+        if (app->out_pending) {
+            Serial.println("[SmsApp] Envoi deja en cours, veuillez patienter...");
+            return; 
+        }
+
+        const char* text = lv_textarea_get_text(app->ta_visible);
 
         if (text && strlen(text) > 0 && app->current_contact_idx != -1) {
             const String number = app->contacts[app->current_contact_idx].number;
+            
+            // --- SÉCURITÉ 2 : Prévention des Buffer Overflows ---
+            // On copie et on FORCE le caractère de fin '\0' pour ne pas déborder
             strncpy(app->out_number, number.c_str(), sizeof(app->out_number) - 1);
+            app->out_number[sizeof(app->out_number) - 1] = '\0'; 
+            
             strncpy(app->out_text, text, sizeof(app->out_text) - 1);
+            app->out_text[sizeof(app->out_text) - 1] = '\0';
+            
             app->out_pending = true; // Déclenche l'envoi sur Core 1
         }
+        
+        // On vide la zone de texte immédiatement pour le confort de l'utilisateur
         lv_textarea_set_text(app->ta_visible, "");
     }
 
@@ -166,37 +207,69 @@ private:
     }
 
     void refresh_contact_list_ui() {
+        bool stop_flag = false;
         lv_obj_clean(list_cont);
         for (size_t i = 0; i < contacts.size(); i++) {
-            lv_obj_t* btn = lv_btn_create(list_cont);
-            lv_obj_set_width(btn, lv_pct(100));
-            lv_obj_set_height(btn, 65);
-            lv_obj_set_style_bg_color(btn, lv_color_hex(COL_BG_LIST), 0);
+            // Row wrapper to center the button horizontally
+            lv_obj_t* row = lv_obj_create(list_cont);
+            lv_obj_set_size(row, lv_pct(100), 85);
+            lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_scroll_dir(row, LV_DIR_NONE);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+            lv_obj_t* btn = lv_btn_create(row);
+            lv_obj_set_width(btn, 300);
+            lv_obj_set_height(btn, 80);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0xD9D9D9), 0);
             lv_obj_set_style_border_width(btn, 0, 0);
             
             lv_obj_set_user_data(btn, (void*)(intptr_t)i);
             lv_obj_add_event_cb(btn, [](lv_event_t* e){
+                if (lv_event_get_target(e) != lv_event_get_current_target(e)) return; // ignore bubbled events from children
                 SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
                 int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
                 app->current_contact_idx = idx;
                 lv_obj_add_flag(app->view_contacts, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(app->view_chat, LV_OBJ_FLAG_HIDDEN);
                 lv_label_set_text(app->header_title, app->contacts[idx].name.c_str());
+                lv_obj_clear_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
+                lv_t9_kb_set_textarea(app->keyboard_cont, app->ta_visible);
                 app->load_history_to_ui(app->contacts[idx].number);
                 lv_obj_scroll_to_y(app->msg_list, 10000, LV_ANIM_OFF);
             }, LV_EVENT_CLICKED, this);
 
             lv_obj_t* lbl = lv_label_create(btn);
             lv_label_set_text(lbl, contacts[i].name.c_str());
-            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-            lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 5, 5);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+            lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 4, 0);
+            lv_obj_set_style_text_color(lbl, lv_color_black(), 0);
 
             lv_obj_t* sub = lv_label_create(btn);
             lv_label_set_text(sub, contacts[i].last_msg_preview.c_str());
             lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
             lv_obj_set_width(sub, 190);
             lv_obj_set_style_text_color(sub, lv_color_hex(0xaaaaaa), 0);
-            lv_obj_align(sub, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+            lv_obj_align(sub, LV_ALIGN_TOP_LEFT, 4, 26);
+
+            lv_obj_t* del_btn = lv_btn_create(btn);
+            lv_obj_set_size(del_btn, 30, 30);
+            lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 5, 0);
+            lv_obj_set_user_data(del_btn, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(del_btn, [](lv_event_t* e){
+                SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
+                int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+                app->delete_conversation(app->contacts[idx].number);
+                app->refresh_contact_list_ui();
+            }, LV_EVENT_CLICKED, this);
+            lv_obj_set_style_bg_color(del_btn, lv_color_hex(0xFF3B30), 0);
+
+            lv_obj_t* del_lbl = lv_label_create(del_btn);
+            lv_label_set_text(del_lbl, LV_SYMBOL_TRASH);
+            lv_obj_set_style_text_color(del_lbl, lv_color_white(), 0); 
+            lv_obj_center(del_lbl);
         }
     }
 
@@ -236,19 +309,19 @@ public:
 
         main_bg = parent; 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_color(main_bg, lv_color_black(), 0);
+        lv_obj_set_style_bg_color(main_bg, lv_color_white(), 0);
 
         // Header
         lv_obj_t* header = lv_obj_create(main_bg);
         lv_obj_set_size(header, 320, 50);
-        lv_obj_set_style_bg_color(header, lv_color_hex(0x1C1C1E), 0);
+        lv_obj_set_style_bg_color(header, lv_color_hex(0xE9E9E9), 0);
         lv_obj_set_style_border_width(header, 0, 0);
         lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
         header_title = lv_label_create(header);
         lv_label_set_text(header_title, "Messages");
-        lv_obj_set_style_text_color(header_title, lv_color_white(), 0);
+        lv_obj_set_style_text_color(header_title, lv_color_black(), 0);
         lv_obj_center(header_title);
         
         lv_obj_t* btn_back = lv_btn_create(header);
@@ -267,37 +340,48 @@ public:
         lv_obj_align(view_contacts, LV_ALIGN_TOP_MID, 0, 50);
         lv_obj_set_style_bg_opa(view_contacts, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(view_contacts, 0, 0);
+        lv_obj_set_style_pad_all(view_contacts, 0, 0);
+        lv_obj_set_style_pad_left(view_contacts, 0, 0);
+        lv_obj_set_style_pad_right(view_contacts, 0, 0);
+        lv_obj_set_style_pad_top(view_contacts, 10, 0);
         
         list_cont = lv_obj_create(view_contacts);
         lv_obj_set_size(list_cont, lv_pct(100), lv_pct(100));
         lv_obj_set_style_bg_opa(list_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(list_cont, 0, 0);
         lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_gap(list_cont, 2, 0);
+        lv_obj_set_flex_align(list_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_all(list_cont, 0, 0);
+        lv_obj_set_style_pad_left(list_cont, 0, 0);
+        lv_obj_set_style_pad_right(list_cont, 0, 0);
+        // lv_obj_set_style_pad_gap(list_cont, 12, 0);
+        lv_obj_align(list_cont, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_scroll_dir(list_cont, LV_DIR_VER);
 
         // VUE CHAT
         view_chat = lv_obj_create(main_bg);
         lv_obj_set_size(view_chat, 320, 430);
         lv_obj_align(view_chat, LV_ALIGN_TOP_MID, 0, 50);
-        lv_obj_set_style_bg_color(view_chat, lv_color_hex(COL_BG_CHAT), 0);
+        lv_obj_set_style_bg_color(view_chat, lv_color_white(), 0);
         lv_obj_set_style_border_width(view_chat, 0, 0);
         lv_obj_add_flag(view_chat, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(view_chat, LV_OBJ_FLAG_SCROLLABLE);
 
         msg_list = lv_obj_create(view_chat);
-        lv_obj_set_size(msg_list, 320, 310); 
+        lv_obj_set_size(msg_list, 320, 420-200 - 40); 
         lv_obj_align(msg_list, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_set_style_bg_opa(msg_list, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(msg_list, 0, 0);
         lv_obj_set_flex_flow(msg_list, LV_FLEX_FLOW_COLUMN);
 
         lv_obj_t* footer = lv_obj_create(view_chat);
-        lv_obj_set_size(footer, 320, 80);
+        lv_obj_set_size(footer, 320, 210);
         lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, 10);
-        lv_obj_set_style_bg_color(footer, lv_color_hex(0x1C1C1E), 0);
+        lv_obj_set_style_bg_color(footer, lv_color_hex(0xDEDEDE), 0);
         lv_obj_set_style_border_width(footer, 0, 0);
         lv_obj_clear_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
         
+        /*
         lv_obj_t* btn_reply = lv_btn_create(footer);
         lv_obj_set_size(btn_reply, 200, 40);
         lv_obj_center(btn_reply);
@@ -306,19 +390,21 @@ public:
         lv_label_set_text(l_rep, "iMessage");
         lv_obj_center(l_rep);
 
+        */
         // CLAVIER
         ta_visible = lv_textarea_create(main_bg);
-        lv_obj_set_size(ta_visible, 220, 40);
-        lv_obj_align(ta_visible, LV_ALIGN_BOTTOM_MID, 0, -170);
-        lv_obj_set_style_border_color(ta_visible, lv_color_hex(COL_MSG_OUT), 0);
+        lv_obj_set_size(ta_visible, 320, 40);
+        lv_obj_align(ta_visible, LV_ALIGN_BOTTOM_MID, 0, -200);
+        lv_obj_set_style_border_color(ta_visible, lv_color_hex(0xDEDEDE), 0);
         lv_obj_set_style_border_width(ta_visible, 2, 0);
         lv_obj_add_flag(ta_visible, LV_OBJ_FLAG_HIDDEN);
+
 
         keyboard_cont = lv_t9_kb_create(main_bg);
         lv_obj_add_flag(keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_event_cb(keyboard_cont, kb_send_event, LV_EVENT_READY, this);
         lv_obj_add_event_cb(keyboard_cont, kb_cancel_event, LV_EVENT_CANCEL, this);
-
+        lv_obj_set_size(keyboard_cont, 320, 200);
         refresh_contact_list_ui();
     }
     
@@ -343,40 +429,45 @@ public:
         }
     }
 
-    void update1() override {
-        // Core 1 : Routines d'envoi AT bloquantes
+void update1() override {
+        // Core 1 : Routines d'envoi AT
         if (out_pending) {
             Serial.println("[SmsApp] Tentative d'envoi...");
 
-            // 1. ECHAP : Annule tout SMS précédent resté coincé
-            Serial1.print((char)27); 
-            delay(500);
+            // 1. ECHAP (0x1B) : Annule tout SMS précédent resté coincé
+            Serial1.write(27); 
+            delay(300);
 
             // 2. Préparation du destinataire
             Serial1.print("AT+CMGS=\"");
             Serial1.print(out_number);
-            Serial1.println("\"");
+            Serial1.print("\"\r"); 
             
-            // 3. On lui laisse VRAIMENT le temps de générer le prompt '>'
-            delay(1000); 
+            // 3. Attente du prompt '> '
+            delay(500); 
             
             // 4. On écrit le texte
             Serial1.print(out_text);
             delay(100);
             
-            // 5. On envoie CTRL+Z de manière sûre (char 26)
-            Serial1.print((char)26); 
+            // 5. On envoie CTRL+Z (char 26)
+            Serial1.write(26); 
 
             Serial.println("[SmsApp] Message envoye au module, attente reseau...");
 
-            // Attendre la validation du réseau (ça peut prendre de 2 à 5 secondes)
-            delay(4000); 
+            // Attendre la validation du réseau
+            delay(1000); 
             
             NetEvt ev{};
             ev.type = EVT_SEND_OK;
+            
+            // --- SÉCURITÉ 3 : Même chose ici pour la communication inter-coeurs ---
             strncpy(ev.text, out_text, sizeof(ev.text) - 1);
+            ev.text[sizeof(ev.text) - 1] = '\0';
+            
             netq_push(ev);
 
+            // On libère le verrou SEULEMENT quand tout est fini !
             out_pending = false;
         }
     }

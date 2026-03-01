@@ -241,7 +241,7 @@ private:
         
         lv_obj_t* row_ver = createSettingRow(list_cont, "Version");
         lv_obj_t* lbl_ver = lv_label_create(row_ver);
-        lv_label_set_text(lbl_ver, "1.0.0");
+        lv_label_set_text(lbl_ver, "1.0.1");
         lv_obj_set_style_text_color(lbl_ver, lv_color_hex(0x8E8E93), 0);
         lv_obj_align(lbl_ver, LV_ALIGN_RIGHT_MID, 0, 0);
         

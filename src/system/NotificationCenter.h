@@ -2,6 +2,8 @@
 #define SYSTEM_NOTIFICATION_CENTER_H
 
 #include <Arduino.h>
+#include "Hardware.h"
+#include "Settings.h"
 #include <lvgl.h>
 
 class NotificationCenter {
@@ -16,6 +18,10 @@ private:
     volatile uint8_t head = 0;
     volatile uint8_t tail = 0;
     Item queue[QUEUE_SIZE]{};
+
+    // Historique pour le Control Center
+    Item history[2]{};
+    uint8_t history_count = 0;
 
     lv_obj_t* root = nullptr;
     lv_obj_t* lbl_app = nullptr;
@@ -103,8 +109,18 @@ public:
         copy_str(it.app, sizeof(it.app), app);
         copy_str(it.title, sizeof(it.title), title);
         copy_str(it.body, sizeof(it.body), body);
+        
         queue[t] = it;
         __atomic_store_n(&tail, next, __ATOMIC_RELEASE);
+
+        // Sauvegarde dans l'historique pour le Centre de Contrôle
+        history[1] = history[0];
+        history[0] = it;
+        if (history_count < 2) history_count++;
+
+        i2s_play_test_tone(1200, 30, settings::getVolume()/100.0f);
+        delay(20);
+        i2s_play_test_tone(1200, 30, settings::getVolume()/100.0f);
     }
 
     void update() {
@@ -123,6 +139,15 @@ public:
         if (pop(it)) {
             show_item(it);
         }
+    }
+
+    // Nouvelle fonction pour le Control Center
+    bool get_latest(uint8_t index, char* out_app, char* out_title, char* out_body) {
+        if (index >= history_count) return false;
+        copy_str(out_app, 20, history[index].app);
+        copy_str(out_title, 36, history[index].title);
+        copy_str(out_body, 96, history[index].body);
+        return true;
     }
 };
 

@@ -9,7 +9,7 @@
 #include <AudioOutputI2S.h>
 #include <I2S.h> 
 #include <hardware/vreg.h>
-
+#include "assets/startuplogo.c"
 #include "system/Battery.h"
 
 // --- PINS ---
@@ -30,9 +30,10 @@
 #define I2S_IN_WS    3
 #define I2S_IN_DOUT  4
 
-// Pour le SIM800L (UART0)
+// Pour le SIM800L / A7670E (UART0)
 #define SIM800_TX    0 // TX du Pico
 #define SIM800_RX    1 // RX du Pico
+#define A7670_PWRKEY 26 // Broche K (KEY) du A7670E
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
@@ -41,7 +42,7 @@ static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 
-auto_init_mutex(spi_mutex);
+mutex_t spi_mutex;
 
 
 static inline void audio_pins_quiet() {
@@ -138,26 +139,48 @@ void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
     disp.println("\nTest termine !");
     Serial.println("Test termine !");
 }
-// --- TEST SIM800L (Affichage direct sur TFT ET Serial) ---
+
+// --- TEST MODEM A7670E (Ex-SIM800L) ---
 void test_sim800l(TFT_eSPI &disp) {
-    Serial.println("--- TEST SIM800L ---");
+    Serial.println("--- DEMARRAGE A7670E ---");
+
+    // Séquence d'allumage via la broche K (26)
+    pinMode(A7670_PWRKEY, OUTPUT);
+    digitalWrite(A7670_PWRKEY, LOW); 
+    delay(1000); // Impulsion d'une seconde pour allumer
+    digitalWrite(A7670_PWRKEY, HIGH);
+    
+    Serial.println("> Attente de l'initialisation du modem...");
+    delay(2000); // Laisse au module 3 secondes pour démarrer son OS interne
+
     Serial.println("> Envoi: AT");
     
     Serial1.setTX(SIM800_TX);
     Serial1.setRX(SIM800_RX);
-    Serial1.begin(9600); 
+
+    // Serial1.setRxBufferSize(2048); // Not supported on SerialUART
+    
+    Serial1.begin(115200); // Le A7670E communique à 115200 bauds !
+
+    Serial1.print("AT+IPR=9600\r");
+    Serial1.print("AT&W\r"); // Sauvegarde la configuration dans la mémoire du modem
+
+    delay(1000); // Attendre que le modem applique les changements
+
+    Serial1.begin(9600); // Repassage à 9600 bauds pour les tests (plus stable)
+
+
 }
 
 void run_sim_diagnostic(TFT_eSPI &disp) {
-    Serial.println("--- DIAGNOSTIC SIM800L ---");
+    Serial.println("--- DIAGNOSTIC A7670E ---");
 
     String cmds[] = {
-        "AT+CPIN?", // Test 1: La SIM est-elle lue et débloquée ?
-        "AT+CSQ",   // Test 2: Qualité du signal de l'antenne (0 à 31)
-        "AT+CREG?", // Test 3: Statut d'enregistrement sur le réseau
+        "AT+CPIN?",  // Test 1: La SIM est-elle lue et débloquée ?
+        "AT+CSQ",    // Test 2: Qualité du signal de l'antenne (0 à 31)
+        "AT+CREG?",  // Test 3: Statut d'enregistrement sur le réseau
         "AT+COPS?",  // Test 4: Nom de l'opérateur trouvé
-
-        "AT+CPIN?", // Test 1: La SIM est-elle lue et débloquée ?
+        "AT+CPSI?"   // Test 5: Info réseau spécifique 4G (LTE)
     };
 
     for(int i=0; i<5; i++) {
@@ -326,6 +349,8 @@ void hardware_init() {
     audio_pins_quiet();
     battery::begin();
 
+    mutex_init(&spi_mutex);
+
     // vreg_set_voltage(VREG_VOLTAGE_1_20);
     
     pinMode(13, OUTPUT); digitalWrite(13, HIGH);
@@ -338,33 +363,31 @@ void hardware_init() {
     digitalWrite(LCD_RST_PIN, HIGH); delay(150);
     
     tft.init();
-    tft.initDMA(); // Activation du DMA pour l'écran
     tft.setRotation(0);
-    
+
+    tft.initDMA();  
+        
     // ==========================================
     // DEBUT DES TESTS HARDWARE AU DEMARRAGE
     // ==========================================
     tft.fillScreen(TFT_BLACK);
-    
-    // Tracer un carré rouge brut pour s'assurer que l'écran est bien allumé.
-    // Si vous voyez le carré rouge mais AUCUN texte, c'est que les polices
-    // de TFT_eSPI sont désactivées dans votre User_Setup.h !
-    tft.fillRect(280, 0, 40, 40, TFT_RED); 
+    tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
+    tft.drawBitmap((320-61)/2, 480-45, epd_bitmap_marsisus_logo, 61, 18, TFT_WHITE);
+
+    // If it's not, convert it to the correct format before calling pushImage.
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2); 
     tft.setCursor(0, 0);
 
     
-    
+
     // test_audio_loopback(tft, 4000); 
 
-    // 1. Test du SIM800L
+    // 1. Test du Modem 4G (A7670E)
     test_sim800l(tft);
-    delay(200);
     // run_sim_diagnostic(tft);
     
-    tft.fillScreen(TFT_BLACK); // Nettoie l'ecran pour LVGL
     // ==========================================
 
     lv_init();

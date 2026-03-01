@@ -49,35 +49,7 @@ static inline void feed_watchdog() {
     watchdog_update();
 }
 
-// --- ANIMATION DE DEMARRAGE ---
-void playBootAnimation() {
-    // Fond noir
-    tft.fillScreen(TFT_BLACK);
-    
-    
-    const char* title = "PicOS";
-    int centerX = tft.width() / 2;
-    int centerY = tft.height() / 2 - 20;
 
-    // 2. Barre de chargement "System"
-    int barWidth = 160;
-    int barHeight = 6;
-    int barX = (tft.width() - barWidth) / 2;
-    int barY = centerY + 30;
-
-    tft.drawRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4, TFT_WHITE);
-    
-    // Remplissage progressif
-    for(int i = 0; i <= barWidth; i += 4) {
-        tft.fillRect(barX, barY, i, barHeight, TFT_GREEN);
-        
-        // Simulation de chargement non linéaire
-        if (i % 40 == 0) delay(100); 
-        else delay(5);
-    }
-    
-    
-}
 
 
 void loadApp(AppID id) {
@@ -185,7 +157,6 @@ void setup() {
     Serial.println("[BOOT] hardware_init ok");
 
 
-    playBootAnimation();
     
     // WiFi (auto-connect en arrière-plan)
     wifi_store::autoconnect_init();

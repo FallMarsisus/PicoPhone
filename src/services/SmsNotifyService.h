@@ -11,14 +11,48 @@ class SmsNotifyService : public IBackgroundService {
 private:
     bool fs_ok = false;
     String serial_buffer = "";
+    String accumulated_sms = ""; 
     
     // Machine d'état
     bool is_initialized = false;
     unsigned long last_init_try = 0;
     
     bool waiting_for_msg_text = false;
+    unsigned long msg_receive_start = 0;
     String current_incoming_number = "";
-    String current_msg_index = ""; // Si vide, c'est un message direct (Flash SMS)
+    String current_msg_index = "";
+
+    // NOUVEAU: Vrai parseur type CSV pour extraire proprement les expéditeurs
+    String get_csv_field(const String& line, int index) {
+        int current_idx = 0;
+        bool in_quotes = false;
+        String field = "";
+        
+        for (unsigned int i = 0; i < line.length(); i++) {
+            char c = line[i];
+            if (c == '"') {
+                in_quotes = !in_quotes; // On rentre ou on sort des guillemets
+            } else if (c == ',' && !in_quotes) {
+                if (current_idx == index) {
+                    field.trim();
+                    return field;
+                }
+                current_idx++;
+                field = "";
+            } else {
+                if (current_idx == index) {
+                    field += c;
+                }
+            }
+        }
+        
+        // Pour le tout dernier champ de la ligne
+        if (current_idx == index) {
+            field.trim();
+            return field;
+        }
+        return "";
+    }
 
     void upsert_contact(const String& number, const String& preview) {
         if (!fs_ok) return;
@@ -75,109 +109,147 @@ private:
         if (fw) { serializeJson(arr, fw); fw.close(); }
     }
 
+    // NOUVEAU: Fonction dédiée pour finaliser la réception d'un SMS et tout reset
+    void finalize_incoming_sms() {
+        time_t tnow; time(&tnow);
+        accumulated_sms.trim();
+        
+        Serial.print("[SMS] Texte complet recu de ");
+        Serial.print(current_incoming_number);
+        Serial.print(" : ");
+        Serial.println(accumulated_sms);
+
+        if (accumulated_sms.length() > 0 && current_incoming_number.length() > 0) {
+            upsert_contact(current_incoming_number, accumulated_sms);
+            append_message(current_incoming_number, accumulated_sms, (long)tnow);
+
+            char body[96];
+            strncpy(body, accumulated_sms.c_str(), sizeof(body) - 1);
+            body[sizeof(body) - 1] = '\0';
+            notifications::push((String(LV_SYMBOL_KEYBOARD) + " Nouveau SMS").c_str(), current_incoming_number.c_str(), body);
+        }
+
+        // On efface le SMS de la SIM si on l'a lu via l'index
+        if (current_msg_index.length() > 0) {
+            send_at("AT+CMGD=" + current_msg_index);
+        }
+        
+        // Reset des variables
+        waiting_for_msg_text = false;
+        accumulated_sms = ""; 
+        current_msg_index = "";
+        current_incoming_number = "";
+    }
+
 public:
     const char* name() const override { return "SmsNotifyService"; }
+
+    void send_at(const String &cmd) {
+        Serial.print("[SMS->GSM] ");
+        Serial.println(cmd);
+        Serial1.print(cmd);
+        Serial1.print("\r"); 
+    }
 
     void begin() override {
         fs_ok = LittleFS.begin();
         is_initialized = false;
     }
 
-    void update1() override {
-        // Sécurité au démarrage si le module était déjà allumé
+void update1() override {
+        // Initialisation du module
         if (!is_initialized && millis() - last_init_try > 6000) {
-            Serial1.println("ATE0"); delay(100);
-            Serial1.println("AT+CMEE=2"); delay(100); // <-- MAGIE : Active les erreurs détaillées en texte !
-            Serial1.println("AT+CSCS=\"GSM\""); delay(100); 
-            Serial1.println("AT+CMGF=1"); delay(100);
-            Serial1.println("AT+CNMI=2,1,0,0,0");
+            send_at("ATE0"); delay(100);
+            send_at("AT+CMEE=2"); delay(100); 
+            send_at("AT+CSCS=\"GSM\""); delay(100); 
+            send_at("AT+CMGF=1"); delay(100);
+            send_at("AT+CNMI=2,1,0,0,0"); delay(100);
+            
+            // NOUVEAU : On ordonne au module d'arrêter de spammer les statuts de connexion (+CGEV) !
+            send_at("AT+CGEREP=0,0"); delay(100);
+            
             is_initialized = true;
+            last_init_try = millis();
+        }
+
+        // Timeout de sécurité (3 secondes sans rien recevoir)
+        if (waiting_for_msg_text && (millis() - msg_receive_start > 3000)) {
+            Serial.println("[SMS] Timeout attente texte, finalisation...");
+            finalize_incoming_sms();
         }
 
         while (Serial1.available()) {
             char c = Serial1.read();
+
             if (c == '\n') {
                 serial_buffer.trim();
-                if (serial_buffer.length() == 0) continue;
-
-                Serial.print("[RX GSM] ");
-                Serial.println(serial_buffer);
-
-                if (serial_buffer == "SMS Ready" || serial_buffer == "Call Ready") {
-                    Serial.println("[SMS] Module pret ! Configuration...");
-                    Serial1.println("ATE0"); 
-                    delay(200);
-                    Serial1.println("AT+CMEE=2"); // <-- MAGIE ICI AUSSI
-                    delay(200);
-                    Serial1.println("AT+CSCS=\"GSM\""); 
-                    delay(200);
-                    Serial1.println("AT+CMGF=1"); 
-                    delay(200);
-                    Serial1.println("AT+CNMI=2,1,0,0,0"); 
-                    is_initialized = true;
+                
+                // --- SÉCURITÉ ANTI-DÉBORDEMENT ---
+                if (waiting_for_msg_text && (serial_buffer.startsWith("+CMTI:") || serial_buffer.startsWith("+CMT:") || serial_buffer.startsWith("+CMGR:"))) {
+                    Serial.println("[SMS] SÉCURITÉ : OK manqué, sauvegarde forcée du SMS précédent !");
+                    finalize_incoming_sms(); 
                 }
-                else if (waiting_for_msg_text && serial_buffer != "OK") {
-                    time_t tnow; time(&tnow);
-                    
-                    Serial.println("[SMS] Texte recu et sauvegarde !");
-                    upsert_contact(current_incoming_number, serial_buffer);
-                    append_message(current_incoming_number, serial_buffer, (long)tnow);
 
-                    char body[96];
-                    strncpy(body, serial_buffer.c_str(), sizeof(body) - 1);
-                    body[sizeof(body) - 1] = '\0';
-                    notifications::push((String(LV_SYMBOL_KEYBOARD) + " Nouveau SMS").c_str(), current_incoming_number.c_str(), body);
-
-                    // On efface le SMS de la carte SIM seulement s'il y était stocké !
-                    if (current_msg_index.length() > 0) {
-                        Serial1.print("AT+CMGD=");
-                        Serial1.println(current_msg_index);
+                if (waiting_for_msg_text) {
+                    if (serial_buffer == "OK") {
+                        finalize_incoming_sms(); // Fin normale du SMS
                     }
-                    waiting_for_msg_text = false;
+                    // NOUVEAU : On ignore les URC réseau qui viendraient polluer le texte
+                    else if (serial_buffer.startsWith("+CGEV:") || serial_buffer.startsWith("+CREG:") || serial_buffer.startsWith("+CEREG:")) {
+                        Serial.println("[SMS] Ignoré : Notification réseau pendant la lecture du SMS");
+                    }
+                    else if (serial_buffer.length() > 0) { // On évite d'empiler des sauts de lignes vides inutiles
+                        if (accumulated_sms.length() > 0) {
+                            accumulated_sms += "\n"; 
+                        }
+                        accumulated_sms += serial_buffer;
+                        msg_receive_start = millis(); // Reset du timeout
+                    }
                 }
-                // --- NOUVEAU : DÉTECTION DES FLASH SMS (Twitch, Auth, etc) ---
-                else if (serial_buffer.startsWith("+CMT:")) {
-                    Serial.println("[SMS] Flash SMS / Message direct recu !");
-                    int first_quote = serial_buffer.indexOf('"');
-                    if (first_quote > 0) {
-                        int num_start = first_quote + 1;
-                        int num_end = serial_buffer.indexOf('"', num_start);
-                        if (num_start > 0 && num_end > num_start) {
-                            current_incoming_number = serial_buffer.substring(num_start, num_end);
-                            current_msg_index = ""; // Il n'y a pas d'index, il n'est pas sur la SIM
-                            waiting_for_msg_text = true; // La ligne suivante sera le code Twitch
+                
+                // --- TRAITEMENT DES COMMANDES ---
+                if (!waiting_for_msg_text && serial_buffer.length() > 0 && serial_buffer != "OK") {
+                    Serial.print("[RX GSM] ");
+                    Serial.println(serial_buffer);
+
+                    if (serial_buffer == "SMS Ready" || serial_buffer == "Call Ready" || serial_buffer == "PB DONE") {
+                        Serial.println("[SMS] Module pret ! Configuration...");
+                        send_at("ATE0"); delay(200);
+                        send_at("AT+CMGF=1"); delay(200);
+                        send_at("AT+CNMI=2,1,0,0,0"); delay(200);
+                        send_at("AT+CGEREP=0,0"); // Rappel au cas où
+                        is_initialized = true;
+                    }
+                    else if (serial_buffer.startsWith("+CMT:")) {
+                        String data = serial_buffer.substring(5); 
+                        current_incoming_number = get_csv_field(data, 0); 
+                        current_msg_index = ""; 
+                        accumulated_sms = "";
+                        waiting_for_msg_text = true; 
+                        msg_receive_start = millis();
+                    }
+                    else if (serial_buffer.startsWith("+CMTI:")) {
+                        String data = serial_buffer.substring(6);
+                        current_msg_index = get_csv_field(data, 1); 
+                        if (current_msg_index.length() > 0) {
+                            send_at("AT+CMGR=" + current_msg_index);
                         }
                     }
-                }
-                // --- DÉTECTION DES SMS NORMAUX (Stockés sur SIM) ---
-                else if (serial_buffer.startsWith("+CMTI:")) {
-                    int comma = serial_buffer.indexOf(',');
-                    if (comma > 0) {
-                        current_msg_index = serial_buffer.substring(comma + 1);
-                        current_msg_index.trim();
-                        Serial1.print("AT+CMGR=");
-                        Serial1.println(current_msg_index);
-                    }
-                }
-                else if (serial_buffer.startsWith("+CMGR:")) {
-                    int first_quote = serial_buffer.indexOf(',', 7);
-                    if (first_quote > 0) {
-                        int num_start = serial_buffer.indexOf('"', first_quote) + 1;
-                        int num_end = serial_buffer.indexOf('"', num_start);
-                        if (num_start > 0 && num_end > num_start) {
-                            current_incoming_number = serial_buffer.substring(num_start, num_end);
-                            waiting_for_msg_text = true; 
-                        }
+                    else if (serial_buffer.startsWith("+CMGR:")) {
+                        String data = serial_buffer.substring(6);
+                        current_incoming_number = get_csv_field(data, 1); 
+                        accumulated_sms = "";
+                        waiting_for_msg_text = true; 
+                        msg_receive_start = millis();
                     }
                 }
                 serial_buffer = "";
             } 
-            else if (c == '>') {
-                Serial.println("[RX GSM] PROMPT > DETECTE");
-                serial_buffer = ""; 
-            } 
             else if (c != '\r') {
                 serial_buffer += c;
+                if (serial_buffer == "> ") {
+                    serial_buffer = ""; 
+                }
             }
         }
     }
