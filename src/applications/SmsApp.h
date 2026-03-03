@@ -4,10 +4,11 @@
 #include "App.h"
 #include "AppManager.h"
 #include "../plugins/lv_t9_keyboard.h"
-#include <LittleFS.h>     
-#include <ArduinoJson.h>  
+#include <LittleFS.h>
+#include <ArduinoJson.h>
 #include <vector>
 #include <time.h>
+#include "../system/LTE.h"
 
 #define MAX_HISTORY 20
 #define COL_BG_LIST  0x1C1C1E // Noir iOS
@@ -40,9 +41,10 @@ private:
     int current_contact_idx = -1; 
 
     // --- Communication Inter-Coeurs ---
-    volatile bool out_pending = false;
+    volatile bool out_pending       = false; // Core 0 set, Core 1 consomme
+    volatile bool send_scheduled    = false; // envoye a LTE, attente resultat
     char out_number[32] = {0};
-    char out_text[256] = {0};
+    char out_text[256]  = {0};
 
     enum NetEvtType : uint8_t { EVT_SEND_OK = 1, EVT_SEND_FAIL = 2 };
     struct NetEvt { uint8_t type; char text[256]; };
@@ -430,45 +432,32 @@ public:
     }
 
 void update1() override {
-        // Core 1 : Routines d'envoi AT
-        if (out_pending) {
-            Serial.println("[SmsApp] Tentative d'envoi...");
+        // Core 1 : Envoi SMS via LTE (gestionnaire exclusif de Serial1)
 
-            // 1. ECHAP (0x1B) : Annule tout SMS précédent resté coincé
-            Serial1.write(27); 
-            delay(300);
+        // Etape 1 : scheduler l'envoi aupres de LTE
+        if (out_pending && !send_scheduled) {
+            Serial.printf("[SmsApp] scheduling SMS vers '%s'\n", out_number);
+            if (LTE::scheduleSendSms(out_number, out_text)) {
+                send_scheduled = true;
+                out_pending    = false;
+            } else {
+                Serial.println("[SmsApp] LTE occupe, retry au prochain tour");
+            }
+            return;
+        }
 
-            // 2. Préparation du destinataire
-            Serial1.print("AT+CMGS=\"");
-            Serial1.print(out_number);
-            Serial1.print("\"\r"); 
-            
-            // 3. Attente du prompt '> '
-            delay(500); 
-            
-            // 4. On écrit le texte
-            Serial1.print(out_text);
-            delay(100);
-            
-            // 5. On envoie CTRL+Z (char 26)
-            Serial1.write(26); 
+        // Etape 2 : attendre que LTE ait termine l'envoi
+        if (send_scheduled && LTE::isSendDone()) {
+            bool ok = LTE::getSendResult();
+            Serial.printf("[SmsApp] Resultat envoi SMS: %s\n", ok ? "OK" : "ECHEC");
 
-            Serial.println("[SmsApp] Message envoye au module, attente reseau...");
-
-            // Attendre la validation du réseau
-            delay(1000); 
-            
             NetEvt ev{};
-            ev.type = EVT_SEND_OK;
-            
-            // --- SÉCURITÉ 3 : Même chose ici pour la communication inter-coeurs ---
+            ev.type = ok ? EVT_SEND_OK : EVT_SEND_FAIL;
             strncpy(ev.text, out_text, sizeof(ev.text) - 1);
             ev.text[sizeof(ev.text) - 1] = '\0';
-            
             netq_push(ev);
 
-            // On libère le verrou SEULEMENT quand tout est fini !
-            out_pending = false;
+            send_scheduled = false;
         }
     }
 

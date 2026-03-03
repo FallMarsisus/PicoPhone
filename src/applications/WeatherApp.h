@@ -8,6 +8,7 @@
 #include <math.h> 
 #include <vector>
 #include <pico/mutex.h>
+#include <hardware/watchdog.h>
 #include "../system/LTE.h"
 
 // --- CONFIG ---
@@ -235,9 +236,10 @@ public:
     void update() override {
         // Est-ce que le Core 1 a livré le colis ?
         if (has_new_data) {
-            
-            // On récupère le colis (Verrouillage rapide)
-            mutex_enter_blocking(&weatherMutex);
+            // On récupère le colis sans bloquer le Core 0 (anti-watchdog)
+            if (!mutex_try_enter(&weatherMutex, nullptr)) {
+                return;
+            }
             WeatherData data = sharedData; // Copie
             has_new_data = false;
             mutex_exit(&weatherMutex);
@@ -268,13 +270,31 @@ public:
     // --- CORE 1 : TRAVAIL RÉSEAU (Lent) ---
     void update1() override {
         if (!refresh_requested) return;
+        watchdog_update();
 
         bool use_wifi = (WiFi.status() == WL_CONNECTED);
-        bool use_lte  = (!use_wifi && LTE::isEnabled() && !LTE::isAirplaneMode());
-        if (!use_wifi && !use_lte) return;
+        bool use_lte  = (!use_wifi && LTE::isReadyForData());
+        if (!use_wifi && !use_lte) {
+            WeatherData fail;
+            fail.success = false;
+            unsigned long t0 = millis();
+            while (millis() - t0 < 30) {
+                watchdog_update();
+                if (mutex_try_enter(&weatherMutex, nullptr)) {
+                    sharedData = std::move(fail);
+                    has_new_data = true;
+                    mutex_exit(&weatherMutex);
+                    break;
+                }
+                delay(1);
+            }
+            refresh_requested = false;
+            return;
+        }
 
         WeatherData newData;
         newData.success = false;
+        newData.forecastList.reserve(8);
 
         String url1 = "http://api.openweathermap.org/data/2.5/weather?q=" CITY_NAME "," COUNTRY_CODE "&appid=" API_KEY "&units=metric&lang=fr";
         String url2 = "http://api.openweathermap.org/data/2.5/forecast?q=" CITY_NAME "," COUNTRY_CODE "&appid=" API_KEY "&units=metric&cnt=8";
@@ -285,14 +305,17 @@ public:
             http.setTimeout(8000);
             http.begin(url1);
             int httpCode = http.GET();
+            watchdog_update();
             if (httpCode == 200) {
                 String payload = http.getString();
                 JsonDocument doc;
-                deserializeJson(doc, payload);
-                newData.cityName     = doc["name"].as<String>();
-                newData.currentTemp  = doc["main"]["temp"];
-                newData.currentIcon  = doc["weather"][0]["icon"].as<String>();
-                newData.success      = true;
+                auto err = deserializeJson(doc, payload);
+                if (!err) {
+                    newData.cityName     = doc["name"].as<String>();
+                    newData.currentTemp  = doc["main"]["temp"];
+                    newData.currentIcon  = doc["weather"][0]["icon"].as<String>();
+                    newData.success      = true;
+                }
             }
             http.end();
 
@@ -301,6 +324,7 @@ public:
                 http2.setTimeout(8000);
                 http2.begin(url2);
                 int httpCode2 = http2.GET();
+                watchdog_update();
                 if (httpCode2 == 200) {
                     WiFiClient* stream = http2.getStreamPtr();
                     JsonDocument filter;
@@ -308,13 +332,16 @@ public:
                     filter["list"][0]["main"]["temp"] = true;
                     filter["list"][0]["weather"][0]["icon"] = true;
                     JsonDocument doc;
-                    deserializeJson(doc, *stream, DeserializationOption::Filter(filter));
-                    for (JsonObject item : doc["list"].as<JsonArray>()) {
-                        ForecastItem fItem;
-                        fItem.dt   = item["dt"];
-                        fItem.temp = item["main"]["temp"];
-                        fItem.icon = item["weather"][0]["icon"].as<String>();
-                        newData.forecastList.push_back(fItem);
+                    auto err = deserializeJson(doc, *stream, DeserializationOption::Filter(filter));
+                    if (!err) {
+                        for (JsonObject item : doc["list"].as<JsonArray>()) {
+                            watchdog_update();
+                            ForecastItem fItem;
+                            fItem.dt   = item["dt"];
+                            fItem.temp = item["main"]["temp"];
+                            fItem.icon = item["weather"][0]["icon"].as<String>();
+                            newData.forecastList.push_back(fItem);
+                        }
                     }
                 }
                 http2.end();
@@ -323,33 +350,58 @@ public:
             // --- Chemin 4G (AT+HTTP) ---
             String payload = LTE::httpGetBlocking(url1);
             if (payload.length() > 0) {
+                JsonDocument filter;
+                filter["name"] = true;
+                filter["main"]["temp"] = true;
+                filter["weather"][0]["icon"] = true;
                 JsonDocument doc;
-                deserializeJson(doc, payload);
-                newData.cityName    = doc["name"].as<String>();
-                newData.currentTemp = doc["main"]["temp"];
-                newData.currentIcon = doc["weather"][0]["icon"].as<String>();
-                newData.success     = true;
+                auto err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+                if (!err) {
+                    newData.cityName    = doc["name"].as<String>();
+                    newData.currentTemp = doc["main"]["temp"];
+                    newData.currentIcon = doc["weather"][0]["icon"].as<String>();
+                    newData.success     = true;
+                }
             }
             if (newData.success) {
                 String payload2 = LTE::httpGetBlocking(url2);
                 if (payload2.length() > 0) {
+                    JsonDocument filter;
+                    filter["list"][0]["dt"] = true;
+                    filter["list"][0]["main"]["temp"] = true;
+                    filter["list"][0]["weather"][0]["icon"] = true;
                     JsonDocument doc;
-                    deserializeJson(doc, payload2);
-                    for (JsonObject item : doc["list"].as<JsonArray>()) {
-                        ForecastItem fItem;
-                        fItem.dt   = item["dt"];
-                        fItem.temp = item["main"]["temp"];
-                        fItem.icon = item["weather"][0]["icon"].as<String>();
-                        newData.forecastList.push_back(fItem);
+                    auto err = deserializeJson(doc, payload2, DeserializationOption::Filter(filter));
+                    if (!err) {
+                        for (JsonObject item : doc["list"].as<JsonArray>()) {
+                            watchdog_update();
+                            ForecastItem fItem;
+                            fItem.dt   = item["dt"];
+                            fItem.temp = item["main"]["temp"];
+                            fItem.icon = item["weather"][0]["icon"].as<String>();
+                            newData.forecastList.push_back(fItem);
+                        }
                     }
                 }
             }
         }
 
-        mutex_enter_blocking(&weatherMutex);
-        sharedData   = newData;
-        has_new_data = true;
-        mutex_exit(&weatherMutex);
+        bool posted = false;
+        unsigned long t0 = millis();
+        while (millis() - t0 < 50) {
+            watchdog_update();
+            if (mutex_try_enter(&weatherMutex, nullptr)) {
+                sharedData = std::move(newData);
+                has_new_data = true;
+                mutex_exit(&weatherMutex);
+                posted = true;
+                break;
+            }
+            delay(1);
+        }
+        if (!posted) {
+            has_new_data = false;
+        }
         refresh_requested = false;
     }
 };

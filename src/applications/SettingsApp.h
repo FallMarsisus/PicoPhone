@@ -5,6 +5,7 @@
 #include "AppManager.h"
 #include "../system/Settings.h"
 #include <WiFi.h>
+#include <RP2040Support.h>
 
 class SettingsApp : public App {
 private:
@@ -92,6 +93,7 @@ private:
 
     static void bootloader_event(lv_event_t* e) {
         // Redémarrage en mode bootloader
+        delay(100); // Délai pour éviter les rebonds
         rp2040.rebootToBootloader();
     }
     

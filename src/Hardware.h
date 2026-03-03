@@ -144,32 +144,66 @@ void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
 void test_sim800l(TFT_eSPI &disp) {
     Serial.println("--- DEMARRAGE A7670E ---");
 
-    // Séquence d'allumage via la broche K (26)
-    pinMode(A7670_PWRKEY, OUTPUT);
-    digitalWrite(A7670_PWRKEY, LOW); 
-    delay(1000); // Impulsion d'une seconde pour allumer
-    digitalWrite(A7670_PWRKEY, HIGH);
-    
-    Serial.println("> Attente de l'initialisation du modem...");
-    delay(2000); // Laisse au module 3 secondes pour démarrer son OS interne
-
-    Serial.println("> Envoi: AT");
-    
+    // Initialiser Serial1 pour sonder si le modem est déjà actif
     Serial1.setTX(SIM800_TX);
     Serial1.setRX(SIM800_RX);
+    pinMode(A7670_PWRKEY, OUTPUT);
+    digitalWrite(A7670_PWRKEY, HIGH); // assure état neutre
 
-    // Serial1.setRxBufferSize(2048); // Not supported on SerialUART
-    
-    Serial1.begin(115200); // Le A7670E communique à 115200 bauds !
+    // --- Probe 1 : tenter à 115200 ---
+    Serial1.begin(115200);
+    while (Serial1.available()) Serial1.read();
+    Serial1.println("AT");
+    delay(600);
+    String probe = "";
+    while (Serial1.available()) probe += (char)Serial1.read();
+    bool already_on  = (probe.indexOf("OK") != -1);
+    bool need_baud   = already_on; // à 115200 → il faudra basculer à 9600
 
-    Serial1.print("AT+IPR=9600\r");
-    Serial1.print("AT&W\r"); // Sauvegarde la configuration dans la mémoire du modem
+    if (!already_on) {
+        // --- Probe 2 : tenter à 9600 (modem déjà configuré) ---
+        Serial1.begin(9600);
+        while (Serial1.available()) Serial1.read();
+        Serial1.println("AT");
+        delay(600);
+        probe = "";
+        while (Serial1.available()) probe += (char)Serial1.read();
+        if (probe.indexOf("OK") != -1) {
+            already_on = true;
+            need_baud  = false; // déjà à 9600
+            Serial.println("> Modem déjà actif à 9600 baud");
+        } else {
+            Serial1.begin(115200); // Repartir en 115200 pour allumage
+        }
+    } else {
+        Serial.println("> Modem déjà actif à 115200 baud");
+    }
 
-    delay(1000); // Attendre que le modem applique les changements
+    if (!already_on) {
+        // Modem éteint : pulse PWRKEY LOW 1.5 s pour l'allumer
+        // (< 3 s = allumage uniquement, pas d'extinction)
+        Serial.println("> Allumage via PWRKEY...");
+        digitalWrite(A7670_PWRKEY, LOW);
+        delay(1500);
+        digitalWrite(A7670_PWRKEY, HIGH);
 
-    Serial1.begin(9600); // Repassage à 9600 bauds pour les tests (plus stable)
+        Serial.println("> Attente boot modem (5s)...");
+        delay(5000); // Laisser le temps au modem de démarrer complètement
+        need_baud = true; // modem démarre à 115200 par défaut
+    }
 
+    if (need_baud) {
+        // Basculer le modem à 9600 et sauvegarder
+        Serial1.begin(115200);
+        Serial1.println("AT+IPR=9600");
+        delay(400);
+        Serial1.println("AT&W");
+        delay(400);
+        Serial1.begin(9600);
+        delay(300);
+    }
 
+    Serial.println("> Envoi: AT");
 }
 
 void run_sim_diagnostic(TFT_eSPI &disp) {

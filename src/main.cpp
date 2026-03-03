@@ -235,12 +235,12 @@ void setup1() {
 
 void loop1() {
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) return;
-    LTE::update();
 
-    // Synchro heure via modem si WiFi pas dispo
-    if (WiFi.status() != WL_CONNECTED) {
-        LTE::update();
-    }
+    watchdog_update();
+
+    // LTE est le SEUL gestionnaire de Serial1 – un seul appel par tour
+    // (synchro heure + SMS entrants + polling signal geres en interne)
+    LTE::update();
 
     core1_heartbeat = millis();
 
@@ -254,6 +254,8 @@ void loop1() {
         if (currentApp) currentApp->update1();
         mutex_exit(&app_switch_mutex);
     }
+
+    watchdog_update();
 
     yield();
     delay(5);
