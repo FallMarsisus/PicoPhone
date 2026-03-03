@@ -65,13 +65,46 @@ private:
     static volatile bool    s_sms_send_pending;
     static volatile bool    s_sms_send_result;
 
+    // ── CMTI différé : évite les appels sendAT() récursifs ──
+    // Petite queue pour ne pas perdre les SMS si plusieurs arrivent simultanément
+    static constexpr uint8_t CMTI_Q_SIZE = 4;
+    static int8_t            s_cmti_q[CMTI_Q_SIZE]; // -1 = vide
+    static uint8_t           s_cmti_q_head;
+    static uint8_t           s_cmti_q_tail;
+
+    // ── Helpers queue CMTI ──
+    static void pushCmtiIdx(int idx) {
+        uint8_t next = (s_cmti_q_tail + 1) % CMTI_Q_SIZE;
+        if (next == s_cmti_q_head) return; // queue pleine, index perdu
+        s_cmti_q[s_cmti_q_tail] = (int8_t)idx;
+        s_cmti_q_tail = next;
+    }
+    static bool popCmtiIdx(int& out) {
+        if (s_cmti_q_head == s_cmti_q_tail) return false;
+        out = s_cmti_q[s_cmti_q_head];
+        s_cmti_q_head = (s_cmti_q_head + 1) % CMTI_Q_SIZE;
+        return true;
+    }
+
     // ── Helper bloquant SÉCURISÉ : envoie une commande AT (Core 1) ──────────
     static String sendAT(const String& cmd, unsigned long timeout_ms = 1500) {
         while (Serial1.available()) {
             char c = Serial1.read();
             if (c == '\n') {
                 s_line_buf.trim();
-                if (s_line_buf.length() > 0) dispatchLine(s_line_buf);
+                if (s_line_buf.length() > 0) {
+                    if (s_line_buf.startsWith("+CMTI:")) {
+                        // Ne pas appeler dispatchLine/sendAT ici (récursion) :
+                        // on extrait l'index et on l'enfile pour traitement ultérieur.
+                        int comma = s_line_buf.indexOf(',', 6);
+                        if (comma != -1) {
+                            String idx = s_line_buf.substring(comma + 1); idx.trim();
+                            pushCmtiIdx(idx.toInt());
+                        }
+                    } else {
+                        dispatchLine(s_line_buf);
+                    }
+                }
                 s_line_buf = "";
             } else if (c != '\r') {
                 s_line_buf += c;
@@ -222,7 +255,8 @@ private:
 
         // --- ÉTAPE 3 : ATTENTE DU RÉVEIL DÉFINITIF ---
         int retry = 1;
-        while (true) {
+        const int MAX_WAKE_RETRIES = 20; // ~60s max (20 × 3s)
+        while (retry <= MAX_WAKE_RETRIES) {
             watchdog_update();
             Serial1.print('\r'); delay(50);
             Serial1.println("AT");
@@ -232,9 +266,15 @@ private:
             while(Serial1.available()) r += (char)Serial1.read();
             if (r.indexOf("OK") != -1) break; // Il est en vie !
 
-            Logger::printf("[LTE] Attente du réveil du modem... (Tentative %d)\n", retry);
+            Logger::printf("[LTE] Attente du réveil du modem... (Tentative %d/%d)\n", retry, MAX_WAKE_RETRIES);
             for(int i=0; i<30; i++) { watchdog_update(); delay(100); } // Pause de 3s
             retry++;
+        }
+
+        if (retry > MAX_WAKE_RETRIES) {
+            Logger::println("[LTE] RECOVERY: modem toujours injoignable après 60s, abandon.");
+            s_last_recover_ms = millis();
+            return;
         }
 
         // --- ÉTAPE 4 : RECONFIGURATION À ZÉRO ---
@@ -344,32 +384,11 @@ private:
         }
 
         if (line.startsWith("+CMTI:")) {
-            String data = line.substring(6);
-            int comma = data.indexOf(',');
+            int comma = line.indexOf(',', 6);
             if (comma != -1) {
-                String idx = data.substring(comma + 1); idx.trim();
-                String resp = sendAT("AT+CMGR=" + idx, 3000);
-                
-                int cmgr_pos = resp.indexOf("+CMGR:");
-                if (cmgr_pos != -1) {
-                    int nl1 = resp.indexOf('\n', cmgr_pos);
-                    if (nl1 != -1) {
-                        String header = resp.substring(cmgr_pos + 6, nl1); header.trim();
-                        String number = csvField(header, 1); number.trim();
-
-                        int text_start = nl1 + 1;
-                        while (text_start < (int)resp.length() && resp[text_start] == '\r') text_start++;
-                        int nl2 = resp.indexOf('\n', text_start);
-                        String text = (nl2 != -1) ? resp.substring(text_start, nl2) : resp.substring(text_start);
-                        text.trim();
-
-                        if (number.length() > 0 && text.length() > 0) {
-                            time_t tnow; time(&tnow);
-                            pushIncomingSms(number, text, (long)tnow);
-                        }
-                    }
-                }
-                sendAT("AT+CMGD=" + idx, 1000);
+                String idx = line.substring(comma + 1); idx.trim();
+                // Différer la lecture via la queue pour éviter la récursion dans sendAT()
+                pushCmtiIdx(idx.toInt());
             }
             return;
         }
@@ -462,6 +481,7 @@ private:
         }
 
         s_sms_send_result  = (send_resp.indexOf("+CMGS:") != -1 || send_resp.indexOf("OK") != -1);
+        __sync_synchronize(); // Garantit que s_sms_send_result est visible avant s_sms_send_pending = false
         s_sms_send_pending = false;
     }
 
@@ -488,6 +508,8 @@ public:
         s_sms_q_tail       = 0;
         s_sms_rx_active    = false;
         s_sms_send_pending = false;
+        s_cmti_q_head      = 0;
+        s_cmti_q_tail      = 0;
 
         Logger::begin(); 
         Logger::println("[LTE] Initialisation au démarrage...");
@@ -741,7 +763,7 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
                 String line = s_line_buf; s_line_buf = ""; line.trim();
                 if (line.length() == 0) continue;
 
-                if (s_sms_rx_active || line.startsWith("+CMT") || line.startsWith("+CGE") || line.startsWith("+CEREG") || line.startsWith("+CREG") || line.startsWith("+CGREG") || line == "SMS Ready" || line == "Call Ready" || line == "PB DONE") {
+                if (s_sms_rx_active || line.startsWith("+CMT") || line.startsWith("+CMTI") || line.startsWith("+CGE") || line.startsWith("+CEREG") || line.startsWith("+CREG") || line.startsWith("+CGREG") || line == "SMS Ready" || line == "Call Ready" || line == "PB DONE") {
                     dispatchLine(line);
                 } else {
                     s_cmd_resp += line + "\n";
@@ -780,6 +802,33 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
             doSendSms();
             last_check = millis();
             return;
+        }
+
+        // Traitement différé des SMS notifiés via +CMTI: (évite la récursion dans sendAT)
+        if (state == 0 && !s_sms_send_pending) {
+            int cmti_idx = -1;
+            if (popCmtiIdx(cmti_idx)) {
+                String resp = sendAT("AT+CMGR=" + String(cmti_idx), 3000);
+                int cmgr_pos = resp.indexOf("+CMGR:");
+                if (cmgr_pos != -1) {
+                    int nl1 = resp.indexOf('\n', cmgr_pos);
+                    if (nl1 != -1) {
+                        String hdr = resp.substring(cmgr_pos + 6, nl1); hdr.trim();
+                        String number = csvField(hdr, 1); number.trim();
+                        int text_start = nl1 + 1;
+                        while (text_start < (int)resp.length() && resp[text_start] == '\r') text_start++;
+                        int nl2 = resp.indexOf('\n', text_start);
+                        String text = (nl2 != -1) ? resp.substring(text_start, nl2) : resp.substring(text_start);
+                        text.trim();
+                        if (number.length() > 0 && text.length() > 0) {
+                            time_t tnow; time(&tnow);
+                            pushIncomingSms(number, text, (long)tnow);
+                        }
+                    }
+                }
+                sendAT("AT+CMGD=" + String(cmti_idx), 1000);
+                return;
+            }
         }
 
         if (state == 0) {
@@ -969,5 +1018,8 @@ unsigned long LTE::s_sms_rx_timeout  = 0;
 LTE::SmsSendReq  LTE::s_sms_send_req    = {};
 volatile bool    LTE::s_sms_send_pending = false;
 volatile bool    LTE::s_sms_send_result  = false;
+int8_t           LTE::s_cmti_q[LTE::CMTI_Q_SIZE] = {};
+uint8_t          LTE::s_cmti_q_head = 0;
+uint8_t          LTE::s_cmti_q_tail = 0;
 
 #endif

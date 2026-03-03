@@ -9,6 +9,9 @@
 #include <BackgroundAudio.h>
 #include <I2S.h>
 
+LV_FONT_DECLARE(lv_font_montserrat_14);
+LV_FONT_DECLARE(lv_font_montserrat_18);
+
 // ======================================================
 // CONFIG EXACTE DE L'EXEMPLE
 // ======================================================
@@ -39,10 +42,11 @@ private:
     volatile bool force_stop     = false;
 
     // --- VARIABLES EXACTES DE L'EXEMPLE EARLE ---
+    static constexpr unsigned long PUMP_TIMEOUT_MS = 50; // Max ms par cycle de pompage
     uint8_t buff[512]; 
     int icyMetaInt = 0;
     int icyDataLeft = 0;
-    String url = "https://ice.audionow.com/485BBCWorld.mp3"; // Station de test Earle
+    String url = "https://ice.audionow.com/485BBCWorld.mp3"; // Station de test
 
     // --------------------------------------------------
     // UI CALLBACKS
@@ -96,37 +100,54 @@ public:
         force_stop = false;
 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x1a1a2e), 0);
+        lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x000000), 0);
 
-        lv_obj_t* btn_back = lv_btn_create(main_bg);
+        // Header (style Settings/Timer)
+        lv_obj_t* header = lv_obj_create(main_bg);
+        lv_obj_set_size(header, 320, 50);
+        lv_obj_set_style_bg_color(header, lv_color_hex(0x1C1C1E), 0);
+        lv_obj_set_style_border_width(header, 0, 0);
+        lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* btn_back = lv_btn_create(header);
         lv_obj_set_size(btn_back, 40, 40);
-        lv_obj_align(btn_back, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, -10, 0);
         lv_obj_set_style_bg_opa(btn_back, LV_OPA_TRANSP, 0);
         lv_obj_add_event_cb(btn_back, go_back_event, LV_EVENT_CLICKED, this);
         lv_obj_t* l_back = lv_label_create(btn_back);
         lv_label_set_text(l_back, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_color(l_back, lv_color_white(), 0);
+        lv_obj_set_style_text_color(l_back, lv_color_hex(0x007AFF), 0);
         lv_obj_center(l_back);
 
+        lv_obj_t* title = lv_label_create(header);
+        lv_label_set_text(title, "Radio");
+        lv_obj_set_style_text_color(title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+        lv_obj_center(title);
+
         lbl_station = lv_label_create(main_bg);
-        lv_label_set_text(lbl_station, "BBC World (Earle)");
+        lv_label_set_text(lbl_station, "BBC World");
         lv_obj_set_style_text_color(lbl_station, lv_color_white(), 0);
-        lv_obj_align(lbl_station, LV_ALIGN_TOP_MID, 0, 40);
+        lv_obj_set_style_text_font(lbl_station, &lv_font_montserrat_18, 0);
+        lv_obj_align(lbl_station, LV_ALIGN_TOP_MID, 0, 70);
 
         lbl_status = lv_label_create(main_bg);
         lv_label_set_text(lbl_status, "Pret");
-        lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x888888), 0);
-        lv_obj_align(lbl_status, LV_ALIGN_TOP_MID, 0, 80);
+        lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x8E8E93), 0);
+        lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_14, 0);
+        lv_obj_align(lbl_status, LV_ALIGN_TOP_MID, 0, 105);
 
         btn_play = lv_btn_create(main_bg);
-        lv_obj_set_size(btn_play, 70, 70);
+        lv_obj_set_size(btn_play, 80, 80);
         lv_obj_set_style_radius(btn_play, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(btn_play, lv_color_hex(0xe94560), 0);
-        lv_obj_align(btn_play, LV_ALIGN_CENTER, 0, 40);
+        lv_obj_set_style_bg_color(btn_play, lv_color_hex(0x0A84FF), 0);
+        lv_obj_align(btn_play, LV_ALIGN_CENTER, 0, 20);
         lv_obj_add_event_cb(btn_play, btn_play_event, LV_EVENT_CLICKED, this);
 
         lbl_play_icon = lv_label_create(btn_play);
         lv_label_set_text(lbl_play_icon, LV_SYMBOL_PLAY);
+        lv_obj_set_style_text_color(lbl_play_icon, lv_color_white(), 0);
         lv_obj_center(lbl_play_icon);
     }
 
@@ -225,8 +246,10 @@ public:
                 return;
             }
 
+            // Limite la durée du pompage à PUMP_TIMEOUT_MS par cycle pour ne pas bloquer Core 1
+            unsigned long pump_start = millis();
             do {
-                if (force_stop) break;
+                if (force_stop || (millis() - pump_start > PUMP_TIMEOUT_MS)) break;
 
                 size_t httpavail = stream->available();
                 httpavail = std::min(sizeof(buff), httpavail); 
@@ -265,13 +288,21 @@ public:
                         break;
                     }
                     
-                    int totalCnt = stream->read() * 16;
+                    // Lire l'octet de longueur de métadonnée (peut retourner -1 si aucun octet dispo)
+                    int meta_byte = stream->read();
+                    if (meta_byte < 0) {
+                        // Erreur de lecture : on remet le compteur à zéro et on continue
+                        icyDataLeft = icyMetaInt;
+                        break;
+                    }
+                    int totalCnt = meta_byte * 16;
                     int cnt = totalCnt;
 
-                    int buffCnt = std::min(sizeof(buff), (size_t)cnt); 
+                    int buffCnt = (int)std::min(sizeof(buff), (size_t)cnt); 
                     uint8_t *p = buff;
-                    while (buffCnt && stream->connected() && !force_stop) {
+                    while (buffCnt > 0 && stream->connected() && !force_stop) {
                         read = stream->read(p, buffCnt);
+                        if (read <= 0) break;
                         p += read;
                         buffCnt -= read;
                         cnt -= read;
