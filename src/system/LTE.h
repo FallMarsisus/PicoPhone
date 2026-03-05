@@ -209,6 +209,13 @@ private:
         if (now - s_last_recover_ms < 30000UL && s_last_recover_ms != 0) return; 
         
         Logger::printf("[LTE] RECOVERY: %s\n", reason ? reason : "(unknown)");
+
+            digitalWrite(26, HIGH);
+    delay(100);
+    digitalWrite(26, LOW); // Tirer à la masse
+    delay(1500);                   // Maintenir bas pendant au moins 1.5s
+    digitalWrite(26, HIGH);
+    delay(3000);
         s_modem_confirmed = false;
         s_line_buf = "";
         s_cmd_resp = "";
