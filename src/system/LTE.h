@@ -9,7 +9,24 @@
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LTE – Gestionnaire EXCLUSIF du modem GSM/LTE (A7670E / SIM7670E)
+//  + Gestion robuste des erreurs réseau avec notifications
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Codes d'erreur réseau
+enum class NetworkErrorCode : uint8_t {
+    NO_ERROR = 0,
+    MODEM_NOT_RESPONDING = 1,
+    NO_SIGNAL = 2,
+    HTTP_TIMEOUT = 3,
+    HTTP_NETWORK_ERROR = 4,
+    HTTP_INVALID_RESPONSE = 5,
+    SMS_SEND_FAILED = 6,
+    TIME_SYNC_FAILED = 7,
+    MODEM_CRASH = 8,
+    REGISTRATION_FAILED = 9,
+    DATA_CONNECTION_FAILED = 10,
+    RECOVERY_IN_PROGRESS = 11,
+};
 
 class LTE {
 private:
@@ -26,6 +43,12 @@ private:
     static volatile bool s_http_busy;
 
     static uint8_t       s_poll_fail_count;
+
+    // ── Gestion des erreurs réseau ──
+    static NetworkErrorCode s_last_error;
+    static unsigned long s_last_error_time;
+    static uint8_t       s_error_notify_count;
+    static unsigned long s_last_error_notify_time;
 
     static unsigned long last_check;
     static int           state;
@@ -209,6 +232,7 @@ private:
         if (now - s_last_recover_ms < 30000UL && s_last_recover_ms != 0) return; 
         
         Logger::printf("[LTE] RECOVERY: %s\n", reason ? reason : "(unknown)");
+        logNetworkError(NetworkErrorCode::RECOVERY_IN_PROGRESS, "4G/LTE", reason);
 
             digitalWrite(26, HIGH);
     delay(100);
@@ -299,6 +323,7 @@ private:
         sendAT("AT+CGATT=1", 2500);
         
         Logger::println("[LTE] RECOVERY terminée avec succès. Téléphone 100% opérationnel.");
+        clearNetworkError();
 
         s_last_recover_ms = millis();
         last_check = millis();
@@ -355,6 +380,41 @@ private:
             if (field == index) out += c;
         }
         return (field == index) ? out : "";
+    }
+
+    // ── Enregistrement et notification des erreurs réseau ──
+    static void logNetworkError(NetworkErrorCode code, const char* app = "4G/LTE", const char* details = nullptr) {
+        unsigned long now = millis();
+        
+        // Éviter les notifications spam : max 1 par 3 secondes pour la même erreur
+        if (s_last_error == code && (now - s_last_error_notify_time) < 3000) {
+            return;
+        }
+        
+        s_last_error = code;
+        s_last_error_time = now;
+        s_error_notify_count++;
+        
+        // Enregistrer dans le log
+        if (code != NetworkErrorCode::NO_ERROR) {
+            Logger::printf("[LTE ERROR] %s: %s\n", getErrorString(code), details ? details : "");
+            s_last_error_notify_time = now;
+            
+            // Notifier via le NotificationCenter si disponible
+            // On utilise un pointeur externe pour éviter la dépendance circulaire
+            extern void lte_notify_error(const char* title, const char* body);
+            String body = String(getErrorString(code));
+            if (details) {
+                body += "\n";
+                body += details;
+            }
+            lte_notify_error(app, body.c_str());
+        }
+    }
+    
+    static void clearNetworkError() {
+        s_last_error = NetworkErrorCode::NO_ERROR;
+        s_last_error_time = millis();
     }
 
     static void dispatchLine(const String& line) {
@@ -484,6 +544,7 @@ private:
         }
 
         if (send_resp.indexOf("+CMS ERROR") != -1 || send_resp.indexOf("ERROR") != -1) {
+            logNetworkError(NetworkErrorCode::SMS_SEND_FAILED, "SMS", "Erreur envoi SMS");
             recoverModemIfNeeded("SMS +CMS ERROR");
         }
 
@@ -557,6 +618,7 @@ public:
             Logger::println("[LTE] Modem prêt !");
         } else {
             Logger::println("[LTE] ALERTE: Modem injoignable au boot ! Lancement du Recovery...");
+            logNetworkError(NetworkErrorCode::MODEM_NOT_RESPONDING, "4G/LTE", "Modem injoignable au boot");
             // Pas de rp2040.reboot() ici ! On laisse le code s'occuper du modem.
             s_last_recover_ms = 0; // Force l'exécution immédiate
             recoverModemIfNeeded("Echec de synchronisation au démarrage");
@@ -570,6 +632,34 @@ public:
     static int  getSignal()              { return signal_level; }
     static String getOperator()          { return operator_name; }
     static bool isReadyForData()         { return s_enabled && !s_airplane_mode && s_modem_confirmed && signal_level > 0; }
+
+    // ── Gestion des erreurs réseau ──
+    static NetworkErrorCode getLastError()       { return s_last_error; }
+    static unsigned long getLastErrorTime()      { return s_last_error_time; }
+    static bool hasActiveError()                 { return s_last_error != NetworkErrorCode::NO_ERROR; }
+    
+    static const char* getErrorString(NetworkErrorCode code) {
+        switch(code) {
+            case NetworkErrorCode::NO_ERROR: return "OK";
+            case NetworkErrorCode::MODEM_NOT_RESPONDING: return "Modem non réactif";
+            case NetworkErrorCode::NO_SIGNAL: return "Pas de signal";
+            case NetworkErrorCode::HTTP_TIMEOUT: return "Timeout réseau";
+            case NetworkErrorCode::HTTP_NETWORK_ERROR: return "Erreur réseau";
+            case NetworkErrorCode::HTTP_INVALID_RESPONSE: return "Réponse invalide";
+            case NetworkErrorCode::SMS_SEND_FAILED: return "SMS non envoyé";
+            case NetworkErrorCode::TIME_SYNC_FAILED: return "Sync heure échouée";
+            case NetworkErrorCode::MODEM_CRASH: return "Modem crashé!";
+            case NetworkErrorCode::REGISTRATION_FAILED: return "Enregistrement échoué";
+            case NetworkErrorCode::DATA_CONNECTION_FAILED: return "Connexion données échouée";
+            case NetworkErrorCode::RECOVERY_IN_PROGRESS: return "Récupération en cours...";
+            default: return "Erreur inconnue";
+        }
+    }
+
+    static bool shouldRetryOperation() {
+        // Peut réessayer si pas d'erreur active ou si l'erreur est ancienne (> 5 secondes)
+        return !hasActiveError() || (millis() - s_last_error_time > 5000);
+    }
 
     static bool scheduleSendSms(const char* number, const char* text) {
         if (s_sms_send_pending) return false;
@@ -593,7 +683,7 @@ public:
         return true;
     }
 
-static String httpGetBlocking(const String& url, unsigned long timeout_ms = 20000) {
+    static String httpGetBlocking(const String& url, unsigned long timeout_ms = 20000) {
         if (!s_enabled || s_airplane_mode) {
             Logger::println("[LTE HTTP] Annulé : Mode avion ou désactivé");
             return "";
@@ -617,6 +707,7 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
             String init_resp = sendAT("AT+HTTPINIT", 3000);
             if (init_resp.indexOf("ERROR") != -1 || init_resp == "") { 
                 Logger::println("[LTE HTTP] ERR/TIMEOUT: HTTPINIT a échoué. Modem crashé ?");
+                logNetworkError(NetworkErrorCode::MODEM_CRASH, "HTTPClient", "Échec HTTPINIT");
                 recoverModemIfNeeded("HTTPINIT timeout/crash");
                 continue; // On passe directement au retry
             }
@@ -625,6 +716,7 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
             String url_resp = sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000);
             if (url_resp.indexOf("ERROR") != -1 || url_resp == "") { 
                 Logger::println("[LTE HTTP] ERR/TIMEOUT: URL rejetée.");
+                logNetworkError(NetworkErrorCode::HTTP_NETWORK_ERROR, "HTTPClient", "URL rejetée");
                 sendAT("AT+HTTPTERM", 500); 
                 recoverModemIfNeeded("HTTPPARA timeout/crash");
                 continue; // On passe au retry
@@ -674,6 +766,7 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
             // --- GESTION DU CRASH LORS DU HTTPACTION ---
             if (action_timeout) {
                 Logger::println("[LTE HTTP] TIMEOUT total sur HTTPACTION ! Le modem a crashé.");
+                logNetworkError(NetworkErrorCode::HTTP_TIMEOUT, "HTTPClient", "HTTPACTION timeout");
                 recoverModemIfNeeded("HTTPACTION timeout (Pic de courant 4G)");
                 continue; // Retry
             }
@@ -682,6 +775,8 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
 
             if (http_code != 200 || data_len <= 0) {
                 Logger::println("[LTE HTTP] ECHEC: Erreur réseau ou code HTTP invalide");
+                logNetworkError(NetworkErrorCode::HTTP_NETWORK_ERROR, "HTTPClient", 
+                    String("Code HTTP: " + String(http_code)).c_str());
                 sendAT("AT+HTTPTERM", 500); 
                 // Si le code est -1, ça veut dire que l'action a échoué lamentablement côté réseau
                 if (http_code == -1) recoverModemIfNeeded("HTTPACTION network error");
@@ -726,6 +821,7 @@ static String httpGetBlocking(const String& url, unsigned long timeout_ms = 2000
             // --- GESTION DU CRASH LORS DE LA LECTURE ---
             if (read_timeout) {
                 Logger::println("[LTE HTTP] TIMEOUT sur HTTPREAD ! Le modem a crashé.");
+                logNetworkError(NetworkErrorCode::HTTP_TIMEOUT, "HTTPClient", "HTTPREAD timeout");
                 recoverModemIfNeeded("HTTPREAD timeout");
                 continue; // Retry
             }
@@ -882,6 +978,7 @@ unsigned long state_timeout = 3000UL;
             s_poll_fail_count++;
             if (s_poll_fail_count >= 5) {
                 s_poll_fail_count = 0;
+                logNetworkError(NetworkErrorCode::MODEM_NOT_RESPONDING, "4G/LTE", "5 timeouts consécutifs");
                 recoverModemIfNeeded("5 timeouts consecutives");
             }
             last_check = millis();
@@ -1000,6 +1097,13 @@ volatile int  LTE::s_pending_airplane = -1;
 volatile bool LTE::s_http_busy        = false;
 volatile bool LTE::s_modem_confirmed  = false;
 uint8_t       LTE::s_poll_fail_count  = 0;
+
+// Variables d'erreur réseau
+NetworkErrorCode LTE::s_last_error           = NetworkErrorCode::NO_ERROR;
+unsigned long LTE::s_last_error_time         = 0;
+uint8_t       LTE::s_error_notify_count      = 0;
+unsigned long LTE::s_last_error_notify_time  = 0;
+
 unsigned long LTE::last_check         = 0;
 int           LTE::state              = 0;
 String        LTE::s_line_buf         = "";

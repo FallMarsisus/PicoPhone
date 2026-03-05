@@ -12,18 +12,19 @@
 #include <vector>
 #include <time.h>
 #include "../system/Secrets.h"
+#include "../system/NetworkErrorHandler.h"
 
 // --- CONFIG ---
-#define CHECK_INTERVAL 3000 
-#define MAX_HISTORY 10      // On garde 10 messages
+#define TG_CHECK_INTERVAL 3000 
+#define TG_MAX_HISTORY 10      // On garde 10 messages
 
 // --- THEME ---
-#define COL_BG_LIST  0x18222d
-#define COL_BG_CHAT  0x0e1621
-#define COL_MSG_IN   0x2b3745
-#define COL_MSG_OUT  0x497a9f
-#define COL_TEXT     0xFFFFFF
-#define COL_TIME     0x8899a6
+#define TG_COL_BG_LIST  0x18222d
+#define TG_COL_BG_CHAT  0x0e1621
+#define TG_COL_MSG_IN   0x2b3745
+#define TG_COL_MSG_OUT  0x497a9f
+#define TG_COL_TEXT     0xFFFFFF
+#define TG_COL_TIME     0x8899a6
 
 struct ContactMetadata {
     String chat_id;
@@ -200,7 +201,7 @@ private:
         obj["ts"] = timestamp;
 
         // D. Limiter l'historique
-        while (arr.size() > MAX_HISTORY) {
+        while (arr.size() > TG_MAX_HISTORY) {
             arr.remove(0); // Supprime le plus vieux
         }
 
@@ -481,10 +482,10 @@ private:
         lv_obj_set_style_border_width(bubble, 0, 0);
         
         if (is_me) {
-            lv_obj_set_style_bg_color(bubble, lv_color_hex(COL_MSG_OUT), 0);
+            lv_obj_set_style_bg_color(bubble, lv_color_hex(TG_COL_MSG_OUT), 0);
             lv_obj_align(bubble, LV_ALIGN_TOP_RIGHT, 0, 0);
         } else {
-            lv_obj_set_style_bg_color(bubble, lv_color_hex(COL_MSG_IN), 0);
+            lv_obj_set_style_bg_color(bubble, lv_color_hex(TG_COL_MSG_IN), 0);
             lv_obj_align(bubble, LV_ALIGN_TOP_LEFT, 0, 0);
         }
 
@@ -493,14 +494,14 @@ private:
         lv_label_set_text(l_text, text);
         lv_label_set_long_mode(l_text, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(l_text, lv_pct(100)); 
-        lv_obj_set_style_text_color(l_text, lv_color_hex(COL_TEXT), 0);
+        lv_obj_set_style_text_color(l_text, lv_color_hex(TG_COL_TEXT), 0);
         lv_obj_set_style_text_font(l_text, &lv_font_montserrat_14, 0);
 
         // Heure
         lv_obj_t* l_time = lv_label_create(bubble);
         lv_label_set_text(l_time, timeStr);
         lv_obj_set_style_text_font(l_time, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(l_time, lv_color_hex(COL_TIME), 0);
+        lv_obj_set_style_text_color(l_time, lv_color_hex(TG_COL_TIME), 0);
         lv_obj_align(l_time, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     }
 
@@ -532,7 +533,7 @@ public:
 
         main_bg = parent; 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_color(main_bg, lv_color_hex(COL_BG_LIST), 0);
+        lv_obj_set_style_bg_color(main_bg, lv_color_hex(TG_COL_BG_LIST), 0);
 
         // Header
         lv_obj_t* header = lv_obj_create(main_bg);
@@ -576,7 +577,7 @@ public:
         view_chat = lv_obj_create(main_bg);
         lv_obj_set_size(view_chat, 320, 430);
         lv_obj_align(view_chat, LV_ALIGN_TOP_MID, 0, 50);
-        lv_obj_set_style_bg_color(view_chat, lv_color_hex(COL_BG_CHAT), 0);
+        lv_obj_set_style_bg_color(view_chat, lv_color_hex(TG_COL_BG_CHAT), 0);
         lv_obj_set_style_border_width(view_chat, 0, 0);
         lv_obj_add_flag(view_chat, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(view_chat, LV_OBJ_FLAG_SCROLLABLE);
@@ -746,7 +747,7 @@ public:
         }
 
         // 2) Poll entrant
-        if ((now - last_check) < CHECK_INTERVAL) return;
+        if ((now - last_check) < TG_CHECK_INTERVAL) return;
         last_check = now;
 
         // Poll entrant desactive ici: gere par TelegramNotifyService (global background).

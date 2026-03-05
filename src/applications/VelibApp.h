@@ -9,6 +9,7 @@
 #include <LittleFS.h>
 #include <pico/mutex.h>
 #include "../system/LTE.h"
+#include "../system/NetworkErrorHandler.h"
 
 // --- CONFIGURATION ---
 // On prend plusieurs résultats puis on filtre côté code station exact

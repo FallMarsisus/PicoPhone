@@ -4,8 +4,10 @@
 #include "App.h"
 #include "AppManager.h"
 #include "../system/Settings.h"
+#include "../system/LTE.h"
 #include <WiFi.h>
 #include <RP2040Support.h>
+#include <time.h>
 
 class SettingsApp : public App {
 private:
@@ -19,6 +21,16 @@ private:
     lv_obj_t* lbl_pin_status;
     lv_obj_t* pin_panel_title;
     bool setting_new_pin = false;
+    
+    // Time Panel
+    lv_obj_t* time_panel;
+    lv_obj_t* time_panel_title;
+    lv_obj_t* roller_hour;
+    lv_obj_t* roller_minute;
+    lv_obj_t* roller_day;
+    lv_obj_t* roller_month;
+    lv_obj_t* roller_year;
+    lv_obj_t* lbl_time_status;
     
     // --- EVENTS ---
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
@@ -97,6 +109,82 @@ private:
         rp2040.rebootToBootloader();
     }
     
+    // --- Reboot System ---
+    static void reboot_event(lv_event_t* e) {
+        delay(100);
+        rp2040.reboot();
+    }
+    
+    // --- Sync Time Auto ---
+    static void sync_time_auto_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        
+        if (!LTE::isEnabled() || LTE::isAirplaneMode()) {
+            lv_label_set_text(app->lbl_time_status, "Reseau 4G desactive");
+            lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0xFF3B30), 0);
+            return;
+        }
+        
+        if (!LTE::isReadyForData()) {
+            lv_label_set_text(app->lbl_time_status, "Pas de signal 4G");
+            lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0xFF9500), 0);
+            return;
+        }
+        
+        // Synchronisation en cours
+        lv_label_set_text(app->lbl_time_status, "Synchronisation...");
+        lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x007AFF), 0);
+        
+        // La synchronisation se fera automatiquement via LTE::update() dans le core1
+        // On affiche juste un message de succès
+        lv_label_set_text(app->lbl_time_status, "Sync demandee");
+        lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x4CD964), 0);
+    }
+    
+    // --- Manual Time Setting ---
+    static void show_time_panel_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->showTimePanel();
+    }
+    
+    static void time_panel_save(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        
+        uint16_t hour = lv_roller_get_selected(app->roller_hour);
+        uint16_t minute = lv_roller_get_selected(app->roller_minute);
+        uint16_t day = lv_roller_get_selected(app->roller_day) + 1;
+        uint16_t month = lv_roller_get_selected(app->roller_month) + 1;
+        uint16_t year = lv_roller_get_selected(app->roller_year) + 2024;
+        
+        struct tm t = {};
+        t.tm_year = year - 1900;
+        t.tm_mon = month - 1;
+        t.tm_mday = day;
+        t.tm_hour = hour;
+        t.tm_min = minute;
+        t.tm_sec = 0;
+        t.tm_isdst = -1;
+        
+        time_t epoch = mktime(&t);
+        if (epoch != (time_t)-1) {
+            struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+            settimeofday(&tv, nullptr);
+            
+            lv_label_set_text(app->lbl_time_status, "Heure mise a jour");
+            lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x4CD964), 0);
+        } else {
+            lv_label_set_text(app->lbl_time_status, "Erreur: date invalide");
+            lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0xFF3B30), 0);
+        }
+        
+        app->hideTimePanel();
+    }
+    
+    static void time_panel_cancel(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->hideTimePanel();
+    }
+    
     // --- UI Helpers ---
     
     lv_obj_t* createSection(lv_obj_t* parent, const char* title) {
@@ -138,6 +226,26 @@ private:
     void hidePinPanel() {
         lv_obj_add_flag(pin_panel, LV_OBJ_FLAG_HIDDEN);
         setting_new_pin = false;
+    }
+    
+    void showTimePanel() {
+        // Get current time
+        time_t now;
+        time(&now);
+        struct tm* t = localtime(&now);
+        
+        // Set rollers to current time
+        lv_roller_set_selected(roller_hour, t->tm_hour, LV_ANIM_OFF);
+        lv_roller_set_selected(roller_minute, t->tm_min, LV_ANIM_OFF);
+        lv_roller_set_selected(roller_day, t->tm_mday - 1, LV_ANIM_OFF);
+        lv_roller_set_selected(roller_month, t->tm_mon, LV_ANIM_OFF);
+        lv_roller_set_selected(roller_year, (t->tm_year + 1900) - 2024, LV_ANIM_OFF);
+        
+        lv_obj_clear_flag(time_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    
+    void hideTimePanel() {
+        lv_obj_add_flag(time_panel, LV_OBJ_FLAG_HIDDEN);
     }
     
     void refreshList() {
@@ -229,21 +337,68 @@ private:
         lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB);
         lv_obj_add_event_cb(slider, brightness_event, LV_EVENT_VALUE_CHANGED, NULL);
         
+        // ===== SECTION: SYSTEME =====
+        createSection(list_cont, "SYSTEME");
+        
+        // Sync time auto
+        lv_obj_t* row_sync_time = createSettingRow(list_cont, "Synchro heure auto");
+        lv_obj_t* chevron_sync = lv_label_create(row_sync_time);
+        lv_label_set_text(chevron_sync, LV_SYMBOL_REFRESH);
+        lv_obj_set_style_text_color(chevron_sync, lv_color_hex(0x007AFF), 0);
+        lv_obj_align(chevron_sync, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_sync_time, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_sync_time, sync_time_auto_event, LV_EVENT_CLICKED, this);
+        
+        // Manual time setting
+        lv_obj_t* row_manual_time = createSettingRow(list_cont, "Regler l'heure");
+        lv_obj_t* chevron_manual = lv_label_create(row_manual_time);
+        lv_label_set_text(chevron_manual, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_manual, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_manual, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_manual_time, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_manual_time, show_time_panel_event, LV_EVENT_CLICKED, this);
+        
+        // Time status label
+        lbl_time_status = lv_label_create(list_cont);
+        time_t now;
+        time(&now);
+        struct tm* t = localtime(&now);
+        char timeBuf[32];
+        snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d - %02d/%02d/%04d", 
+                 t->tm_hour, t->tm_min, t->tm_mday, t->tm_mon + 1, t->tm_year + 1900);
+        lv_label_set_text(lbl_time_status, timeBuf);
+        lv_obj_set_style_text_color(lbl_time_status, lv_color_hex(0x8E8E93), 0);
+        lv_obj_set_style_text_font(lbl_time_status, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_pad_left(lbl_time_status, 15, 0);
+        
+        
+        
         // ===== SECTION: INFO =====
         createSection(list_cont, "INFORMATIONS");
 
 
         lv_obj_t* row_bl = createSettingRow(list_cont, "Bootloader");
+
+        
         lv_obj_t* chevron_bl = lv_label_create(row_bl);
         lv_label_set_text(chevron_bl, LV_SYMBOL_RIGHT);
         lv_obj_set_style_text_color(chevron_bl, lv_color_hex(0x8E8E93), 0);
         lv_obj_align(chevron_bl, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_add_flag(row_bl, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row_bl, bootloader_event, LV_EVENT_CLICKED, this);
+
+        // Reboot button
+        lv_obj_t* row_reboot = createSettingRow(list_cont, "Redemarrer");
+        lv_obj_t* chevron_reboot = lv_label_create(row_reboot);
+        lv_label_set_text(chevron_reboot, LV_SYMBOL_POWER);
+        lv_obj_set_style_text_color(chevron_reboot, lv_color_hex(0xFF3B30), 0);
+        lv_obj_align(chevron_reboot, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_reboot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_reboot, reboot_event, LV_EVENT_CLICKED, this);
         
         lv_obj_t* row_ver = createSettingRow(list_cont, "Version");
         lv_obj_t* lbl_ver = lv_label_create(row_ver);
-        lv_label_set_text(lbl_ver, "1.0.1");
+        lv_label_set_text(lbl_ver, COMMIT_HASH);
         lv_obj_set_style_text_color(lbl_ver, lv_color_hex(0x8E8E93), 0);
         lv_obj_align(lbl_ver, LV_ALIGN_RIGHT_MID, 0, 0);
         
@@ -335,6 +490,145 @@ public:
         lv_obj_align(kb_pin, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_add_event_cb(kb_pin, pin_kb_ready, LV_EVENT_READY, this);
         lv_obj_add_event_cb(kb_pin, pin_kb_cancel, LV_EVENT_CANCEL, this);
+        
+        // --- TIME PANEL (overlay plein écran) ---
+        time_panel = lv_obj_create(main_bg);
+        lv_obj_set_size(time_panel, 320, 480);
+        lv_obj_center(time_panel);
+        lv_obj_set_style_bg_color(time_panel, lv_color_hex(0x1c1c1e), 0);
+        lv_obj_add_flag(time_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(time_panel, LV_OBJ_FLAG_SCROLLABLE);
+        
+        time_panel_title = lv_label_create(time_panel);
+        lv_label_set_text(time_panel_title, "Regler l'heure");
+        lv_obj_set_style_text_color(time_panel_title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(time_panel_title, &lv_font_montserrat_14, 0);
+        lv_obj_align(time_panel_title, LV_ALIGN_TOP_MID, 0, 10);
+        
+        // Time section
+        lv_obj_t* time_label = lv_label_create(time_panel);
+        lv_label_set_text(time_label, "Heure");
+        lv_obj_set_style_text_color(time_label, lv_color_hex(0x8E8E93), 0);
+        lv_obj_set_style_text_font(time_label, &lv_font_montserrat_12, 0);
+        lv_obj_align(time_label, LV_ALIGN_TOP_LEFT, 20, 50);
+        
+        lv_obj_t* time_cont = lv_obj_create(time_panel);
+        lv_obj_set_size(time_cont, 280, 80);
+        lv_obj_align(time_cont, LV_ALIGN_TOP_MID, 0, 70);
+        lv_obj_set_style_bg_color(time_cont, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_border_width(time_cont, 0, 0);
+        lv_obj_set_flex_flow(time_cont, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(time_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(time_cont, LV_OBJ_FLAG_SCROLLABLE);
+        
+        // Hour roller
+        roller_hour = lv_roller_create(time_cont);
+        lv_roller_set_options(roller_hour, 
+            "00\\n01\\n02\\n03\\n04\\n05\\n06\\n07\\n08\\n09\\n10\\n11\\n"
+            "12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n21\\n22\\n23",
+            LV_ROLLER_MODE_INFINITE);
+        lv_obj_set_size(roller_hour, 60, 70);
+        lv_obj_set_style_text_font(roller_hour, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_bg_color(roller_hour, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_text_color(roller_hour, lv_color_white(), LV_PART_SELECTED);
+        
+        lv_obj_t* colon = lv_label_create(time_cont);
+        lv_label_set_text(colon, ":");
+        lv_obj_set_style_text_color(colon, lv_color_white(), 0);
+        lv_obj_set_style_text_font(colon, &lv_font_montserrat_28, 0);
+        
+        // Minute roller
+        roller_minute = lv_roller_create(time_cont);
+        char minute_opts[400];
+        strcpy(minute_opts, "00");
+        for (int i = 1; i < 60; i++) {
+            char buf[6];
+            snprintf(buf, sizeof(buf), "\\n%02d", i);
+            strcat(minute_opts, buf);
+        }
+        lv_roller_set_options(roller_minute, minute_opts, LV_ROLLER_MODE_INFINITE);
+        lv_obj_set_size(roller_minute, 60, 70);
+        lv_obj_set_style_text_font(roller_minute, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_bg_color(roller_minute, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_text_color(roller_minute, lv_color_white(), LV_PART_SELECTED);
+        
+        // Date section
+        lv_obj_t* date_label = lv_label_create(time_panel);
+        lv_label_set_text(date_label, "Date");
+        lv_obj_set_style_text_color(date_label, lv_color_hex(0x8E8E93), 0);
+        lv_obj_set_style_text_font(date_label, &lv_font_montserrat_12, 0);
+        lv_obj_align(date_label, LV_ALIGN_TOP_LEFT, 20, 170);
+        
+        lv_obj_t* date_cont = lv_obj_create(time_panel);
+        lv_obj_set_size(date_cont, 280, 80);
+        lv_obj_align(date_cont, LV_ALIGN_TOP_MID, 0, 190);
+        lv_obj_set_style_bg_color(date_cont, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_border_width(date_cont, 0, 0);
+        lv_obj_set_flex_flow(date_cont, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(date_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(date_cont, LV_OBJ_FLAG_SCROLLABLE);
+        
+        // Day roller
+        roller_day = lv_roller_create(date_cont);
+        char day_opts[200];
+        strcpy(day_opts, "01");
+        for (int i = 2; i <= 31; i++) {
+            char buf[6];
+            snprintf(buf, sizeof(buf), "\\n%02d", i);
+            strcat(day_opts, buf);
+        }
+        lv_roller_set_options(roller_day, day_opts, LV_ROLLER_MODE_NORMAL);
+        lv_obj_set_size(roller_day, 50, 70);
+        lv_obj_set_style_text_font(roller_day, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_bg_color(roller_day, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_text_color(roller_day, lv_color_white(), LV_PART_SELECTED);
+        
+        lv_obj_t* slash1 = lv_label_create(date_cont);
+        lv_label_set_text(slash1, "/");
+        lv_obj_set_style_text_color(slash1, lv_color_white(), 0);
+        
+        // Month roller
+        roller_month = lv_roller_create(date_cont);
+        lv_roller_set_options(roller_month, 
+            "01\\n02\\n03\\n04\\n05\\n06\\n07\\n08\\n09\\n10\\n11\\n12",
+            LV_ROLLER_MODE_NORMAL);
+        lv_obj_set_size(roller_month, 50, 70);
+        lv_obj_set_style_text_font(roller_month, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_bg_color(roller_month, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_text_color(roller_month, lv_color_white(), LV_PART_SELECTED);
+        
+        lv_obj_t* slash2 = lv_label_create(date_cont);
+        lv_label_set_text(slash2, "/");
+        lv_obj_set_style_text_color(slash2, lv_color_white(), 0);
+        
+        // Year roller
+        roller_year = lv_roller_create(date_cont);
+        lv_roller_set_options(roller_year, 
+            "2024\\n2025\\n2026\\n2027\\n2028\\n2029\\n2030\\n2031\\n2032\\n2033\\n2034\\n2035",
+            LV_ROLLER_MODE_NORMAL);
+        lv_obj_set_size(roller_year, 70, 70);
+        lv_obj_set_style_text_font(roller_year, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_bg_color(roller_year, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_text_color(roller_year, lv_color_white(), LV_PART_SELECTED);
+        
+        // Buttons
+        lv_obj_t* btn_save = lv_btn_create(time_panel);
+        lv_obj_set_size(btn_save, 130, 45);
+        lv_obj_align(btn_save, LV_ALIGN_BOTTOM_LEFT, 20, -20);
+        lv_obj_set_style_bg_color(btn_save, lv_color_hex(0x007AFF), 0);
+        lv_obj_add_event_cb(btn_save, time_panel_save, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_save = lv_label_create(btn_save);
+        lv_label_set_text(lbl_save, "Enregistrer");
+        lv_obj_center(lbl_save);
+        
+        lv_obj_t* btn_cancel = lv_btn_create(time_panel);
+        lv_obj_set_size(btn_cancel, 130, 45);
+        lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -20, -20);
+        lv_obj_set_style_bg_color(btn_cancel, lv_color_hex(0x3a3a3c), 0);
+        lv_obj_add_event_cb(btn_cancel, time_panel_cancel, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_cancel = lv_label_create(btn_cancel);
+        lv_label_set_text(lbl_cancel, "Annuler");
+        lv_obj_center(lbl_cancel);
     }
 };
 

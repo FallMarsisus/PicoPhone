@@ -10,6 +10,7 @@
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
 #include "../system/LTE.h"
+#include "../system/NetworkErrorHandler.h"
 
 // --- CONFIG ---
 #define API_KEY "8fdaebc1c5f040d39d2178f811adfeaa"
@@ -260,7 +261,11 @@ public:
                     add_forecast_ui_item(item.dt, item.temp, item.icon);
                 }
             } else {
-                lv_label_set_text(lbl_desc, "Erreur API");
+                // Afficher des détails sur l'erreur réseau
+                NetworkErrorHandler::showIfError("Météo", "Impossible de récupérer les données");
+                String error_msg = "Erreur: ";
+                error_msg += NetworkErrorHandler::getNetworkStatus();
+                lv_label_set_text(lbl_desc, error_msg.c_str());
             }
             
             lv_obj_add_flag(loader, LV_OBJ_FLAG_HIDDEN);
@@ -277,6 +282,8 @@ public:
         if (!use_wifi && !use_lte) {
             WeatherData fail;
             fail.success = false;
+            // Afficher l'erreur réseau
+            NetworkErrorHandler::showIfError("Météo", "Aucune connexion réseau disponible");
             unsigned long t0 = millis();
             while (millis() - t0 < 30) {
                 watchdog_update();

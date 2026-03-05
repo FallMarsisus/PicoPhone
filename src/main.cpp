@@ -33,6 +33,13 @@
 #include "services/SmsNotifyService.h"
 #include "system/LTE.h"
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  Notification des erreurs réseau LTE
+// ═══════════════════════════════════════════════════════════════════════════
+void lte_notify_error(const char* title, const char* body) {
+    notifications::push(title, "Erreur réseau", body);
+}
+
 
 App* currentApp = nullptr;
 auto_init_mutex(myMutex); 

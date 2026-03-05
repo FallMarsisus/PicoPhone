@@ -9,14 +9,15 @@
 #include <vector>
 #include <time.h>
 #include "../system/LTE.h"
+#include "../system/NetworkErrorHandler.h"
 
-#define MAX_HISTORY 20
-#define COL_BG_LIST  0x1C1C1E // Noir iOS
-#define COL_BG_CHAT  0x000000 
-#define COL_MSG_IN   0x3A3A3C // Gris foncé
-#define COL_MSG_OUT  0x34C759 // Vert SMS classique
-#define COL_TEXT     0xFFFFFF
-#define COL_TIME     0xAEAEB2
+#define SMS_MAX_HISTORY 20
+#define SMS_COL_BG_LIST  0x1C1C1E // Noir iOS
+#define SMS_COL_BG_CHAT  0x000000 
+#define SMS_COL_MSG_IN   0x3A3A3C // Gris foncé
+#define SMS_COL_MSG_OUT  0x34C759 // Vert SMS classique
+#define SMS_COL_TEXT     0xFFFFFF
+#define SMS_COL_TIME     0xAEAEB2
 
 struct SmsContact {
     String number;
@@ -94,7 +95,7 @@ private:
 
         JsonObject obj = arr.add<JsonObject>();
         obj["t"] = text; obj["m"] = is_me; obj["ts"] = ts;
-        while (arr.size() > MAX_HISTORY) arr.remove(0);
+        while (arr.size() > SMS_MAX_HISTORY) arr.remove(0);
 
         File fw = LittleFS.open(path, "w");
         if (fw) { serializeJson(arr, fw); fw.close(); }
@@ -134,7 +135,7 @@ private:
         }
 
         // Persist updated contacts to /sms_contacts.json
-        DynamicJsonDocument doc(2048);
+        JsonDocument doc;
         JsonArray arr = doc.to<JsonArray>();
         for (const auto &c : contacts) {
             JsonObject obj = arr.add<JsonObject>();
@@ -284,10 +285,10 @@ private:
         lv_obj_set_style_border_width(bubble, 0, 0);
         
         if (is_me) {
-            lv_obj_set_style_bg_color(bubble, lv_color_hex(COL_MSG_OUT), 0);
+            lv_obj_set_style_bg_color(bubble, lv_color_hex(SMS_COL_MSG_OUT), 0);
             lv_obj_align(bubble, LV_ALIGN_TOP_RIGHT, 0, 0);
         } else {
-            lv_obj_set_style_bg_color(bubble, lv_color_hex(COL_MSG_IN), 0);
+            lv_obj_set_style_bg_color(bubble, lv_color_hex(SMS_COL_MSG_IN), 0);
             lv_obj_align(bubble, LV_ALIGN_TOP_LEFT, 0, 0);
         }
 
@@ -295,12 +296,12 @@ private:
         lv_label_set_text(l_text, text);
         lv_label_set_long_mode(l_text, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(l_text, lv_pct(100)); 
-        lv_obj_set_style_text_color(l_text, lv_color_hex(COL_TEXT), 0);
+        lv_obj_set_style_text_color(l_text, lv_color_hex(SMS_COL_TEXT), 0);
 
         lv_obj_t* l_time = lv_label_create(bubble);
         lv_label_set_text(l_time, timeStr);
         lv_obj_set_style_text_font(l_time, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(l_time, lv_color_hex(COL_TIME), 0);
+        lv_obj_set_style_text_color(l_time, lv_color_hex(SMS_COL_TIME), 0);
         lv_obj_align(l_time, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     }
 
@@ -333,7 +334,7 @@ public:
         lv_obj_add_event_cb(btn_back, go_back_event, LV_EVENT_CLICKED, this);
         lv_obj_t* l_back = lv_label_create(btn_back);
         lv_label_set_text(l_back, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_color(l_back, lv_color_hex(COL_MSG_OUT), 0); // Fleche Verte
+        lv_obj_set_style_text_color(l_back, lv_color_hex(SMS_COL_MSG_OUT), 0); // Fleche Verte
         lv_obj_center(l_back);
 
         // VUE CONTACTS
