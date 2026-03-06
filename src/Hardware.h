@@ -143,55 +143,6 @@ void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
     Serial.println("Test termine !");
 }
 
-
-void sd_card_init(TFT_eSPI &disp) {
-    // 1. Forcer tous les CS à HIGH pour éviter les interférences sur le bus SPI1
-    digitalWrite(SD_CS_PIN, HIGH);
-    digitalWrite(LCD_CS_PIN, HIGH);
-    digitalWrite(TP_CS, HIGH);
-    delay(10);
-
-    mutex_enter_blocking(&spi_mutex); 
-    
-    SDFSConfig config;
-    config.setCSPin(SD_CS_PIN);
-    config.setSPI(SPI1); 
-    // On limite la vitesse pour le boot (plus stable)
-    
-
-    Serial.print("Initialisation SD...");
-    disp.setCursor(0, 100); // On écrit un peu plus bas pour ne pas effacer le logo
-
-    if (SDFS.setConfig(config) && SDFS.begin()) {
-        Serial.println(" Succès !");
-        disp.setTextColor(TFT_GREEN, TFT_BLACK);
-        disp.println("SD CARD: OK");
-    } else {
-        Serial.println(" Échec !");
-        disp.setTextColor(TFT_RED, TFT_BLACK);
-        disp.println("SD CARD: ERROR");
-        // On ne bloque pas le boot, mais on avertit
-    }
-    
-    mutex_exit(&spi_mutex);
-}
-
-void read_test_file() {
-    mutex_enter_blocking(&spi_mutex); // Protection du bus
-    
-    File f = SDFS.open("/test.txt", "r");
-    if (f) {
-        while (f.available()) {
-            Serial.write(f.read());
-        }
-        f.close();
-    } else {
-        Serial.println("Erreur d'ouverture du fichier.");
-    }
-    
-    mutex_exit(&spi_mutex);
-}
-
 // --- TEST MODEM A7670E (Ex-SIM800L) ---
 void test_sim800l(TFT_eSPI &disp) {
     Serial.println("--- DEMARRAGE A7670E ---");
@@ -432,30 +383,26 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 
 void hardware_init() {
     Serial.begin(115200);
-    
-    // Initialiser les pins de contrôle IMMÉDIATEMENT
-    pinMode(LCD_CS_PIN, OUTPUT); digitalWrite(LCD_CS_PIN, HIGH);
-    pinMode(TP_CS, OUTPUT); digitalWrite(TP_CS, HIGH);
-    pinMode(SD_CS_PIN, OUTPUT); digitalWrite(SD_CS_PIN, HIGH);
-    pinMode(13, OUTPUT); digitalWrite(13, HIGH); // Backlight
+    audio_pins_quiet();
+    battery::begin();
 
     mutex_init(&spi_mutex);
 
-    // Reset l'écran physiquement
+    // vreg_set_voltage(VREG_VOLTAGE_1_20);
+    
+    pinMode(13, OUTPUT); digitalWrite(13, HIGH);
+    gpio_init(TP_CS); gpio_set_dir(TP_CS, GPIO_OUT); gpio_put(TP_CS, 1);
+    pinMode(LCD_CS_PIN, OUTPUT); digitalWrite(LCD_CS_PIN, HIGH);
+
     pinMode(LCD_RST_PIN, OUTPUT);
-    digitalWrite(LCD_RST_PIN, HIGH); delay(10);
-    digitalWrite(LCD_RST_PIN, LOW);  delay(20);
     digitalWrite(LCD_RST_PIN, HIGH); delay(50);
+    digitalWrite(LCD_RST_PIN, LOW);  delay(100);
+    digitalWrite(LCD_RST_PIN, HIGH); delay(150);
     
     tft.init();
     tft.setRotation(0);
-    tft.fillScreen(TFT_BLACK);
 
-    // Affiche les logos avant la SD (si la SD crash, tu verras au moins ça)
-    tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
-    
-    // Test SD avec debug écran
-    sd_card_init(tft);
+    tft.initDMA();  
         
     // ==========================================
     // DEBUT DES TESTS HARDWARE AU DEMARRAGE
