@@ -524,8 +524,8 @@ public:
         // Hour roller
         roller_hour = lv_roller_create(time_cont);
         lv_roller_set_options(roller_hour, 
-            "00\\n01\\n02\\n03\\n04\\n05\\n06\\n07\\n08\\n09\\n10\\n11\\n"
-            "12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n21\\n22\\n23",
+            "00\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n"
+            "12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23",
             LV_ROLLER_MODE_INFINITE);
         lv_obj_set_size(roller_hour, 60, 70);
         lv_obj_set_style_text_font(roller_hour, &lv_font_montserrat_14, 0);
@@ -543,7 +543,7 @@ public:
         strcpy(minute_opts, "00");
         for (int i = 1; i < 60; i++) {
             char buf[6];
-            snprintf(buf, sizeof(buf), "\\n%02d", i);
+            snprintf(buf, sizeof(buf), "\n%02d", i);
             strcat(minute_opts, buf);
         }
         lv_roller_set_options(roller_minute, minute_opts, LV_ROLLER_MODE_INFINITE);
@@ -574,7 +574,7 @@ public:
         strcpy(day_opts, "01");
         for (int i = 2; i <= 31; i++) {
             char buf[6];
-            snprintf(buf, sizeof(buf), "\\n%02d", i);
+            snprintf(buf, sizeof(buf), "\n%02d", i);
             strcat(day_opts, buf);
         }
         lv_roller_set_options(roller_day, day_opts, LV_ROLLER_MODE_NORMAL);
@@ -590,7 +590,7 @@ public:
         // Month roller
         roller_month = lv_roller_create(date_cont);
         lv_roller_set_options(roller_month, 
-            "01\\n02\\n03\\n04\\n05\\n06\\n07\\n08\\n09\\n10\\n11\\n12",
+            "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n12",
             LV_ROLLER_MODE_NORMAL);
         lv_obj_set_size(roller_month, 50, 70);
         lv_obj_set_style_text_font(roller_month, &lv_font_montserrat_12, 0);
@@ -604,7 +604,7 @@ public:
         // Year roller
         roller_year = lv_roller_create(date_cont);
         lv_roller_set_options(roller_year, 
-            "2024\\n2025\\n2026\\n2027\\n2028\\n2029\\n2030\\n2031\\n2032\\n2033\\n2034\\n2035",
+            "2024\n2025\n2026\n2027\n2028\n2029\n2030\n2031\n2032\n2033\n2034\n2035",
             LV_ROLLER_MODE_NORMAL);
         lv_obj_set_size(roller_year, 70, 70);
         lv_obj_set_style_text_font(roller_year, &lv_font_montserrat_12, 0);

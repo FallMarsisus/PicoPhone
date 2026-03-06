@@ -175,6 +175,7 @@ static void autoconnect_init() {
 
 // Fonction appelée en boucle dans le main loop
 static bool g_ntp_started = false;
+static bool g_tz_set = false;
 
 static void autoconnect_tick() {
     autoconnect_init();
@@ -207,6 +208,12 @@ static void autoconnect_tick() {
             // NTP.stop(); // Arrêter proprement l'ancien service avant de relancer (méthode non disponible)
         }
         NTP.begin("pool.ntp.org", "time.nist.gov");
+        // Ensure local timezone (France CET/CEST) so localtime() returns correct local hour
+        if (!g_tz_set) {
+            setenv("TZ", "CET-1CEST,M3.5.0/02:00,M10.5.0/03:00", 1);
+            tzset();
+            g_tz_set = true;
+        }
         g_ntp_started = true;
     }
     
