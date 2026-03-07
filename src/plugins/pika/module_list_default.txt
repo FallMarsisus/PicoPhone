@@ -1,0 +1,3 @@
+main
+PikaStdLib
+pika_lvgl

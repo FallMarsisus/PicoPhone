@@ -23,6 +23,7 @@
 #include "applications/SmsApp.h"
 #include "applications/NewHomeApp.h"
 #include "applications/WebRadioApp.h"
+#include "applications/PythonApp.h" 
 #include "applications/Game2048App.h"
 #include "applications/SketchApp.h"
 #include "applications/CalculatorApp.h"
@@ -46,6 +47,10 @@ auto_init_mutex(myMutex);
 auto_init_mutex(app_switch_mutex);
 AppManager manager;
 static volatile bool g_system_ready = false;
+
+extern "C" void pika_app_go_home(void) {
+    AppManager::switchTo(APP_HOME);
+}
 
 // --- ANTI-FREEZE ---
 static volatile uint32_t core0_heartbeat = 0;
@@ -142,6 +147,85 @@ void loadApp(AppID id) {
         case APP_WEBRADIO: 
             currentApp = new WebRadioApp();
             break;
+        case APP_PYTHON_TEST: {
+            String pyCode;
+            if (!PythonApp::takeQueuedScript(pyCode)) {
+                // Script Python de test: confirmation avant retour Home
+                pyCode =
+                    "import pika_lvgl as lv\n"
+                    "scr = lv.scr_act()\n"
+                    "overlay = 0\n"
+                    "quit_timer = 0\n"
+                    "\n"
+                    "title = lv.label(scr)\n"
+                    "title.set_text('PikaPython Test')\n"
+                    "title.align(lv.ALIGN.TOP_MID, 0, 20)\n"
+                    "\n"
+                    "btn = lv.btn(scr)\n"
+                    "btn.set_size(200, 60)\n"
+                    "btn.center()\n"
+                    "btn_label = lv.label(btn)\n"
+                    "btn_label.set_text('Quitter vers Home')\n"
+                    "btn_label.center()\n"
+                    "\n"
+                    "def do_quit(t):\n"
+                    "    global quit_timer\n"
+                    "    t._del()\n"
+                    "    quit_timer = 0\n"
+                    "    lv.go_home()\n"
+                    "\n"
+                    "def confirm_yes(evt):\n"
+                    "    global overlay\n"
+                    "    global quit_timer\n"
+                    "    if overlay:\n"
+                    "        overlay.del_()\n"
+                    "        overlay = 0\n"
+                    "    quit_timer = lv.timer_create_basic()\n"
+                    "    quit_timer.set_period(60)\n"
+                    "    quit_timer.set_cb(do_quit)\n"
+                    "\n"
+                    "def confirm_no(evt):\n"
+                    "    global overlay\n"
+                    "    if overlay:\n"
+                    "        overlay.del_()\n"
+                    "        overlay = 0\n"
+                    "\n"
+                    "def on_click(evt):\n"
+                    "    global overlay\n"
+                    "    if overlay:\n"
+                    "        return\n"
+                    "    overlay = lv.obj(scr)\n"
+                    "    overlay.set_size(220, 140)\n"
+                    "    overlay.center()\n"
+                    "    overlay.set_style_radius(12, lv.PART.MAIN)\n"
+                    "    overlay.set_style_bg_color(lv.palette_lighten(lv.PALETTE.GREY, 2), lv.PART.MAIN)\n"
+                    "    overlay.set_style_bg_opa(lv.OPA.COVER, lv.PART.MAIN)\n"
+                    "\n"
+                    "    text = lv.label(overlay)\n"
+                    "    text.set_text('Quitter Python ?')\n"
+                    "    text.align(lv.ALIGN.TOP_MID, 0, 16)\n"
+                    "\n"
+                    "    yes_btn = lv.btn(overlay)\n"
+                    "    yes_btn.set_size(90, 42)\n"
+                    "    yes_btn.align(lv.ALIGN.BOTTOM_LEFT, 12, -12)\n"
+                    "    yes_label = lv.label(yes_btn)\n"
+                    "    yes_label.set_text('Oui')\n"
+                    "    yes_label.center()\n"
+                    "    yes_btn.add_event_cb(confirm_yes, lv.EVENT.CLICKED, 0)\n"
+                    "\n"
+                    "    no_btn = lv.btn(overlay)\n"
+                    "    no_btn.set_size(90, 42)\n"
+                    "    no_btn.align(lv.ALIGN.BOTTOM_RIGHT, -12, -12)\n"
+                    "    no_label = lv.label(no_btn)\n"
+                    "    no_label.set_text('Non')\n"
+                    "    no_label.center()\n"
+                    "    no_btn.add_event_cb(confirm_no, lv.EVENT.CLICKED, 0)\n"
+                    "\n"
+                    "btn.add_event_cb(on_click, lv.EVENT.CLICKED, 0)\n";
+            }
+            currentApp = new PythonApp(pyCode);
+            break;
+        }
         default:
             currentApp = new NewHomeApp();
             break;

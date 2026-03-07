@@ -4,23 +4,148 @@
 
 #include "App.h"
 #include "AppManager.h"
+#include "PythonApp.h"
 #include <lvgl.h>
 #include <Arduino.h>
 #include <LittleFS.h>
 
 class FileExplorerApp : public App {
 private:
-    lv_obj_t* main_bg;
-    lv_obj_t* list;
-    lv_obj_t* header;
-    lv_obj_t* lbl_path;
+    lv_obj_t* main_bg = nullptr;
+    lv_obj_t* list = nullptr;
+    lv_obj_t* header = nullptr;
+    lv_obj_t* lbl_path = nullptr;
     String current_path;
 
-    // ── Viewer texte plein écran ─────────────────────────────────────────
+    // Viewer texte plein ecran
     lv_obj_t* viewer_panel = nullptr;
 
+    // Menu contextuel long-press
+    lv_obj_t* context_menu = nullptr;
+    String selected_path = "";
+    bool selected_is_dir = false;
+    String suppress_click_path = "";
+
+    static bool isTextExtension(const String& name) {
+        return name.endsWith(".txt") || name.endsWith(".log") ||
+               name.endsWith(".json") || name.endsWith(".csv") ||
+               name.endsWith(".md") || name.endsWith(".ini");
+    }
+
+    static bool isPythonExtension(const String& name) {
+        return name.endsWith(".py");
+    }
+
+    String fileNameFromPath(const String& path) const {
+        int slash = path.lastIndexOf('/');
+        if (slash < 0) {
+            return path;
+        }
+        return path.substring(slash + 1);
+    }
+
+    String buildFullPath(const String& shortName) const {
+        String full = current_path;
+        if (!full.endsWith("/")) {
+            full += "/";
+        }
+        full += shortName;
+        return full;
+    }
+
+    bool consumeSuppressedClick(const String& fullPath) {
+        if (suppress_click_path == fullPath) {
+            suppress_click_path = "";
+            return true;
+        }
+        return false;
+    }
+
+    void showInfoPopup(const String& title, const String& message) {
+        lv_obj_t* mbox = lv_msgbox_create(NULL, title.c_str(), message.c_str(), NULL, true);
+        lv_obj_center(mbox);
+    }
+
+    bool ensureDirExists(const String& path) {
+        if (path == "/") {
+            return true;
+        }
+        File d = LittleFS.open(path, "r");
+        if (d && d.isDirectory()) {
+            d.close();
+            return true;
+        }
+        if (d) {
+            d.close();
+        }
+        return LittleFS.mkdir(path);
+    }
+
+    String uniqueNameInDir(const String& dir, const String& baseName) {
+        String candidate = dir;
+        if (!candidate.endsWith("/")) {
+            candidate += "/";
+        }
+        candidate += baseName;
+
+        File f = LittleFS.open(candidate, "r");
+        if (!f) {
+            return candidate;
+        }
+        f.close();
+
+        int idx = 1;
+        while (idx < 1000) {
+            String alt = dir;
+            if (!alt.endsWith("/")) {
+                alt += "/";
+            }
+            alt += baseName;
+            alt += "_";
+            alt += idx;
+            File af = LittleFS.open(alt, "r");
+            if (!af) {
+                return alt;
+            }
+            af.close();
+            idx++;
+        }
+        return candidate;
+    }
+
+    bool deleteRecursive(const String& path) {
+        File f = LittleFS.open(path, "r");
+        if (!f) {
+            return false;
+        }
+
+        if (!f.isDirectory()) {
+            f.close();
+            return LittleFS.remove(path);
+        }
+
+        File child = f.openNextFile();
+        while (child) {
+            String childPath = child.name();
+            child.close();
+            if (!deleteRecursive(childPath)) {
+                f.close();
+                return false;
+            }
+            child = f.openNextFile();
+        }
+        f.close();
+        return LittleFS.rmdir(path);
+    }
+
+    void closeContextMenu() {
+        if (context_menu) {
+            lv_obj_del(context_menu);
+            context_menu = nullptr;
+        }
+    }
+
     void showTextFile(const String& path) {
-        // Panneau plein écran par-dessus l'explorer
         viewer_panel = lv_obj_create(main_bg);
         lv_obj_set_size(viewer_panel, 320, 480);
         lv_obj_align(viewer_panel, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -30,7 +155,6 @@ private:
         lv_obj_set_style_radius(viewer_panel, 0, 0);
         lv_obj_clear_flag(viewer_panel, LV_OBJ_FLAG_SCROLLABLE);
 
-        // Header viewer
         lv_obj_t* vh = lv_obj_create(viewer_panel);
         lv_obj_set_size(vh, 320, 48);
         lv_obj_align(vh, LV_ALIGN_TOP_MID, 0, 0);
@@ -39,35 +163,32 @@ private:
         lv_obj_set_style_radius(vh, 0, 0);
         lv_obj_clear_flag(vh, LV_OBJ_FLAG_SCROLLABLE);
 
-        // Bouton fermer
         lv_obj_t* btn_close = lv_btn_create(vh);
         lv_obj_set_size(btn_close, 44, 40);
         lv_obj_align(btn_close, LV_ALIGN_LEFT_MID, 0, 0);
         lv_obj_set_style_bg_opa(btn_close, LV_OPA_0, 0);
         lv_obj_set_style_shadow_opa(btn_close, 0, 0);
-        lv_obj_add_event_cb(btn_close, [](lv_event_t* e) {
-            FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
-            if (app && app->viewer_panel) {
-                lv_obj_del(app->viewer_panel);
-                app->viewer_panel = nullptr;
-            }
-        }, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(btn_close,
+                            [](lv_event_t* e) {
+                                FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
+                                if (app && app->viewer_panel) {
+                                    lv_obj_del(app->viewer_panel);
+                                    app->viewer_panel = nullptr;
+                                }
+                            },
+                            LV_EVENT_CLICKED,
+                            this);
         lv_obj_t* lbl_x = lv_label_create(btn_close);
         lv_label_set_text(lbl_x, LV_SYMBOL_LEFT);
         lv_obj_set_style_text_color(lbl_x, lv_color_hex(0x0A84FF), 0);
         lv_obj_center(lbl_x);
 
-        // Nom du fichier
         lv_obj_t* lbl_name = lv_label_create(vh);
-        String shortname = path;
-        int sl = shortname.lastIndexOf('/');
-        if (sl >= 0) shortname = shortname.substring(sl + 1);
-        lv_label_set_text(lbl_name, shortname.c_str());
+        lv_label_set_text(lbl_name, fileNameFromPath(path).c_str());
         lv_obj_set_style_text_color(lbl_name, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_name, LV_ALIGN_CENTER, 0, 0);
 
-        // Zone scrollable pour le contenu
         lv_obj_t* txt_area = lv_textarea_create(viewer_panel);
         lv_obj_set_size(txt_area, 320, 432);
         lv_obj_align(txt_area, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -79,51 +200,176 @@ private:
         lv_textarea_set_cursor_click_pos(txt_area, false);
         lv_textarea_set_one_line(txt_area, false);
 
-        // Lire le fichier (max 8 KB affichés pour ne pas saturer LVGL)
         File f = LittleFS.open(path, "r");
         if (f) {
             constexpr size_t MAX_DISPLAY = 8192;
             String content = "";
             size_t remaining = f.size();
             if (remaining > MAX_DISPLAY) {
-                // Sauter les premiers octets pour afficher la FIN (plus récente)
                 f.seek(remaining - MAX_DISPLAY);
-                content = "...[début tronqué]\n";
+                content = "...[debut tronque]\n";
             }
             while (f.available() && content.length() < MAX_DISPLAY + 64) {
                 content += (char)f.read();
             }
             f.close();
             lv_textarea_set_text(txt_area, content.c_str());
-            // Scroll en bas pour voir les logs les plus récents
             lv_obj_scroll_to_y(txt_area, LV_COORD_MAX, LV_ANIM_OFF);
         } else {
             lv_textarea_set_text(txt_area, "(impossible d'ouvrir le fichier)");
         }
     }
 
+    void openPath(const String& fullPath, bool isDir) {
+        if (isDir) {
+            buildFileList(fullPath);
+            return;
+        }
+
+        String shortName = fileNameFromPath(fullPath);
+        if (isPythonExtension(shortName)) {
+            PythonApp::queueScriptFromFile(fullPath);
+            AppManager::switchTo(APP_PYTHON_TEST);
+            return;
+        }
+
+        if (isTextExtension(shortName)) {
+            showTextFile(fullPath);
+            return;
+        }
+
+        File fi = LittleFS.open(fullPath, "r");
+        String msg = "Fichier : ";
+        msg += shortName;
+        if (fi) {
+            msg += "\nTaille : ";
+            msg += fi.size();
+            msg += " octets";
+            fi.close();
+        }
+        showInfoPopup("Info", msg);
+    }
+
+    bool createFolderInCurrentPath() {
+        String base = "NouveauDossier";
+        String dst = uniqueNameInDir(current_path, base);
+        return LittleFS.mkdir(dst);
+    }
+
+    bool moveToMovedFolder(const String& sourcePath) {
+        if (!ensureDirExists("/moved")) {
+            return false;
+        }
+        String name = fileNameFromPath(sourcePath);
+        String target = uniqueNameInDir("/moved", name);
+        return LittleFS.rename(sourcePath, target);
+    }
+
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
 
     static void up_event(lv_event_t* e) {
         FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
-        if (!app) return;
+        if (!app) {
+            return;
+        }
         String parent = app->current_path;
-        if (parent == "/") return;
+        if (parent == "/") {
+            return;
+        }
         int idx = parent.lastIndexOf('/');
-        if (idx <= 0) parent = "/";
-        else parent = parent.substring(0, idx);
+        if (idx <= 0) {
+            parent = "/";
+        } else {
+            parent = parent.substring(0, idx);
+        }
         app->buildFileList(parent);
     }
 
-    static void open_dir_event(lv_event_t* e) {
+    static void file_item_click_event(lv_event_t* e) {
         FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
-        if (!app) return;
+        if (!app) {
+            return;
+        }
         lv_obj_t* btn = lv_event_get_target(e);
-        const char* name = lv_label_get_text(lv_obj_get_child(btn, 1));
-        String new_path = app->current_path;
-        if (!new_path.endsWith("/")) new_path += "/";
-        new_path += name;
-        app->buildFileList(new_path);
+        lv_obj_t* lbl = lv_obj_get_child(btn, 1);
+        if (!lbl) {
+            return;
+        }
+        String shortName = lv_label_get_text(lbl);
+        String fullPath = app->buildFullPath(shortName);
+        if (app->consumeSuppressedClick(fullPath)) {
+            return;
+        }
+
+        File f = LittleFS.open(fullPath, "r");
+        bool isDir = (f && f.isDirectory());
+        if (f) {
+            f.close();
+        }
+        app->openPath(fullPath, isDir);
+    }
+
+    static void file_item_long_press_event(lv_event_t* e) {
+        FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
+        if (!app) {
+            return;
+        }
+        lv_obj_t* btn = lv_event_get_target(e);
+        lv_obj_t* lbl = lv_obj_get_child(btn, 1);
+        if (!lbl) {
+            return;
+        }
+        String shortName = lv_label_get_text(lbl);
+        String fullPath = app->buildFullPath(shortName);
+
+        File f = LittleFS.open(fullPath, "r");
+        bool isDir = (f && f.isDirectory());
+        if (f) {
+            f.close();
+        }
+
+        app->selected_path = fullPath;
+        app->selected_is_dir = isDir;
+        app->suppress_click_path = fullPath;
+
+        static const char* btns[] = {"Open", "Delete", "Move", "New Folder", "Cancel", ""};
+        String title = isDir ? "Folder" : "File";
+        app->closeContextMenu();
+        app->context_menu = lv_msgbox_create(NULL, title.c_str(), shortName.c_str(), btns, true);
+        lv_obj_center(app->context_menu);
+        lv_obj_add_event_cb(app->context_menu,
+                            [](lv_event_t* ev) {
+                                FileExplorerApp* self = (FileExplorerApp*)lv_event_get_user_data(ev);
+                                if (!self) {
+                                    return;
+                                }
+                                lv_obj_t* mbox = lv_event_get_target(ev);
+                                const char* action = lv_msgbox_get_active_btn_text(mbox);
+                                if (!action) {
+                                    return;
+                                }
+
+                                if (strcmp(action, "Open") == 0) {
+                                    self->openPath(self->selected_path, self->selected_is_dir);
+                                } else if (strcmp(action, "Delete") == 0) {
+                                    bool ok = self->selected_is_dir ? self->deleteRecursive(self->selected_path)
+                                                                    : LittleFS.remove(self->selected_path);
+                                    self->showInfoPopup("Delete", ok ? "Supprime" : "Echec suppression");
+                                    self->buildFileList(self->current_path);
+                                } else if (strcmp(action, "Move") == 0) {
+                                    bool ok = self->moveToMovedFolder(self->selected_path);
+                                    self->showInfoPopup("Move", ok ? "Deplace vers /moved" : "Echec deplacement");
+                                    self->buildFileList(self->current_path);
+                                } else if (strcmp(action, "New Folder") == 0) {
+                                    bool ok = self->createFolderInCurrentPath();
+                                    self->showInfoPopup("Folder", ok ? "Dossier cree" : "Echec creation dossier");
+                                    self->buildFileList(self->current_path);
+                                }
+
+                                self->closeContextMenu();
+                            },
+                            LV_EVENT_VALUE_CHANGED,
+                            app);
     }
 
     void buildFileList(const String& path) {
@@ -131,7 +377,6 @@ private:
         lv_label_set_text(lbl_path, path.c_str());
         lv_obj_clean(list);
 
-        // Bouton pour remonter
         if (path != "/") {
             lv_obj_t* up_btn = lv_list_add_btn(list, LV_SYMBOL_UP, ".. (Parent)");
             lv_obj_add_event_cb(up_btn, up_event, LV_EVENT_CLICKED, this);
@@ -149,44 +394,23 @@ private:
             String name = file.name();
             bool isDir = file.isDirectory();
             String shortName = name;
-            if (shortName.startsWith(path)) shortName = shortName.substring(path.length());
-            if (shortName.startsWith("/")) shortName = shortName.substring(1);
-            if (shortName.length() == 0) { file = root.openNextFile(); continue; }
-
-            lv_obj_t* item = lv_list_add_btn(list, isDir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE, shortName.c_str());
-            if (isDir) {
-                lv_obj_add_event_cb(item, open_dir_event, LV_EVENT_CLICKED, this);
-            } else {
-                bool is_txt = shortName.endsWith(".txt") || shortName.endsWith(".log")
-                           || shortName.endsWith(".json") || shortName.endsWith(".csv");
-                if (is_txt) {
-                    // Viewer texte scrollable
-                    lv_obj_add_event_cb(item, [](lv_event_t* e) {
-                        FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
-                        if (!app) return;
-                        lv_obj_t* btn = lv_event_get_target(e);
-                        const char* fname = lv_label_get_text(lv_obj_get_child(btn, 1));
-                        String full = app->current_path;
-                        if (!full.endsWith("/")) full += "/";
-                        full += fname;
-                        app->showTextFile(full);
-                    }, LV_EVENT_CLICKED, this);
-                } else {
-                    // Autres fichiers : popup info taille
-                    lv_obj_add_event_cb(item, [](lv_event_t* e) {
-                        FileExplorerApp* app = (FileExplorerApp*)lv_event_get_user_data(e);
-                        lv_obj_t* btn = lv_event_get_target(e);
-                        const char* fname = lv_label_get_text(lv_obj_get_child(btn, 1));
-                        String full = app ? (app->current_path + (app->current_path.endsWith("/") ? "" : "/") + fname) : fname;
-                        File fi = LittleFS.open(full, "r");
-                        String msg = "Fichier : ";
-                        msg += fname;
-                        if (fi) { msg += "\nTaille : "; msg += fi.size(); msg += " octets"; fi.close(); }
-                        lv_obj_t* mbox = lv_msgbox_create(NULL, "Info", msg.c_str(), NULL, true);
-                        lv_obj_center(mbox);
-                    }, LV_EVENT_CLICKED, this);
-                }
+            if (shortName.startsWith(path)) {
+                shortName = shortName.substring(path.length());
             }
+            if (shortName.startsWith("/")) {
+                shortName = shortName.substring(1);
+            }
+            if (shortName.length() == 0) {
+                file = root.openNextFile();
+                continue;
+            }
+
+            lv_obj_t* item = lv_list_add_btn(list,
+                                             isDir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE,
+                                             shortName.c_str());
+            lv_obj_add_event_cb(item, file_item_click_event, LV_EVENT_CLICKED, this);
+            lv_obj_add_event_cb(item, file_item_long_press_event, LV_EVENT_LONG_PRESSED, this);
+
             has_content = true;
             file = root.openNextFile();
         }
@@ -201,7 +425,6 @@ public:
         lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x18181A), 0);
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
 
-        // --- HEADER ---
         header = lv_obj_create(main_bg);
         lv_obj_set_size(header, 320, 56);
         lv_obj_set_style_bg_color(header, lv_color_hex(0x232326), 0);
@@ -227,7 +450,6 @@ public:
         lv_obj_set_style_text_font(lbl_path, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_path, LV_ALIGN_CENTER, 0, 0);
 
-        // --- LISTE ---
         list = lv_list_create(main_bg);
         lv_obj_set_size(list, 320, 370);
         lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -237,6 +459,13 @@ public:
         lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
         buildFileList("/");
+    }
+
+    void stop() override {
+        closeContextMenu();
+        viewer_panel = nullptr;
+        suppress_click_path = "";
+        selected_path = "";
     }
 };
 

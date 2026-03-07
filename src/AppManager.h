@@ -23,7 +23,8 @@ enum AppID {
     APP_OLD_HOME,
     APP_PHONE, 
     APP_SMS,
-    APP_WEBRADIO
+    APP_WEBRADIO, 
+    APP_PYTHON_TEST
 };
 
 class AppManager {

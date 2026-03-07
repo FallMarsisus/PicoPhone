@@ -62,8 +62,8 @@ private:
     static const int ITEMS_PER_PAGE = 4;
 
     // Tableau standard (non statique) sécurisé en mémoire
-    AppEntry all_apps[14];   // increased to hold new WebRadio entry
-    const int total_apps = 14;
+    AppEntry all_apps[15];   // increased to hold new WebRadio entry
+    const int total_apps = 15;
 
     // Callbacks de lancement d'apps
     static void open_telegram(lv_event_t* e) { AppManager::switchTo(APP_TELEGRAM); }
@@ -82,6 +82,7 @@ private:
     static void open_phone(lv_event_t* e) { AppManager::switchTo(APP_PHONE); }
     static void open_sms(lv_event_t* e) { AppManager::switchTo(APP_SMS); }
     static void open_webradio(lv_event_t* e) { AppManager::switchTo(APP_WEBRADIO); }
+    static void open_python_test(lv_event_t* e) { AppManager::switchTo(APP_PYTHON_TEST); }
 
     // --- GESTION DE L'ANIMATION ---
     static void anim_y_cb(void * var, int32_t v) {
@@ -411,6 +412,7 @@ public:
         all_apps[11] = {"Velib", "V", lv_color_hex(0x9C27B0), open_velib};
         all_apps[12] = {"WiFi", LV_SYMBOL_WIFI, lv_color_hex(0x00BCD4), open_wifi};
         all_apps[13] = {"Radio", LV_SYMBOL_HOME, lv_color_hex(0x607D8B), open_webradio};
+        all_apps[14] = {"Python", LV_SYMBOL_BULLET, lv_color_hex(0xFF4081), open_python_test};
 
         main_bg = parent;
         app_list_open = false; // Réinitialise l'état au démarrage
