@@ -16,6 +16,9 @@ public:
     // Appelé à chaque tour de boucle (pour les animations ou la logique)
     virtual void update() {}
 
+    // Appelé AVANT lv_obj_clean() pour nettoyer timers/callbacks
+    virtual void preClean() {}
+
     // Appelé quand on quitte l'app (nettoyage)
     virtual void stop() {}
 

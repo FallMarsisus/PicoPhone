@@ -24,7 +24,8 @@ enum AppID {
     APP_PHONE, 
     APP_SMS,
     APP_WEBRADIO, 
-    APP_PYTHON_TEST
+    APP_PYTHON_TEST,
+    APP_STORE
 };
 
 class AppManager {

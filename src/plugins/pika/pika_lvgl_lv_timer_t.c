@@ -13,6 +13,11 @@
 
 PikaEventListener* g_pika_lv_timer_event_listener;
 void __pika_timer_cb(lv_timer_t* timer) {
+    if (NULL == g_pika_lv_timer_event_listener) {
+        /* App stopped, ignore stale timer */
+        lv_timer_del(timer);
+        return;
+    }
     PikaObj* oTimer = newNormalObj(New_pika_lvgl_lv_timer_t);
     obj_setPtr(oTimer, "lv_timer", timer);
     pks_eventListener_send(g_pika_lv_timer_event_listener,

@@ -8,6 +8,7 @@
 #include <lvgl.h>
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <vector>
 
 class FileExplorerApp : public App {
 private:
@@ -15,6 +16,7 @@ private:
     lv_obj_t* list = nullptr;
     lv_obj_t* header = nullptr;
     lv_obj_t* lbl_path = nullptr;
+    lv_obj_t* lbl_storage = nullptr;
     String current_path;
 
     // Viewer texte plein ecran
@@ -25,6 +27,24 @@ private:
     String selected_path = "";
     bool selected_is_dir = false;
     String suppress_click_path = "";
+    
+    // Timer pour fermeture différée du menu (évite use-after-free)
+    lv_timer_t* close_menu_timer = nullptr;
+    
+    // Flag pour rebuild différé (évite lv_obj_clean pendant callback)
+    bool needs_rebuild = false;
+
+    enum PendingAction {
+        ACTION_NONE = 0,
+        ACTION_OPEN,
+        ACTION_DELETE,
+        ACTION_MOVE,
+        ACTION_NEW_FOLDER,
+    };
+
+    PendingAction pending_action = ACTION_NONE;
+    String pending_path = "";
+    bool pending_is_dir = false;
 
     static bool isTextExtension(const String& name) {
         return name.endsWith(".txt") || name.endsWith(".log") ||
@@ -64,6 +84,26 @@ private:
     void showInfoPopup(const String& title, const String& message) {
         lv_obj_t* mbox = lv_msgbox_create(NULL, title.c_str(), message.c_str(), NULL, true);
         lv_obj_center(mbox);
+    }
+
+    void updateStorageLabel() {
+        if (!lbl_storage) {
+            return;
+        }
+        FSInfo fsinfo;
+        if (!LittleFS.info(fsinfo)) {
+            lv_label_set_text(lbl_storage, "FS ?");
+            return;
+        }
+        size_t used = fsinfo.usedBytes;
+        size_t total = fsinfo.totalBytes;
+        char text[48];
+        snprintf(text,
+                 sizeof(text),
+                 "FS %u/%u KB",
+                 (unsigned)(used / 1024),
+                 (unsigned)(total / 1024));
+        lv_label_set_text(lbl_storage, text);
     }
 
     bool ensureDirExists(const String& path) {
@@ -114,35 +154,77 @@ private:
     }
 
     bool deleteRecursive(const String& path) {
-        File f = LittleFS.open(path, "r");
+        Serial.printf("[FileExplorer] deleteRecursive: %s\n", path.c_str());
+        watchdog_update();
+        
+        File f = LittleFS.open(path.c_str(), "r");
         if (!f) {
+            Serial.println("[FileExplorer] deleteRecursive: failed to open");
             return false;
         }
 
         if (!f.isDirectory()) {
             f.close();
-            return LittleFS.remove(path);
+            Serial.println("[FileExplorer] deleteRecursive: removing file");
+            bool ok = LittleFS.remove(path.c_str());
+            Serial.printf("[FileExplorer] deleteRecursive: remove result=%d\n", ok);
+            return ok;
         }
 
+        Serial.println("[FileExplorer] deleteRecursive: is directory, iterating children");
+        // Collecter tous les noms d'enfants d'abord, puis fermer le répertoire
+        // avant de supprimer (évite les conflits de handles ouverts)
+        std::vector<String> children;
         File child = f.openNextFile();
         while (child) {
-            String childPath = child.name();
+            children.push_back(String(child.name()));
             child.close();
-            if (!deleteRecursive(childPath)) {
-                f.close();
-                return false;
-            }
             child = f.openNextFile();
         }
-        f.close();
-        return LittleFS.rmdir(path);
+        f.close();  // Fermer le répertoire AVANT de supprimer les enfants
+        
+        for (const auto& childPath : children) {
+            Serial.printf("[FileExplorer] deleteRecursive: child=%s\n", childPath.c_str());
+            watchdog_update();
+            if (!deleteRecursive(childPath)) {
+                Serial.println("[FileExplorer] deleteRecursive: child failed");
+                return false;
+            }
+        }
+        
+        Serial.println("[FileExplorer] deleteRecursive: removing directory");
+        bool ok = LittleFS.rmdir(path.c_str());
+        Serial.printf("[FileExplorer] deleteRecursive: rmdir result=%d\n", ok);
+        return ok;
     }
 
     void closeContextMenu() {
+        // Annuler tout timer de fermeture en cours
+        if (close_menu_timer) {
+            lv_timer_del(close_menu_timer);
+            close_menu_timer = nullptr;
+        }
+        
         if (context_menu) {
             lv_obj_del(context_menu);
             context_menu = nullptr;
         }
+    }
+    
+    // Fermeture différée pour éviter use-after-free dans les callbacks
+    void closeContextMenuDelayed() {
+        if (close_menu_timer) {
+            return; // Déjà programmé
+        }
+        
+        close_menu_timer = lv_timer_create([](lv_timer_t* t) {
+            FileExplorerApp* self = (FileExplorerApp*)t->user_data;
+            if (self) {
+                self->closeContextMenu();
+            }
+        }, 50, this); // 50ms après la fin de la callback
+        
+        lv_timer_set_repeat_count(close_menu_timer, 1);
     }
 
     void showTextFile(const String& path) {
@@ -332,10 +414,17 @@ private:
         app->selected_is_dir = isDir;
         app->suppress_click_path = fullPath;
 
+        Serial.printf("[FileExplorer] Long press: %s (isDir=%d)\n", fullPath.c_str(), isDir);
+
         static const char* btns[] = {"Open", "Delete", "Move", "New Folder", "Cancel", ""};
-        String title = isDir ? "Folder" : "File";
+        // Stocker title pour éviter destruction avant utilisation par LVGL
+        static String s_title;
+        static String s_name;
+        s_title = isDir ? "Folder" : "File";
+        s_name = shortName;
+        
         app->closeContextMenu();
-        app->context_menu = lv_msgbox_create(NULL, title.c_str(), shortName.c_str(), btns, true);
+        app->context_menu = lv_msgbox_create(NULL, s_title.c_str(), s_name.c_str(), btns, true);
         lv_obj_center(app->context_menu);
         lv_obj_add_event_cb(app->context_menu,
                             [](lv_event_t* ev) {
@@ -349,24 +438,29 @@ private:
                                     return;
                                 }
 
+                                Serial.printf("[FileExplorer] Action: %s\n", action);
+
+                                // Ne pas faire d'opération lourde LVGL/FS dans cette callback.
+                                self->pending_action = ACTION_NONE;
+                                self->pending_path = self->selected_path;
+                                self->pending_is_dir = self->selected_is_dir;
+
                                 if (strcmp(action, "Open") == 0) {
-                                    self->openPath(self->selected_path, self->selected_is_dir);
+                                    self->pending_action = ACTION_OPEN;
                                 } else if (strcmp(action, "Delete") == 0) {
-                                    bool ok = self->selected_is_dir ? self->deleteRecursive(self->selected_path)
-                                                                    : LittleFS.remove(self->selected_path);
-                                    self->showInfoPopup("Delete", ok ? "Supprime" : "Echec suppression");
-                                    self->buildFileList(self->current_path);
+                                    self->pending_action = ACTION_DELETE;
                                 } else if (strcmp(action, "Move") == 0) {
-                                    bool ok = self->moveToMovedFolder(self->selected_path);
-                                    self->showInfoPopup("Move", ok ? "Deplace vers /moved" : "Echec deplacement");
-                                    self->buildFileList(self->current_path);
+                                    self->pending_action = ACTION_MOVE;
                                 } else if (strcmp(action, "New Folder") == 0) {
-                                    bool ok = self->createFolderInCurrentPath();
-                                    self->showInfoPopup("Folder", ok ? "Dossier cree" : "Echec creation dossier");
-                                    self->buildFileList(self->current_path);
+                                    self->pending_action = ACTION_NEW_FOLDER;
+                                } else if (strcmp(action, "Cancel") == 0) {
+                                    Serial.println("[FileExplorer] Cancelled");
                                 }
 
-                                self->closeContextMenu();
+                                // Fermeture différée pour éviter use-after-free (on est dans la callback du menu)
+                                Serial.println("[FileExplorer] Closing menu (delayed)...");
+                                self->closeContextMenuDelayed();
+                                Serial.println("[FileExplorer] Callback done");
                             },
                             LV_EVENT_VALUE_CHANGED,
                             app);
@@ -422,6 +516,9 @@ private:
 public:
     void start(lv_obj_t* parent) override {
         main_bg = parent;
+        needs_rebuild = false;
+        pending_action = ACTION_NONE;
+        pending_path = "";
         lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x18181A), 0);
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -448,7 +545,13 @@ public:
         lv_label_set_text(lbl_path, "/");
         lv_obj_set_style_text_color(lbl_path, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(lbl_path, &lv_font_montserrat_14, 0);
-        lv_obj_align(lbl_path, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_align(lbl_path, LV_ALIGN_LEFT_MID, 56, 0);
+
+        lbl_storage = lv_label_create(header);
+        lv_label_set_text(lbl_storage, "FS ...");
+        lv_obj_set_style_text_color(lbl_storage, lv_color_hex(0x9BC1FF), 0);
+        lv_obj_set_style_text_font(lbl_storage, &lv_font_montserrat_12, 0);
+        lv_obj_align(lbl_storage, LV_ALIGN_RIGHT_MID, -8, 0);
 
         list = lv_list_create(main_bg);
         lv_obj_set_size(list, 320, 370);
@@ -458,7 +561,54 @@ public:
         lv_obj_set_scroll_dir(list, LV_DIR_VER);
         lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
+        updateStorageLabel();
         buildFileList("/");
+    }
+
+    void update() override {
+        if (pending_action != ACTION_NONE) {
+            PendingAction action = pending_action;
+            pending_action = ACTION_NONE;
+            
+            // CRITIQUE: Fermer le context menu IMMÉDIATEMENT avant toute opération
+            // Le closeContextMenuDelayed() avait créé un timer, mais il faut libérer
+            // le menu MAINTENANT pour éviter tout conflit avec les opérations FS/UI
+            closeContextMenu();
+
+            if (action == ACTION_OPEN) {
+                Serial.println("[FileExplorer] UPDATE: Opening...");
+                openPath(pending_path, pending_is_dir);
+            } else if (action == ACTION_DELETE) {
+                Serial.printf("[FileExplorer] UPDATE: Delete %s (isDir=%d)\n", pending_path.c_str(), pending_is_dir);
+                watchdog_update();
+                bool ok;
+                if (pending_is_dir) {
+                    ok = deleteRecursive(pending_path);
+                } else {
+                    ok = LittleFS.remove(pending_path.c_str());
+                }
+                watchdog_update();
+                Serial.printf("[FileExplorer] UPDATE: Delete result=%d\n", ok);
+                needs_rebuild = true;
+            } else if (action == ACTION_MOVE) {
+                Serial.printf("[FileExplorer] UPDATE: Move %s\n", pending_path.c_str());
+                bool ok = moveToMovedFolder(pending_path);
+                needs_rebuild = true;
+            } else if (action == ACTION_NEW_FOLDER) {
+                Serial.println("[FileExplorer] UPDATE: Creating folder...");
+                bool ok = createFolderInCurrentPath();
+                needs_rebuild = true;
+            }
+        }
+
+        // Rebuild différé de la liste après actions (Delete, Move, New Folder)
+        if (needs_rebuild) {
+            Serial.println("[FileExplorer] UPDATE: Rebuilding file list...");
+            needs_rebuild = false;
+            buildFileList(current_path);
+            updateStorageLabel();
+            Serial.println("[FileExplorer] UPDATE: File list rebuilt");
+        }
     }
 
     void stop() override {

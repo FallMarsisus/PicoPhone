@@ -9,6 +9,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <hardware/watchdog.h>
+#include <ArduinoJson.h>
 extern "C" {
     #include "../plugins/pika/pikaScript.h"
     #include "../plugins/pika/PikaObj.h"
@@ -119,7 +120,12 @@ class PythonApp : public App {
 private:
     static PikaObj* globalPikaEnv;
     static String queuedScriptPath;
+    static String lastScriptPath;  // Garde le chemin du dernier script chargé
     String scriptSource;
+    String appName;
+    String appPath;
+    bool splash_done;
+    lv_timer_t* start_script_timer;
 
     static bool readScriptFromFs(const String& path, String& outScript) {
         File f = LittleFS.open(path, "r");
@@ -132,6 +138,123 @@ private:
         }
         f.close();
         return outScript.length() > 0;
+    }
+
+    // Lit le manifest.json pour obtenir le nom de l'appli
+    void readManifest(const String& scriptPath) {
+        // Extraire le dossier de l'appli depuis le chemin du script
+        // Ex: /apps/wordle/main.py -> /apps/wordle
+        int lastSlash = scriptPath.lastIndexOf('/');
+        if (lastSlash == -1) {
+            appName = "Python App";
+            appPath = "";
+            return;
+        }
+        appPath = scriptPath.substring(0, lastSlash);
+        String manifestPath = appPath + "/manifest.json";
+        
+        Serial.printf("[PythonApp] Reading manifest: %s\n", manifestPath.c_str());
+        
+        File f = LittleFS.open(manifestPath, "r");
+        if (!f) {
+            Serial.println("[PythonApp] No manifest found");
+            appName = "Python App";
+            return;
+        }
+        
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, f);
+        f.close();
+        
+        if (error) {
+            Serial.printf("[PythonApp] Manifest parse error: %s\n", error.c_str());
+            appName = "Python App";
+            return;
+        }
+        
+        appName = doc["name"].as<String>();
+        if (appName.length() == 0) {
+            appName = "Python App";
+        }
+        Serial.printf("[PythonApp] App name: %s\n", appName.c_str());
+    }
+
+    // Affiche un splash screen de loading
+    void showSplashScreen() {
+        lv_obj_t* scr = lv_scr_act();
+        
+        // Fond dégradé bleu
+        lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A3E), LV_PART_MAIN);
+        
+        // Icône au centre (symbole fichier/script)
+        lv_obj_t* iconLbl = lv_label_create(scr);
+        lv_label_set_text(iconLbl, LV_SYMBOL_FILE);
+        lv_obj_set_style_text_color(iconLbl, lv_color_hex(0x00D9FF), LV_PART_MAIN);
+        lv_obj_set_style_text_font(iconLbl, &lv_font_montserrat_28, LV_PART_MAIN);
+        lv_obj_align(iconLbl, LV_ALIGN_CENTER, 0, -40);
+        
+        // Nom de l'appli
+        lv_obj_t* nameLbl = lv_label_create(scr);
+        lv_label_set_text(nameLbl, appName.c_str());
+        lv_obj_set_style_text_color(nameLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_set_style_text_font(nameLbl, &lv_font_montserrat_18, LV_PART_MAIN);
+        lv_obj_align(nameLbl, LV_ALIGN_CENTER, 0, 30);
+        
+        // Texte "Chargement..."
+        lv_obj_t* loadingLbl = lv_label_create(scr);
+        lv_label_set_text(loadingLbl, "Chargement...");
+        lv_obj_set_style_text_color(loadingLbl, lv_color_hex(0x888888), LV_PART_MAIN);
+        lv_obj_set_style_text_font(loadingLbl, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_align(loadingLbl, LV_ALIGN_CENTER, 0, 65);
+        
+        Serial.println("[PythonApp] Splash screen displayed");
+    }
+
+    // Lance l'exécution du script Python (appelé par le timer)
+    void startPythonExecution() {
+        Serial.println("[PythonApp] Starting Python execution");
+        unsigned long start_time = millis();
+        
+        // Nettoyer le splash screen
+        lv_obj_clean(lv_scr_act());
+        
+        // Initialise l'environnement PikaPython une seule fois
+        if (globalPikaEnv == nullptr) {
+            Serial.println("[PythonApp] Initializing PikaPython environment...");
+            watchdog_update();
+            globalPikaEnv = pikaPythonInit();
+            watchdog_update();
+            Serial.printf("[PythonApp] PikaPython init took %lu ms\n", millis() - start_time);
+        }
+
+        if (scriptSource.length() == 0) return;
+
+        // Activer la capture de sortie
+        _pika_output_buf = "";
+        _pika_capture_active = true;
+
+        Serial.printf("[PythonApp] Running script (%d bytes)...\n", scriptSource.length());
+        unsigned long exec_start = millis();
+        watchdog_update();
+        VMParameters* result = obj_run(globalPikaEnv, (char*)scriptSource.c_str());
+        watchdog_update();
+        unsigned long exec_time = millis() - exec_start;
+        Serial.printf("[PythonApp] Script execution took %lu ms\n", exec_time);
+
+        _pika_capture_active = false;
+
+        // Vérifier les erreurs
+        int errCode = obj_getErrorCode(globalPikaEnv);
+        if (errCode != 0) {
+            Serial.printf("[PythonApp] Erreur PikaPython code=%d\n", errCode);
+            // Nettoyer l'écran (les widgets créés partiellement)
+            lv_obj_clean(lv_scr_act());
+            showErrorScreen(lv_scr_act(), errCode, _pika_output_buf);
+        }
+        _pika_output_buf = "";
+        splash_done = true;
+        
+        Serial.printf("[PythonApp] Total startup time: %lu ms\n", millis() - start_time);
     }
 
     // Affiche un écran d'erreur LVGL avec les détails
@@ -198,7 +321,10 @@ private:
     }
 
 public:
-    PythonApp(String script) : scriptSource(script) {}
+    PythonApp(String script) : scriptSource(script), splash_done(false), start_script_timer(nullptr) {
+        appName = "Python App";
+        appPath = "";
+    }
 
     static void queueScriptFromFile(const String& path) {
         queuedScriptPath = path;
@@ -207,6 +333,7 @@ public:
     static bool takeQueuedScript(String& outScript) {
         if (queuedScriptPath.length() == 0) return false;
         String path = queuedScriptPath;
+        lastScriptPath = path;  // Garder le chemin pour le manifest
         queuedScriptPath = "";
         return readScriptFromFs(path, outScript);
     }
@@ -267,41 +394,62 @@ public:
     }
 
     void start(lv_obj_t* parent) override {
-        // Initialise l'environnement PikaPython une seule fois
-        if (globalPikaEnv == nullptr) {
-            watchdog_update();
-            globalPikaEnv = pikaPythonInit();
-            watchdog_update();
-        }
-
         if (scriptSource.length() == 0) return;
-
-        // Activer la capture de sortie
-        _pika_output_buf = "";
-        _pika_capture_active = true;
-
-        watchdog_update();
-        VMParameters* result = obj_run(globalPikaEnv, (char*)scriptSource.c_str());
-        watchdog_update();
-
-        _pika_capture_active = false;
-
-        // Vérifier les erreurs
-        int errCode = obj_getErrorCode(globalPikaEnv);
-        if (errCode != 0) {
-            Serial.printf("[PythonApp] Erreur PikaPython code=%d\n", errCode);
-            // Nettoyer l'écran (les widgets créés partiellement)
-            lv_obj_clean(lv_scr_act());
-            showErrorScreen(parent, errCode, _pika_output_buf);
+        
+        // Lire le manifest si on vient d'un fichier queued
+        if (lastScriptPath.length() > 0) {
+            readManifest(lastScriptPath);
         }
-        _pika_output_buf = "";
+        
+        // Afficher le splash screen
+        showSplashScreen();
+        
+        // Lancer un timer pour démarrer le script Python après 100ms
+        // (réduit de 500ms pour un démarrage plus rapide)
+        start_script_timer = lv_timer_create([](lv_timer_t* t) {
+            PythonApp* self = (PythonApp*)t->user_data;
+            if (self) {
+                self->startPythonExecution();
+            }
+            lv_timer_del(t);
+        }, 100, this);
+        lv_timer_set_repeat_count(start_script_timer, 1);
     }
 
     void update() override {}
-    void stop() override {}
+    
+    void preClean() override {
+        Serial.println("[PythonApp] preClean - neutralizing PikaPython timer callbacks");
+        
+        // Supprimer notre timer de démarrage s'il existe
+        if (start_script_timer) {
+            lv_timer_del(start_script_timer);
+            start_script_timer = nullptr;
+        }
+        
+        // Mettre le timer event listener à NULL pour que les timers PikaPython
+        // orphelins se suppriment d'eux-mêmes via le guard NULL dans __pika_timer_cb.
+        // NE PAS appeler pks_eventListener_deinit() ! Les handlers contiennent des
+        // PikaObj encore référencés par globalPikaEnv → double-free → crash.
+        // Le listener sera recréé automatiquement par pks_eventListener_init()
+        // quand le prochain script Python créera un timer.
+        extern PikaEventListener* g_pika_lv_timer_event_listener;
+        g_pika_lv_timer_event_listener = NULL;
+        
+        // NE PAS toucher pika_lv_event_listener_g : il est nécessaire pour
+        // les prochains scripts Python. Les event callbacks LVGL sont filtrés
+        // par type d'event, donc LV_EVENT_DELETE ne les déclenchera pas.
+        
+        Serial.println("[PythonApp] preClean done");
+    }
+    
+    void stop() override {
+        Serial.println("[PythonApp] Stopping");
+    }
 };
 
 PikaObj* PythonApp::globalPikaEnv = nullptr;
 String PythonApp::queuedScriptPath = "";
+String PythonApp::lastScriptPath = "";
 
 #endif

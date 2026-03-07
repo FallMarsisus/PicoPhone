@@ -74,6 +74,10 @@ PikaObj* eventListener_getHandler(PikaObj* self, uintptr_t event_id) {
 }
 
 static void __pika_event_cb(lv_event_t* e) {
+    if (NULL == pika_lv_event_listener_g) {
+        /* App stopped, ignore stale event */
+        return;
+    }
     lv_obj_t* target = lv_event_get_target(e);
     PikaObj* oEevent = newNormalObj(New_pika_lvgl_lv_event);
     obj_setPtr(oEevent, "lv_event", e);

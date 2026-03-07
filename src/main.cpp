@@ -29,6 +29,7 @@
 #include "applications/CalculatorApp.h"
 #include "applications/SettingsApp.h"
 #include "applications/FileExplorerApp.h"
+#include "applications/AppStoreApp.h"
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
 #include "services/SmsNotifyService.h"
@@ -73,8 +74,12 @@ void loadApp(AppID id) {
 
     lv_obj_t* scr = lv_scr_act();
 
-    // 2. CORRECTION MAJEURE : On nettoie LVGL *AVANT* de tuer l'App
-    // Ainsi, si un widget envoie un événement lors de sa destruction, l'App est encore là.
+    // 2a. Laisser l'app nettoyer ses timers/callbacks AVANT la destruction des widgets
+    if (currentApp != nullptr) {
+        currentApp->preClean();
+    }
+
+    // 2b. On nettoie LVGL (widgets)
     lv_obj_clean(scr); 
 
     // 3. Maintenant que l'écran est vide, on peut tuer l'App C++ en sécurité
@@ -151,6 +156,9 @@ void loadApp(AppID id) {
             currentApp = new PythonApp(pyCode);
             break;
         }
+        case APP_STORE:
+            currentApp = new AppStoreApp();
+            break;
         default:
             currentApp = new NewHomeApp();
             break;
