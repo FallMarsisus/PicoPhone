@@ -54,6 +54,8 @@ void pika_lvgl_deinit(PikaObj *self);
 Arg* pika_lvgl_dropdown(PikaObj *self);
 Arg* pika_lvgl_flag_t(PikaObj *self);
 void pika_lvgl_go_home(PikaObj *self);
+char* pika_lvgl_http_get(PikaObj *self, char* url);
+char* pika_lvgl_http_post(PikaObj *self, char* url, char* body, char* content_type);
 Arg* pika_lvgl_ime_pinyin(PikaObj *self);
 Arg* pika_lvgl_img(PikaObj *self);
 Arg* pika_lvgl_img_dsc_t(PikaObj *self);

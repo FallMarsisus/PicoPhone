@@ -79,6 +79,33 @@ void pika_lvgl_go_home(PikaObj* self) {
     pika_app_go_home();
 }
 
+// Bridge vers les fonctions HTTP C++ (implémentées dans main.cpp)
+extern const char* pika_app_http_get(const char* url);
+extern const char* pika_app_http_post(const char* url, const char* body, const char* content_type);
+
+char* pika_lvgl_http_get(PikaObj* self, char* url) {
+    const char* result = pika_app_http_get(url);
+    if (result == NULL) {
+        obj_setErrorCode(self, 1);
+        obj_setSysOut(self, "[http_get] Erreur: pas de WiFi ou requete echouee");
+        return NULL;
+    }
+    // Copier dans un buffer PikaPython
+    obj_setStr(self, "_http_buf", result);
+    return obj_getStr(self, "_http_buf");
+}
+
+char* pika_lvgl_http_post(PikaObj* self, char* url, char* body, char* content_type) {
+    const char* result = pika_app_http_post(url, body, content_type);
+    if (result == NULL) {
+        obj_setErrorCode(self, 1);
+        obj_setSysOut(self, "[http_post] Erreur: pas de WiFi ou requete echouee");
+        return NULL;
+    }
+    obj_setStr(self, "_http_buf", result);
+    return obj_getStr(self, "_http_buf");
+}
+
 void pika_lvgl_flag_t___init__(PikaObj* self) {
     obj_setInt(self, "HIDDEN", LV_OBJ_FLAG_HIDDEN);
     obj_setInt(self, "CLICKABLE", LV_OBJ_FLAG_CLICKABLE);

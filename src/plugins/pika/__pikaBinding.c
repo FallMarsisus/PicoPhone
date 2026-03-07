@@ -2310,6 +2310,28 @@ method_typedef(
     "go_home", ""
 );
 
+void pika_lvgl_http_getMethod(PikaObj *self, Args *_args_){
+    char* url = args_getStr(_args_, "url");
+    char* res = pika_lvgl_http_get(self, url);
+    method_returnStr(_args_, res);
+}
+method_typedef(
+    pika_lvgl_http_get,
+    "http_get", "url"
+);
+
+void pika_lvgl_http_postMethod(PikaObj *self, Args *_args_){
+    char* url = args_getStr(_args_, "url");
+    char* body = args_getStr(_args_, "body");
+    char* content_type = args_getStr(_args_, "content_type");
+    char* res = pika_lvgl_http_post(self, url, body, content_type);
+    method_returnStr(_args_, res);
+}
+method_typedef(
+    pika_lvgl_http_post,
+    "http_post", "url,body,content_type"
+);
+
 void pika_lvgl_ime_pinyinMethod(PikaObj *self, Args *_args_){
     Arg* res = pika_lvgl_ime_pinyin(self);
     method_returnArg(_args_, res);
@@ -2657,6 +2679,7 @@ class_def(pika_lvgl){
     method_def(pika_lvgl___init__, 904762485),
     constructor_def(pika_lvgl_keyboard, 995974006),
     constructor_def(pika_lvgl_point_t, 1003563106),
+    method_def(pika_lvgl_http_post, 1075486890),
     constructor_def(pika_lvgl_chart_series_t, 1160577140),
     constructor_def(pika_lvgl_TEXT_DECOR, 1241293750),
     constructor_def(pika_lvgl_ime_pinyin, 1254179158),
@@ -2670,6 +2693,7 @@ class_def(pika_lvgl){
     constructor_def(pika_lvgl_SCROLLBAR_MODE, 1617468589),
     constructor_def(pika_lvgl_FLEX_ALIGN, 1805883102),
     method_def(pika_lvgl_task_handler, 1814460533),
+    method_def(pika_lvgl_http_get, 1854687716),
     constructor_def(pika_lvgl_canvas, 1978095745),
     constructor_def(pika_lvgl_CHART_AXIS, 1998436235),
     constructor_def(pika_lvgl_CHART_TYPE, 1999120344),
