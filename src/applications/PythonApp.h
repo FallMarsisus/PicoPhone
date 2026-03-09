@@ -13,6 +13,9 @@
 extern "C" {
     #include "../plugins/pika/pikaScript.h"
     #include "../plugins/pika/PikaObj.h"
+    #include "../plugins/pika/PikaCompiler.h"
+    #include "../plugins/pika/PikaVM.h"
+    #include "../plugins/pika/pika_lvgl.h"
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35,6 +38,77 @@ extern "C" void pika_platform_printf(char* fmt, ...) {
     if (_pika_capture_active && _pika_output_buf.length() < PIKA_OUTPUT_MAX) {
         _pika_output_buf += tmp;
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Implémentation des fonctions de fichier pour PikaPython avec LittleFS
+// ═══════════════════════════════════════════════════════════════════════════
+
+extern "C" FILE* pika_platform_fopen(const char* filename, const char* modes) {
+    // Convertir les modes stdio vers les modes LittleFS
+    const char* fsMode = "r"; // Par défaut lecture
+    
+    if (strchr(modes, 'w')) {
+        fsMode = "w"; // Écriture (crée ou tronque)
+    } else if (strchr(modes, 'a')) {
+        fsMode = "a"; // Ajout
+    } else if (strchr(modes, 'r') && strchr(modes, '+')) {
+        fsMode = "r+"; // Lecture/écriture
+    }
+    
+    Serial.printf("[pika_fopen] Opening '%s' with mode '%s' (from '%s')\n", filename, fsMode, modes);
+    
+    File* f = new File(LittleFS.open(filename, fsMode));
+    if (!f || !(*f)) {
+        Serial.printf("[pika_fopen] FAILED to open '%s'\n", filename);
+        delete f;
+        return nullptr;
+    }
+    
+    Serial.printf("[pika_fopen] SUCCESS - file handle: %p\n", (void*)f);
+    return (FILE*)f;
+}
+
+extern "C" int pika_platform_fclose(FILE* stream) {
+    if (!stream) return -1;
+    File* f = (File*)stream;
+    Serial.printf("[pika_fclose] Closing file handle: %p\n", (void*)f);
+    f->close();
+    delete f;
+    return 0;
+}
+
+extern "C" size_t pika_platform_fwrite(const void* ptr, size_t size, size_t n, FILE* stream) {
+    if (!stream) return 0;
+    File* f = (File*)stream;
+    size_t total = size * n;
+    size_t written = f->write((const uint8_t*)ptr, total);
+    // Serial.printf("[pika_fwrite] Wrote %d/%d bytes\n", written, total); // Trop verbeux
+    return written;
+}
+
+extern "C" size_t pika_platform_fread(void* ptr, size_t size, size_t n, FILE* stream) {
+    if (!stream) return 0;
+    File* f = (File*)stream;
+    size_t total = size * n;
+    size_t bytes_read = f->read((uint8_t*)ptr, total);
+    // Serial.printf("[pika_fread] Read %d/%d bytes\n", bytes_read, total); // Trop verbeux
+    return bytes_read;
+}
+
+extern "C" int pika_platform_fseek(FILE* stream, long offset, int whence) {
+    if (!stream) return -1;
+    File* f = (File*)stream;
+    SeekMode mode = SeekSet;
+    if (whence == SEEK_CUR) mode = SeekCur;
+    else if (whence == SEEK_END) mode = SeekEnd;
+    return f->seek(offset, mode) ? 0 : -1;
+}
+
+extern "C" long pika_platform_ftell(FILE* stream) {
+    if (!stream) return -1;
+    File* f = (File*)stream;
+    return f->position();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -125,18 +199,46 @@ private:
     String appName;
     String appPath;
     bool splash_done;
+    bool runtime_cleaned;
     lv_timer_t* start_script_timer;
+
+    void cleanupPythonRuntime(const char* reason) {
+        if (runtime_cleaned) {
+            return;
+        }
+
+        Serial.printf("[PythonApp] cleanup runtime (%s)\n", reason ? reason : "?");
+
+        _pika_capture_active = false;
+        _pika_output_buf = "";
+
+        if (start_script_timer) {
+            lv_timer_del(start_script_timer);
+            start_script_timer = nullptr;
+        }
+
+        if (globalPikaEnv) {
+            // Drop pika_lvgl listeners first so stale LVGL timers self-delete safely.
+            pika_lvgl_deinit(globalPikaEnv);
+            obj_deinit(globalPikaEnv);
+            globalPikaEnv = nullptr;
+        }
+
+        runtime_cleaned = true;
+    }
 
     static bool readScriptFromFs(const String& path, String& outScript) {
         File f = LittleFS.open(path, "r");
         if (!f || f.isDirectory()) return false;
-        constexpr size_t MAX_SCRIPT_SIZE = 24 * 1024;
-        outScript = "";
-        outScript.reserve(1024);
-        while (f.available() && outScript.length() < MAX_SCRIPT_SIZE) {
-            outScript += (char)f.read();
-        }
+        
+        outScript = f.readString();
         f.close();
+        
+        if (outScript.length() > 24576) {
+            outScript = outScript.substring(0, 24576);
+            Serial.printf("[PythonApp] Script truncated to 24KB: %s\n", path.c_str());
+        }
+        
         return outScript.length() > 0;
     }
 
@@ -177,6 +279,104 @@ private:
             appName = "Python App";
         }
         Serial.printf("[PythonApp] App name: %s\n", appName.c_str());
+    }
+
+    // Compile le script Python vers un fichier bytecode .pyo pour accélérer les exécutions suivantes
+    bool compileScriptToBytecode(const String& pyPath, const String& pyoPath) {
+        Serial.printf("[PythonApp] Compiling %s -> %s\n", pyPath.c_str(), pyoPath.c_str());
+        
+        // Vérifier que le dossier parent existe
+        int lastSlash = pyoPath.lastIndexOf('/');
+        if (lastSlash > 0) {
+            String parentDir = pyoPath.substring(0, lastSlash);
+            if (!LittleFS.exists(parentDir)) {
+                Serial.printf("[PythonApp] Creating directory: %s\n", parentDir.c_str());
+                if (!LittleFS.mkdir(parentDir)) {
+                    Serial.printf("[PythonApp] Failed to create directory!\n");
+                    return false;
+                }
+            }
+        }
+        
+        unsigned long compile_start = millis();
+        
+        watchdog_update();
+        PIKA_RES res = pikaCompile((char*)pyoPath.c_str(), (char*)scriptSource.c_str());
+        watchdog_update();
+        
+        unsigned long compile_time = millis() - compile_start;
+        
+        if (res == PIKA_RES_OK) {
+            Serial.printf("[PythonApp] Compilation successful in %lu ms\n", compile_time);
+            // Vérifier que le fichier a bien été créé
+            if (LittleFS.exists(pyoPath)) {
+                File check = LittleFS.open(pyoPath, "r");
+                if (check) {
+                    size_t fileSize = check.size();
+                    check.close();
+                    Serial.printf("[PythonApp] Bytecode file created: %d bytes\n", fileSize);
+                    return true;
+                }
+            }
+            Serial.printf("[PythonApp] Warning: Compilation reported success but file not found!\n");
+            return false;
+        } else {
+            Serial.printf("[PythonApp] Compilation failed with code %d\n", res);
+            return false;
+        }
+    }
+
+    // Tente de charger et exécuter un fichier bytecode .pyo
+    bool tryRunBytecode(const String& pyoPath) {
+        if (!LittleFS.exists(pyoPath)) {
+            Serial.printf("[PythonApp] Bytecode cache not found: %s\n", pyoPath.c_str());
+            return false;
+        }
+        
+        Serial.printf("[PythonApp] Running bytecode from %s\n", pyoPath.c_str());
+        unsigned long exec_start = millis();
+        
+        watchdog_update();
+        VMParameters* result = pikaVM_runByteCodeFile(globalPikaEnv, (char*)pyoPath.c_str());
+        watchdog_update();
+        
+        unsigned long exec_time = millis() - exec_start;
+        Serial.printf("[PythonApp] Bytecode execution took %lu ms\n", exec_time);
+        
+        return (result != nullptr);
+    }
+
+    // Vérifie si le bytecode est à jour par rapport au fichier source
+    bool isBytecodeUpToDate(const String& pyPath, const String& pyoPath) {
+        if (!LittleFS.exists(pyoPath)) {
+            return false;
+        }
+        
+        // Comparer les dates de modification
+        File pyFile = LittleFS.open(pyPath, "r");
+        File pyoFile = LittleFS.open(pyoPath, "r");
+        
+        if (!pyFile || !pyoFile) {
+            if (pyFile) pyFile.close();
+            if (pyoFile) pyoFile.close();
+            return false;
+        }
+        
+        time_t pyTime = pyFile.getLastWrite();
+        time_t pyoTime = pyoFile.getLastWrite();
+        
+        pyFile.close();
+        pyoFile.close();
+        
+        // Si le source est plus récent que le bytecode, invalider le cache
+        if (pyTime > pyoTime) {
+            Serial.printf("[PythonApp] Source file is newer than bytecode, recompiling\n");
+            LittleFS.remove(pyoPath); // Supprimer l'ancien bytecode
+            return false;
+        }
+        
+        Serial.printf("[PythonApp] Bytecode is up to date\n");
+        return true;
     }
 
     // Affiche un splash screen de loading
@@ -231,15 +431,49 @@ private:
 
         // Activer la capture de sortie
         _pika_output_buf = "";
-        _pika_capture_active = true;
+        _pika_capture_active = true;   
+        obj_setErrorCode(globalPikaEnv, 0);
 
-        Serial.printf("[PythonApp] Running script (%d bytes)...\n", scriptSource.length());
-        unsigned long exec_start = millis();
-        watchdog_update();
-        VMParameters* result = obj_run(globalPikaEnv, (char*)scriptSource.c_str());
-        watchdog_update();
-        unsigned long exec_time = millis() - exec_start;
-        Serial.printf("[PythonApp] Script execution took %lu ms\n", exec_time);
+        // Optimisation: utiliser un fichier bytecode .pyo compilé si disponible
+        bool executedFromBytecode = false;
+        
+        if (appPath.length() > 0) {
+            String pyPath = appPath + "/main.py";
+            String pyoPath = appPath + "/main.pyo";
+            
+            // Vérifier si le bytecode existe et est à jour
+            if (isBytecodeUpToDate(pyPath, pyoPath)) {
+                // Essayer de charger le bytecode existant
+                if (tryRunBytecode(pyoPath)) {
+                    executedFromBytecode = true;
+                    Serial.println("[PythonApp] Executed from cached bytecode");
+                }
+            }
+            
+            // Si pas de bytecode à jour, compiler
+            if (!executedFromBytecode) {
+                Serial.println("[PythonApp] Compiling to bytecode...");
+                if (compileScriptToBytecode(pyPath, pyoPath)) {
+                    // Compiler a réussi, exécuter le bytecode fraîchement créé
+                    if (tryRunBytecode(pyoPath)) {
+                        executedFromBytecode = true;
+                        Serial.println("[PythonApp] Executed from newly compiled bytecode");
+                    }
+                }
+            }
+        }
+        
+        // Fallback: si le bytecode n'a pas fonctionné, utiliser l'ancienne méthode
+        if (!executedFromBytecode) {
+            Serial.printf("[PythonApp] Running script from source (%d bytes)...\n", scriptSource.length());
+            unsigned long exec_start = millis();
+            watchdog_update();
+            VMParameters* result = obj_run(globalPikaEnv, (char*)scriptSource.c_str());
+            (void)result;
+            watchdog_update();
+            unsigned long exec_time = millis() - exec_start;
+            Serial.printf("[PythonApp] Script execution took %lu ms\n", exec_time);
+        }
 
         _pika_capture_active = false;
 
@@ -321,9 +555,17 @@ private:
     }
 
 public:
-    PythonApp(String script) : scriptSource(script), splash_done(false), start_script_timer(nullptr) {
+    PythonApp(String script)
+        : scriptSource(script),
+          splash_done(false),
+          runtime_cleaned(false),
+          start_script_timer(nullptr) {
         appName = "Python App";
         appPath = "";
+    }
+
+    ~PythonApp() {
+        cleanupPythonRuntime("destructor");
     }
 
     static void queueScriptFromFile(const String& path) {
@@ -394,7 +636,10 @@ public:
     }
 
     void start(lv_obj_t* parent) override {
+        (void)parent;
         if (scriptSource.length() == 0) return;
+
+        runtime_cleaned = false;
         
         // Lire le manifest si on vient d'un fichier queued
         if (lastScriptPath.length() > 0) {
@@ -404,47 +649,34 @@ public:
         // Afficher le splash screen
         showSplashScreen();
         
-        // Lancer un timer pour démarrer le script Python après 100ms
-        // (réduit de 500ms pour un démarrage plus rapide)
+       // Lancer un timer pour démarrer le script Python après un délai
+        // pour laisser l'UI se stabiliser
         start_script_timer = lv_timer_create([](lv_timer_t* t) {
             PythonApp* self = (PythonApp*)t->user_data;
             if (self) {
                 self->startPythonExecution();
+                
+                // CRUCIAL : On remet le pointeur à zéro pour que preClean l'ignore !
+                self->start_script_timer = nullptr; 
             }
-            lv_timer_del(t);
-        }, 100, this);
+            // ATTENTION : Surtout pas de lv_timer_del(t) ici !
+            // LVGL s'en charge tout seul grâce au repeat_count = 1
+        }, 500, this);
+        
         lv_timer_set_repeat_count(start_script_timer, 1);
     }
 
     void update() override {}
     
     void preClean() override {
-        Serial.println("[PythonApp] preClean - neutralizing PikaPython timer callbacks");
-        
-        // Supprimer notre timer de démarrage s'il existe
-        if (start_script_timer) {
-            lv_timer_del(start_script_timer);
-            start_script_timer = nullptr;
-        }
-        
-        // Mettre le timer event listener à NULL pour que les timers PikaPython
-        // orphelins se suppriment d'eux-mêmes via le guard NULL dans __pika_timer_cb.
-        // NE PAS appeler pks_eventListener_deinit() ! Les handlers contiennent des
-        // PikaObj encore référencés par globalPikaEnv → double-free → crash.
-        // Le listener sera recréé automatiquement par pks_eventListener_init()
-        // quand le prochain script Python créera un timer.
-        extern PikaEventListener* g_pika_lv_timer_event_listener;
-        g_pika_lv_timer_event_listener = NULL;
-        
-        // NE PAS toucher pika_lv_event_listener_g : il est nécessaire pour
-        // les prochains scripts Python. Les event callbacks LVGL sont filtrés
-        // par type d'event, donc LV_EVENT_DELETE ne les déclenchera pas.
-        
+        Serial.println("[PythonApp] preClean");
+        cleanupPythonRuntime("preClean");
         Serial.println("[PythonApp] preClean done");
     }
     
     void stop() override {
         Serial.println("[PythonApp] Stopping");
+        cleanupPythonRuntime("stop");
     }
 };
 

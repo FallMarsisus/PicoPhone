@@ -5,9 +5,12 @@
 #include "AppManager.h"
 #include "../system/Settings.h"
 #include "../system/LTE.h"
+#include "../system/HomeConfig.h"
+#include "../plugins/lv_t9_keyboard.h"
 #include <WiFi.h>
 #include <RP2040Support.h>
 #include <time.h>
+#include <vector>
 
 class SettingsApp : public App {
 private:
@@ -31,9 +34,246 @@ private:
     lv_obj_t* roller_month;
     lv_obj_t* roller_year;
     lv_obj_t* lbl_time_status;
+
+    // Home customization panels
+    lv_obj_t* home_reorder_panel = nullptr;
+    lv_obj_t* home_reorder_list = nullptr;
+    lv_obj_t* home_reorder_hint = nullptr;
+    lv_obj_t* home_python_panel = nullptr;
+    lv_obj_t* home_python_list = nullptr;
+    // T9 folder naming panel
+    lv_obj_t* home_t9_panel = nullptr;
+    lv_obj_t* home_t9_ta = nullptr;
+    lv_obj_t* home_t9_kb = nullptr;
+    std::vector<HomeAppEntry> home_apps_cfg;    // config actuelle (apps affichees a l'accueil)
+    std::vector<HomeAppEntry> python_apps_found; // apps Python trouvees sur le FS
+    int home_selected_index = -1;
+    int editing_folder_index = -1; // -1 = vue principale, >=0 = edition contenu dossier
+    bool folder_move_mode = false; // mode "choisir un dossier destination"
+    int app_to_move_index = -1;    // index de l'app a deplacer dans un dossier
     
     // --- EVENTS ---
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
+    static void open_wifi_event(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
+
+    // === REORDER PANEL ===
+    // Selectionner une app dans la liste de reordonnancement
+    static void home_reorder_select_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+
+        // Mode "deplacer dans un dossier" : clic sur un dossier = destination
+        if (app->folder_move_mode) {
+            auto& list = (app->editing_folder_index >= 0)
+                ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
+                : app->home_apps_cfg;
+            if (idx >= 0 && idx < (int)list.size() && list[idx].isFolder() && app->app_to_move_index >= 0) {
+                HomeAppEntry moved = list[app->app_to_move_index];
+                homeConfig::getFolderChildren(list[idx].id).push_back(moved);
+                list.erase(list.begin() + app->app_to_move_index);
+            }
+            app->folder_move_mode = false;
+            app->app_to_move_index = -1;
+            app->home_selected_index = -1;
+            app->refreshHomeReorderList();
+            return;
+        }
+
+        auto& list = (app->editing_folder_index >= 0)
+            ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
+            : app->home_apps_cfg;
+        if (idx < 0 || idx >= (int)list.size()) return;
+        app->home_selected_index = idx;
+        app->refreshHomeReorderList();
+    }
+
+    static void home_move_up_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        int i = app->home_selected_index;
+        auto& list = (app->editing_folder_index >= 0)
+            ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
+            : app->home_apps_cfg;
+        if (i > 0 && i < (int)list.size()) {
+            std::swap(list[i - 1], list[i]);
+            app->home_selected_index = i - 1;
+            app->refreshHomeReorderList();
+        }
+    }
+
+    static void home_move_down_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        int i = app->home_selected_index;
+        auto& list = (app->editing_folder_index >= 0)
+            ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
+            : app->home_apps_cfg;
+        int n = (int)list.size();
+        if (i >= 0 && i < n - 1) {
+            std::swap(list[i], list[i + 1]);
+            app->home_selected_index = i + 1;
+            app->refreshHomeReorderList();
+        }
+    }
+
+    // Supprimer l'app selectionnee de la liste
+    static void home_remove_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        int i = app->home_selected_index;
+        auto& list = (app->editing_folder_index >= 0)
+            ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
+            : app->home_apps_cfg;
+        if (i >= 0 && i < (int)list.size()) {
+            // Si c'est un dossier, remonter ses enfants dans la liste principale
+            if (list[i].isFolder() && app->editing_folder_index < 0) {
+                auto ch = homeConfig::getFolderChildren(list[i].id);
+                homeConfig::getFolderChildren(list[i].id).clear();
+                list.erase(list.begin() + i);
+                for (auto& c : ch) {
+                    list.insert(list.begin() + i, c);
+                    i++;
+                }
+            } else if (app->editing_folder_index >= 0) {
+                // Retirer de dossier → remettre dans la liste principale
+                HomeAppEntry moved = list[i];
+                list.erase(list.begin() + i);
+                app->home_apps_cfg.insert(app->home_apps_cfg.begin() + app->editing_folder_index + 1, moved);
+            } else {
+                list.erase(list.begin() + i);
+            }
+            app->home_selected_index = -1;
+            app->refreshHomeReorderList();
+        }
+    }
+
+    static void home_reorder_save_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->editing_folder_index = -1;
+        homeConfig::saveConfig(app->home_apps_cfg);
+        app->hideHomeReorderPanel();
+    }
+
+    static void home_reorder_cancel_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->editing_folder_index = -1;
+        app->folder_move_mode = false;
+        app->hideHomeReorderPanel();
+    }
+
+    static void home_customize_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        homeConfig::loadConfig(app->home_apps_cfg);
+        app->home_selected_index = -1;
+        app->editing_folder_index = -1;
+        app->folder_move_mode = false;
+        app->refreshHomeReorderList();
+        app->showHomeReorderPanel();
+    }
+
+    // === RESET PAR DEFAUT ===
+    static void home_reset_default_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        homeConfig::resetToDefault(app->home_apps_cfg);
+        app->home_selected_index = -1;
+        app->editing_folder_index = -1;
+        app->refreshHomeReorderList();
+    }
+
+    // === DOSSIER : CREER ===
+    static void home_create_folder_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->showT9Panel();
+    }
+
+    // === DOSSIER : DEPLACER APP DANS DOSSIER ===
+    static void home_move_to_folder_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        if (app->editing_folder_index >= 0) return; // pas en mode edition dossier
+        int i = app->home_selected_index;
+        if (i < 0 || i >= (int)app->home_apps_cfg.size()) return;
+        if (app->home_apps_cfg[i].isFolder()) return; // on ne met pas un dossier dans un dossier
+        // Verifier qu'il y a au moins un dossier
+        bool has_folder = false;
+        for (const auto& a : app->home_apps_cfg) { if (a.isFolder()) { has_folder = true; break; } }
+        if (!has_folder) return;
+        app->folder_move_mode = true;
+        app->app_to_move_index = i;
+        app->refreshHomeReorderList();
+    }
+
+    // === DOSSIER : OUVRIR/FERMER ===
+    static void home_open_folder_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        if (app->editing_folder_index >= 0) {
+            // Fermer le dossier
+            app->editing_folder_index = -1;
+            app->home_selected_index = -1;
+            app->refreshHomeReorderList();
+            return;
+        }
+        int i = app->home_selected_index;
+        if (i < 0 || i >= (int)app->home_apps_cfg.size()) return;
+        if (!app->home_apps_cfg[i].isFolder()) return;
+        app->editing_folder_index = i;
+        app->home_selected_index = -1;
+        app->refreshHomeReorderList();
+    }
+
+    // === T9 KEYBOARD ===
+    static void t9_confirm_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        const char* text = lv_textarea_get_text(app->home_t9_ta);
+        String name(text);
+        name.trim();
+        if (name.length() > 0) {
+            HomeAppEntry folder;
+            folder.id = "folder:" + name;
+            folder.name = name;
+            folder.symbol = LV_SYMBOL_DIRECTORY;
+            folder.color = 0x8E8E93;
+            folder.appId = -2;
+            app->home_apps_cfg.push_back(folder);
+            app->refreshHomeReorderList();
+        }
+        lv_textarea_set_text(app->home_t9_ta, "");
+        app->hideT9Panel();
+    }
+
+    static void t9_cancel_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        lv_textarea_set_text(app->home_t9_ta, "");
+        app->hideT9Panel();
+    }
+
+    // === PYTHON PANEL ===
+    static void home_python_toggle_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+        if (idx < 0 || idx >= (int)app->python_apps_found.size()) return;
+
+        const HomeAppEntry& py = app->python_apps_found[idx];
+        if (homeConfig::hasAppId(app->home_apps_cfg, py.id)) {
+            homeConfig::removeAppById(app->home_apps_cfg, py.id);
+        } else {
+            app->home_apps_cfg.push_back(py);
+        }
+        // Sauver immediatement pour que ca soit persistant
+        homeConfig::saveConfig(app->home_apps_cfg);
+        app->refreshHomePythonList();
+    }
+
+    static void home_python_close_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->hideHomePythonPanel();
+    }
+
+    static void home_add_python_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        // Charger la config actuelle
+        homeConfig::loadConfig(app->home_apps_cfg);
+        // Scanner les apps Python sur le FS
+        homeConfig::listPythonApps(app->python_apps_found);
+        app->refreshHomePythonList();
+        app->showHomePythonPanel();
+    }
     
     // --- PIN Toggle ---
     static void pin_toggle_event(lv_event_t* e) {
@@ -247,6 +487,145 @@ private:
     void hideTimePanel() {
         lv_obj_add_flag(time_panel, LV_OBJ_FLAG_HIDDEN);
     }
+
+    void showHomeReorderPanel() {
+        if (!home_reorder_panel) return;
+        lv_obj_clear_flag(home_reorder_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(home_reorder_panel);
+    }
+
+    void hideHomeReorderPanel() {
+        if (!home_reorder_panel) return;
+        lv_obj_add_flag(home_reorder_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void showHomePythonPanel() {
+        if (!home_python_panel) return;
+        lv_obj_clear_flag(home_python_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(home_python_panel);
+    }
+
+    void hideHomePythonPanel() {
+        if (!home_python_panel) return;
+        lv_obj_add_flag(home_python_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void showT9Panel() {
+        if (!home_t9_panel) return;
+        lv_textarea_set_text(home_t9_ta, "");
+        lv_obj_clear_flag(home_t9_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(home_t9_panel);
+    }
+
+    void hideT9Panel() {
+        if (!home_t9_panel) return;
+        lv_obj_add_flag(home_t9_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void refreshHomeReorderList() {
+        if (!home_reorder_list) return;
+        lv_obj_clean(home_reorder_list);
+
+        // Determiner la liste a afficher
+        auto& list = (editing_folder_index >= 0)
+            ? homeConfig::getFolderChildren(home_apps_cfg[editing_folder_index].id)
+            : home_apps_cfg;
+
+        if (list.empty()) {
+            lv_obj_t* lbl = lv_label_create(home_reorder_list);
+            lv_label_set_text(lbl, editing_folder_index >= 0 ? "Dossier vide" : "Aucune app");
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0x8E8E93), 0);
+            if (home_reorder_hint) {
+                if (editing_folder_index >= 0) {
+                    char hint[96];
+                    snprintf(hint, sizeof(hint), LV_SYMBOL_DIRECTORY " %s (vide)",
+                        home_apps_cfg[editing_folder_index].name.c_str());
+                    lv_label_set_text(home_reorder_hint, hint);
+                } else {
+                    lv_label_set_text(home_reorder_hint, "Aucune app configuree");
+                }
+            }
+            return;
+        }
+
+        for (int i = 0; i < (int)list.size(); ++i) {
+            lv_obj_t* row = lv_btn_create(home_reorder_list);
+            lv_obj_set_size(row, lv_pct(100), 46);
+
+            uint32_t bg = 0x2c2c2e;
+            if (folder_move_mode && list[i].isFolder()) bg = 0x5856D6; // violet pour dossiers cibles
+            else if (i == home_selected_index) bg = 0x2f6ff0;
+            lv_obj_set_style_bg_color(row, lv_color_hex(bg), 0);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_style_radius(row, 10, 0);
+            lv_obj_set_user_data(row, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(row, home_reorder_select_event, LV_EVENT_CLICKED, this);
+
+            lv_obj_t* lbl = lv_label_create(row);
+            char line[96];
+            if (list[i].isFolder()) {
+                snprintf(line, sizeof(line), "%02d " LV_SYMBOL_DIRECTORY " %s (%d)",
+                    i + 1, list[i].name.c_str(), homeConfig::getFolderChildCount(list[i].id));
+            } else {
+                snprintf(line, sizeof(line), "%02d  %s", i + 1, list[i].name.c_str());
+            }
+            lv_label_set_text(lbl, line);
+            lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+            lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 8, 0);
+        }
+
+        if (home_reorder_hint) {
+            if (folder_move_mode) {
+                lv_label_set_text(home_reorder_hint, "Choisissez un dossier destination");
+            } else if (editing_folder_index >= 0) {
+                char hint[96];
+                snprintf(hint, sizeof(hint), LV_SYMBOL_DIRECTORY " %s - Suppr = retirer du dossier",
+                    home_apps_cfg[editing_folder_index].name.c_str());
+                lv_label_set_text(home_reorder_hint, hint);
+            } else if (home_selected_index >= 0 && home_selected_index < (int)list.size()) {
+                char hint[96];
+                snprintf(hint, sizeof(hint), "Selection: %s", list[home_selected_index].name.c_str());
+                lv_label_set_text(home_reorder_hint, hint);
+            } else {
+                lv_label_set_text(home_reorder_hint, "Selectionnez puis Monter/Descendre/Supprimer");
+            }
+        }
+    }
+
+    void refreshHomePythonList() {
+        if (!home_python_list) return;
+        lv_obj_clean(home_python_list);
+
+        if (python_apps_found.empty()) {
+            lv_obj_t* lbl = lv_label_create(home_python_list);
+            lv_label_set_text(lbl, "Aucune app Python detectee dans /apps");
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0x8E8E93), 0);
+            return;
+        }
+
+        for (int i = 0; i < (int)python_apps_found.size(); ++i) {
+            const HomeAppEntry& py = python_apps_found[i];
+            bool enabled = homeConfig::hasAppId(home_apps_cfg, py.id);
+
+            lv_obj_t* row = lv_btn_create(home_python_list);
+            lv_obj_set_size(row, lv_pct(100), 50);
+            lv_obj_set_style_bg_color(row, lv_color_hex(0x2c2c2e), 0);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_style_radius(row, 10, 0);
+            lv_obj_set_user_data(row, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(row, home_python_toggle_event, LV_EVENT_CLICKED, this);
+
+            lv_obj_t* lbl = lv_label_create(row);
+            lv_label_set_text(lbl, py.name.c_str());
+            lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+            lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 8, 0);
+
+            lv_obj_t* state = lv_label_create(row);
+            lv_label_set_text(state, enabled ? "Retirer" : "Ajouter");
+            lv_obj_set_style_text_color(state, enabled ? lv_color_hex(0xFF9F0A) : lv_color_hex(0x4CD964), 0);
+            lv_obj_align(state, LV_ALIGN_RIGHT_MID, -6, 0);
+        }
+    }
     
     void refreshList() {
         lv_obj_clean(list_cont);
@@ -339,6 +718,15 @@ private:
         
         // ===== SECTION: SYSTEME =====
         createSection(list_cont, "SYSTEME");
+
+        // WiFi (deplace depuis l'ecran d'accueil)
+        lv_obj_t* row_wifi = createSettingRow(list_cont, "WiFi");
+        lv_obj_t* chevron_wifi = lv_label_create(row_wifi);
+        lv_label_set_text(chevron_wifi, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_wifi, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_wifi, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_wifi, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_wifi, open_wifi_event, LV_EVENT_CLICKED, this);
         
         // Sync time auto
         lv_obj_t* row_sync_time = createSettingRow(list_cont, "Synchro heure auto");
@@ -348,8 +736,8 @@ private:
         lv_obj_align(chevron_sync, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_add_flag(row_sync_time, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row_sync_time, sync_time_auto_event, LV_EVENT_CLICKED, this);
-        
-        // Manual time setting
+
+        // Manual time setting (remonte plus haut dans la liste)
         lv_obj_t* row_manual_time = createSettingRow(list_cont, "Regler l'heure");
         lv_obj_t* chevron_manual = lv_label_create(row_manual_time);
         lv_label_set_text(chevron_manual, LV_SYMBOL_RIGHT);
@@ -357,19 +745,40 @@ private:
         lv_obj_align(chevron_manual, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_add_flag(row_manual_time, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row_manual_time, show_time_panel_event, LV_EVENT_CLICKED, this);
-        
-        // Time status label
+
+        // Time status label (remonte avec Regler l'heure)
         lbl_time_status = lv_label_create(list_cont);
         time_t now;
         time(&now);
         struct tm* t = localtime(&now);
         char timeBuf[32];
-        snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d - %02d/%02d/%04d", 
+        snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d - %02d/%02d/%04d",
                  t->tm_hour, t->tm_min, t->tm_mday, t->tm_mon + 1, t->tm_year + 1900);
         lv_label_set_text(lbl_time_status, timeBuf);
         lv_obj_set_style_text_color(lbl_time_status, lv_color_hex(0x8E8E93), 0);
         lv_obj_set_style_text_font(lbl_time_status, &lv_font_montserrat_12, 0);
         lv_obj_set_style_pad_left(lbl_time_status, 15, 0);
+
+        // ===== SECTION: ECRAN D'ACCUEIL =====
+        createSection(list_cont, "ECRAN D'ACCUEIL");
+
+        // Reorganiser apps
+        lv_obj_t* row_reorder = createSettingRow(list_cont, "Reorganiser les applis");
+        lv_obj_t* chevron_reorder = lv_label_create(row_reorder);
+        lv_label_set_text(chevron_reorder, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_reorder, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_reorder, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_reorder, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_reorder, home_customize_event, LV_EVENT_CLICKED, this);
+
+        // Ajouter apps Python
+        lv_obj_t* row_add_python = createSettingRow(list_cont, "Ajouter applis Python");
+        lv_obj_t* chevron_python = lv_label_create(row_add_python);
+        lv_label_set_text(chevron_python, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_python, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_python, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_add_python, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_add_python, home_add_python_event, LV_EVENT_CLICKED, this);
         
         
         
@@ -629,6 +1038,188 @@ public:
         lv_obj_t* lbl_cancel = lv_label_create(btn_cancel);
         lv_label_set_text(lbl_cancel, "Annuler");
         lv_obj_center(lbl_cancel);
+
+        // --- HOME REORDER PANEL ---
+        home_reorder_panel = lv_obj_create(main_bg);
+        lv_obj_set_size(home_reorder_panel, 320, 480);
+        lv_obj_center(home_reorder_panel);
+        lv_obj_set_style_bg_color(home_reorder_panel, lv_color_hex(0x1c1c1e), 0);
+        lv_obj_set_style_border_width(home_reorder_panel, 0, 0);
+        lv_obj_clear_flag(home_reorder_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(home_reorder_panel, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* hr_title = lv_label_create(home_reorder_panel);
+        lv_label_set_text(hr_title, "Reorganiser les applis");
+        lv_obj_set_style_text_color(hr_title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(hr_title, &lv_font_montserrat_14, 0);
+        lv_obj_align(hr_title, LV_ALIGN_TOP_MID, 0, 10);
+
+        home_reorder_hint = lv_label_create(home_reorder_panel);
+        lv_label_set_text(home_reorder_hint, "Selectionnez une app, puis Monter/Descendre");
+        lv_obj_set_style_text_color(home_reorder_hint, lv_color_hex(0x8E8E93), 0);
+        lv_obj_set_style_text_font(home_reorder_hint, &lv_font_montserrat_12, 0);
+        lv_obj_align(home_reorder_hint, LV_ALIGN_TOP_LEFT, 12, 36);
+
+        home_reorder_list = lv_obj_create(home_reorder_panel);
+        lv_obj_set_size(home_reorder_list, 300, 270);
+        lv_obj_align(home_reorder_list, LV_ALIGN_TOP_MID, 0, 58);
+        lv_obj_set_style_bg_color(home_reorder_list, lv_color_hex(0x161618), 0);
+        lv_obj_set_style_border_width(home_reorder_list, 0, 0);
+        lv_obj_set_style_pad_all(home_reorder_list, 6, 0);
+        lv_obj_set_style_pad_gap(home_reorder_list, 6, 0);
+        lv_obj_set_flex_flow(home_reorder_list, LV_FLEX_FLOW_COLUMN);
+
+        // Row 1: UP, DOWN, DELETE, SAVE
+        lv_obj_t* btn_up = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_up, 68, 38);
+        lv_obj_align(btn_up, LV_ALIGN_BOTTOM_LEFT, 6, -100);
+        lv_obj_set_style_bg_color(btn_up, lv_color_hex(0x2f6ff0), 0);
+        lv_obj_add_event_cb(btn_up, home_move_up_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_up = lv_label_create(btn_up);
+        lv_label_set_text(lbl_up, LV_SYMBOL_UP);
+        lv_obj_center(lbl_up);
+
+        lv_obj_t* btn_down = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_down, 68, 38);
+        lv_obj_align(btn_down, LV_ALIGN_BOTTOM_LEFT, 80, -100);
+        lv_obj_set_style_bg_color(btn_down, lv_color_hex(0x2f6ff0), 0);
+        lv_obj_add_event_cb(btn_down, home_move_down_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_down = lv_label_create(btn_down);
+        lv_label_set_text(lbl_down, LV_SYMBOL_DOWN);
+        lv_obj_center(lbl_down);
+
+        lv_obj_t* btn_del = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_del, 68, 38);
+        lv_obj_align(btn_del, LV_ALIGN_BOTTOM_RIGHT, -86, -100);
+        lv_obj_set_style_bg_color(btn_del, lv_color_hex(0xFF3B30), 0);
+        lv_obj_add_event_cb(btn_del, home_remove_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_del = lv_label_create(btn_del);
+        lv_label_set_text(lbl_del, LV_SYMBOL_TRASH);
+        lv_obj_center(lbl_del);
+
+        lv_obj_t* btn_hr_save = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_hr_save, 68, 38);
+        lv_obj_align(btn_hr_save, LV_ALIGN_BOTTOM_RIGHT, -12, -100);
+        lv_obj_set_style_bg_color(btn_hr_save, lv_color_hex(0x34C759), 0);
+        lv_obj_add_event_cb(btn_hr_save, home_reorder_save_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_hr_save = lv_label_create(btn_hr_save);
+        lv_label_set_text(lbl_hr_save, "Sauver");
+        lv_obj_center(lbl_hr_save);
+
+        // Row 2: RESET, DOSSIER+, OUVRIR/MOVE, FERMER DOSSIER
+        lv_obj_t* btn_reset = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_reset, 68, 38);
+        lv_obj_align(btn_reset, LV_ALIGN_BOTTOM_LEFT, 6, -56);
+        lv_obj_set_style_bg_color(btn_reset, lv_color_hex(0xFF9500), 0);
+        lv_obj_add_event_cb(btn_reset, home_reset_default_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_reset = lv_label_create(btn_reset);
+        lv_label_set_text(lbl_reset, LV_SYMBOL_REFRESH);
+        lv_obj_center(lbl_reset);
+
+        lv_obj_t* btn_folder = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_folder, 68, 38);
+        lv_obj_align(btn_folder, LV_ALIGN_BOTTOM_LEFT, 80, -56);
+        lv_obj_set_style_bg_color(btn_folder, lv_color_hex(0x5856D6), 0);
+        lv_obj_add_event_cb(btn_folder, home_create_folder_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_folder = lv_label_create(btn_folder);
+        lv_label_set_text(lbl_folder, LV_SYMBOL_DIRECTORY "+");
+        lv_obj_center(lbl_folder);
+
+        lv_obj_t* btn_move_to = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_move_to, 68, 38);
+        lv_obj_align(btn_move_to, LV_ALIGN_BOTTOM_RIGHT, -86, -56);
+        lv_obj_set_style_bg_color(btn_move_to, lv_color_hex(0x5856D6), 0);
+        lv_obj_add_event_cb(btn_move_to, home_move_to_folder_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_move = lv_label_create(btn_move_to);
+        lv_label_set_text(lbl_move, LV_SYMBOL_RIGHT LV_SYMBOL_DIRECTORY);
+        lv_obj_center(lbl_move);
+
+        lv_obj_t* btn_open_folder = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_open_folder, 68, 38);
+        lv_obj_align(btn_open_folder, LV_ALIGN_BOTTOM_RIGHT, -12, -56);
+        lv_obj_set_style_bg_color(btn_open_folder, lv_color_hex(0x007AFF), 0);
+        lv_obj_add_event_cb(btn_open_folder, home_open_folder_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_open = lv_label_create(btn_open_folder);
+        lv_label_set_text(lbl_open, LV_SYMBOL_EYE_OPEN);
+        lv_obj_center(lbl_open);
+
+        // Row 3: CLOSE
+        lv_obj_t* btn_hr_cancel = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_hr_cancel, 296, 38);
+        lv_obj_align(btn_hr_cancel, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_style_bg_color(btn_hr_cancel, lv_color_hex(0x3a3a3c), 0);
+        lv_obj_add_event_cb(btn_hr_cancel, home_reorder_cancel_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_hr_cancel = lv_label_create(btn_hr_cancel);
+        lv_label_set_text(lbl_hr_cancel, "Fermer");
+        lv_obj_center(lbl_hr_cancel);
+
+        // --- HOME PYTHON PANEL ---
+        home_python_panel = lv_obj_create(main_bg);
+        lv_obj_set_size(home_python_panel, 320, 480);
+        lv_obj_center(home_python_panel);
+        lv_obj_set_style_bg_color(home_python_panel, lv_color_hex(0x1c1c1e), 0);
+        lv_obj_set_style_border_width(home_python_panel, 0, 0);
+        lv_obj_clear_flag(home_python_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(home_python_panel, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* hp_title = lv_label_create(home_python_panel);
+        lv_label_set_text(hp_title, "Ajouter applis Python");
+        lv_obj_set_style_text_color(hp_title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(hp_title, &lv_font_montserrat_14, 0);
+        lv_obj_align(hp_title, LV_ALIGN_TOP_MID, 0, 10);
+
+        lv_obj_t* hp_hint = lv_label_create(home_python_panel);
+        lv_label_set_text(hp_hint, "Cliquez pour ajouter/retirer (sauvegarde auto)");
+        lv_obj_set_style_text_color(hp_hint, lv_color_hex(0x8E8E93), 0);
+        lv_obj_set_style_text_font(hp_hint, &lv_font_montserrat_12, 0);
+        lv_obj_align(hp_hint, LV_ALIGN_TOP_LEFT, 12, 36);
+
+        home_python_list = lv_obj_create(home_python_panel);
+        lv_obj_set_size(home_python_list, 300, 370);
+        lv_obj_align(home_python_list, LV_ALIGN_TOP_MID, 0, 58);
+        lv_obj_set_style_bg_color(home_python_list, lv_color_hex(0x161618), 0);
+        lv_obj_set_style_border_width(home_python_list, 0, 0);
+        lv_obj_set_style_pad_all(home_python_list, 6, 0);
+        lv_obj_set_style_pad_gap(home_python_list, 6, 0);
+        lv_obj_set_flex_flow(home_python_list, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t* btn_hp_close = lv_btn_create(home_python_panel);
+        lv_obj_set_size(btn_hp_close, 296, 40);
+        lv_obj_align(btn_hp_close, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_style_bg_color(btn_hp_close, lv_color_hex(0x3a3a3c), 0);
+        lv_obj_add_event_cb(btn_hp_close, home_python_close_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_hp_close = lv_label_create(btn_hp_close);
+        lv_label_set_text(lbl_hp_close, "Fermer");
+        lv_obj_center(lbl_hp_close);
+
+        // --- T9 KEYBOARD PANEL (for folder naming) ---
+        home_t9_panel = lv_obj_create(main_bg);
+        lv_obj_set_size(home_t9_panel, 320, 480);
+        lv_obj_center(home_t9_panel);
+        lv_obj_set_style_bg_color(home_t9_panel, lv_color_hex(0x1c1c1e), 0);
+        lv_obj_set_style_border_width(home_t9_panel, 0, 0);
+        lv_obj_clear_flag(home_t9_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(home_t9_panel, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* t9_title = lv_label_create(home_t9_panel);
+        lv_label_set_text(t9_title, "Nom du dossier");
+        lv_obj_set_style_text_color(t9_title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(t9_title, &lv_font_montserrat_14, 0);
+        lv_obj_align(t9_title, LV_ALIGN_TOP_MID, 0, 10);
+
+        home_t9_ta = lv_textarea_create(home_t9_panel);
+        lv_obj_set_size(home_t9_ta, 280, 45);
+        lv_obj_align(home_t9_ta, LV_ALIGN_TOP_MID, 0, 40);
+        lv_textarea_set_one_line(home_t9_ta, true);
+        lv_textarea_set_max_length(home_t9_ta, 20);
+        lv_obj_set_style_text_font(home_t9_ta, &lv_font_montserrat_18, 0);
+
+        home_t9_kb = lv_t9_kb_create(home_t9_panel);
+        lv_obj_set_size(home_t9_kb, 320, 380);
+        lv_obj_align(home_t9_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_t9_kb_set_textarea(home_t9_kb, home_t9_ta);
+        lv_obj_add_event_cb(home_t9_kb, t9_confirm_event, LV_EVENT_READY, this);
+        lv_obj_add_event_cb(home_t9_kb, t9_cancel_event, LV_EVENT_CANCEL, this);
     }
 };
 

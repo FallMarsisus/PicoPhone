@@ -30,6 +30,7 @@ private:
     lv_obj_t* empty_msg_label = nullptr;
     lv_obj_t* search_msg_label = nullptr;
     lv_obj_t* error_msg_label = nullptr;
+    lv_obj_t* qr_overlay = nullptr;
     char target_ssid[32];
 
     // Sauvegarde differee
@@ -78,6 +79,16 @@ private:
 
         bool enabled = lv_obj_has_state(app->sw_wifi, LV_STATE_CHECKED);
         app->set_wifi_enabled(enabled, true);
+    }
+
+    static void open_share_qr_event(lv_event_t* e) {
+        WifiApp* app = (WifiApp*)lv_event_get_user_data(e);
+        if (app) app->open_wifi_share_qr();
+    }
+
+    static void close_qr_overlay_event(lv_event_t* e) {
+        WifiApp* app = (WifiApp*)lv_event_get_user_data(e);
+        if (app) app->close_wifi_share_qr();
     }
 
     static void kb_event(lv_event_t* e) {
@@ -139,6 +150,96 @@ private:
         lv_t9_kb_set_textarea(lv_kb, NULL);
         lv_obj_t* sug = lv_obj_get_child(lv_kb, 0);
         if(sug) lv_obj_add_flag(sug, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    String escape_qr_field(const String& in) {
+        String out;
+        out.reserve(in.length() + 8);
+        for (size_t i = 0; i < in.length(); i++) {
+            char c = in[i];
+            if (c == '\\' || c == ';' || c == ',' || c == ':') out += '\\';
+            out += c;
+        }
+        return out;
+    }
+
+    void close_wifi_share_qr() {
+        if (!qr_overlay) return;
+        lv_obj_del(qr_overlay);
+        qr_overlay = nullptr;
+    }
+
+    void open_wifi_share_qr() {
+        close_wifi_share_qr();
+
+        String ssid;
+        String pass;
+        String auth = "WPA";
+
+        if (WiFi.status() == WL_CONNECTED) {
+            ssid = WiFi.SSID();
+            int idx = wifi_store::find_ssid(ssid.c_str());
+            if (idx >= 0) {
+                const auto* entry = wifi_store::get((size_t)idx);
+                if (entry) pass = entry->pass;
+            }
+        } else if (wifi_store::count() > 0) {
+            const auto* entry = wifi_store::get(0);
+            if (entry) {
+                ssid = entry->ssid;
+                pass = entry->pass;
+            }
+        }
+
+        if (ssid.length() == 0) {
+            return;
+        }
+
+        if (pass.length() == 0) auth = "nopass";
+
+        String payload = "WIFI:T:" + auth + ";S:" + escape_qr_field(ssid) + ";P:" + escape_qr_field(pass) + ";;";
+
+        qr_overlay = lv_obj_create(lv_scr_act());
+        lv_obj_set_size(qr_overlay, 320, 480);
+        lv_obj_align(qr_overlay, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_set_style_bg_color(qr_overlay, lv_color_hex(0x0B1220), 0);
+        lv_obj_set_style_bg_opa(qr_overlay, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(qr_overlay, 0, 0);
+        lv_obj_set_style_radius(qr_overlay, 0, 0);
+
+        lv_obj_t* title = lv_label_create(qr_overlay);
+        lv_label_set_text(title, "Partager WiFi");
+        lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+
+        lv_obj_t* subtitle = lv_label_create(qr_overlay);
+        String st = "Reseau: " + ssid;
+        lv_label_set_text(subtitle, st.c_str());
+        lv_obj_set_style_text_color(subtitle, lv_color_hex(0x9FB3D9), 0);
+        lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 38);
+
+#if LV_USE_QRCODE
+        lv_obj_t* qr = lv_qrcode_create(qr_overlay, 220, lv_color_black(), lv_color_white());
+        lv_qrcode_update(qr, payload.c_str(), payload.length());
+        lv_obj_center(qr);
+        lv_obj_set_style_border_color(qr, lv_color_white(), 0);
+        lv_obj_set_style_border_width(qr, 6, 0);
+#else
+        lv_obj_t* no_qr = lv_label_create(qr_overlay);
+        lv_label_set_text(no_qr, "LV_USE_QRCODE non active");
+        lv_obj_set_style_text_color(no_qr, lv_color_hex(0xFF6B6B), 0);
+        lv_obj_align(no_qr, LV_ALIGN_CENTER, 0, 0);
+#endif
+
+        lv_obj_t* close = lv_btn_create(qr_overlay);
+        lv_obj_set_size(close, 220, 42);
+        lv_obj_align(close, LV_ALIGN_BOTTOM_MID, 0, -16);
+        lv_obj_set_style_bg_color(close, lv_color_hex(0x1E3A66), 0);
+        lv_obj_add_event_cb(close, close_qr_overlay_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* close_lbl = lv_label_create(close);
+        lv_label_set_text(close_lbl, "Fermer");
+        lv_obj_center(close_lbl);
     }
 
     void show_connecting_state(const char* ssid) {
@@ -333,6 +434,18 @@ public:
         lv_obj_set_style_text_color(t, lv_color_hex(0xFFFFFF), 0);
         lv_obj_align(t, LV_ALIGN_CENTER, 0, 0);
 
+        lv_obj_t* btn_qr = lv_btn_create(header);
+        lv_obj_set_size(btn_qr, 52, 34);
+        lv_obj_align(btn_qr, LV_ALIGN_RIGHT_MID, -6, 0);
+        lv_obj_set_style_bg_color(btn_qr, lv_color_hex(0x0A84FF), 0);
+        lv_obj_set_style_border_width(btn_qr, 0, 0);
+        lv_obj_set_style_radius(btn_qr, 8, 0);
+        lv_obj_add_event_cb(btn_qr, open_share_qr_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* qr_lbl = lv_label_create(btn_qr);
+        lv_label_set_text(qr_lbl, "QR");
+        lv_obj_set_style_text_color(qr_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(qr_lbl);
+
         // --- SWITCH ---
         lv_obj_t* wifi_card = lv_obj_create(parent);
         lv_obj_set_size(wifi_card, 290, 50);
@@ -510,6 +623,10 @@ public:
                 startScan();
             }
         }
+    }
+
+    void stop() override {
+        close_wifi_share_qr();
     }
 };
 

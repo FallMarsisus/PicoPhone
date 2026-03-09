@@ -3,41 +3,30 @@
 
 #include <Arduino.h>
 #include <time.h>
+#include <vector>
 #include "App.h"
 #include "AppManager.h"
 #include <WiFi.h>
 #include "../system/Battery.h"
 #include "../system/Settings.h"
 #include "../system/LTE.h"
+#include "../system/HomeConfig.h"
+#include "./PythonApp.h"
 
 LV_IMG_DECLARE(fondecran);
 
-// Structure pour définir une app dans la liste
-typedef struct {
-    const char* name;
-    const char* symbol;
-    lv_color_t color;
-    lv_event_cb_t callback;
-} AppEntry;
-
 class NewHomeApp : public App {
 private:
-    // pointers to UI elements (initialized in ctor)
     lv_obj_t* main_bg;
     lv_obj_t* bg_img;
-    
-    // Top Bar elements
     lv_obj_t* top_bar_cont; 
     lv_obj_t* wifi_label;
     lv_obj_t* time_label;
     lv_obj_t* batt_icon;
     lv_obj_t* signal_icon = nullptr;
     lv_obj_t* operator_label = nullptr;
-
-    // Bottom Quick Actions
     lv_obj_t* quick_actions_cont;
 
-    // constructor for safe defaults
 public:
     NewHomeApp()
         : main_bg(nullptr), bg_img(nullptr), top_bar_cont(nullptr), wifi_label(nullptr),
@@ -47,7 +36,6 @@ public:
           app_list_open(false), current_page(0) {}
 private:
 
-    // --- VARIABLES DE PAGINATION ---
     lv_obj_t *app_list_cont = nullptr;       
     lv_obj_t *app_page_cont = nullptr;       
     lv_obj_t *nav_dots_label = nullptr;      
@@ -56,34 +44,50 @@ private:
     
     bool app_list_open = false;
     lv_point_t touch_start_point;
-    bool press_started_top = false;  // remember if the last press began near top of screen
+    bool press_started_top = false;
 
     int current_page = 0;
     static const int ITEMS_PER_PAGE = 4;
 
-    // Tableau standard (non statique) sécurisé en mémoire
-    AppEntry all_apps[16];
-    const int total_apps = 16;
+    // Apps chargees depuis HomeConfig (dynamique)
+    std::vector<HomeAppEntry> loaded_apps;
+    int current_folder_index = -1; // -1 = vue principale, >=0 = dans un dossier
 
-    // Callbacks de lancement d'apps
+    // Callback generique : lit le HomeAppEntry depuis user_data
+    static void app_click_cb(lv_event_t* e) {
+        HomeAppEntry* entry = (HomeAppEntry*)lv_event_get_user_data(e);
+        if (!entry) return;
+        if (entry->appId >= 0) {
+            AppManager::switchTo((AppID)entry->appId);
+        } else if (entry->pythonPath.length() > 0) {
+            PythonApp::queueScriptFromFile(entry->pythonPath);
+            AppManager::switchTo(APP_PYTHON_TEST);
+        }
+    }
+
+    // Callback pour ouvrir un dossier
+    static void folder_click_cb(lv_event_t* e) {
+        NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
+        int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+        if (idx < 0 || idx >= (int)app->loaded_apps.size()) return;
+        if (!app->loaded_apps[idx].isFolder()) return;
+        app->current_folder_index = idx;
+        app->current_page = 0;
+        app->renderCurrentPage();
+    }
+
+    // Callback pour revenir a la liste principale
+    static void folder_back_cb(lv_event_t* e) {
+        NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
+        app->current_folder_index = -1;
+        app->current_page = 0;
+        app->renderCurrentPage();
+    }
+
+    // Callbacks fixes pour les quick actions (toujours les memes)
     static void open_telegram(lv_event_t* e) { AppManager::switchTo(APP_TELEGRAM); }
-    static void open_bl(lv_event_t* e) { AppManager::switchTo(APP_BOOTLOADER); }
     static void open_weather(lv_event_t* e) { AppManager::switchTo(APP_WEATHER); }
     static void open_velib(lv_event_t* e) { AppManager::switchTo(APP_VELIB); }
-    static void open_2048(lv_event_t* e) { AppManager::switchTo(APP_2048); }
-    static void open_sketch(lv_event_t* e) { AppManager::switchTo(APP_SKETCH); }
-    static void open_calc(lv_event_t* e) { AppManager::switchTo(APP_CALC); }
-    static void open_wifi(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
-    static void open_settings(lv_event_t* e) { AppManager::switchTo(APP_SETTINGS); }
-    static void open_contacts(lv_event_t* e) { AppManager::switchTo(APP_CONTACTS); }
-    static void open_timer(lv_event_t* e) { AppManager::switchTo(APP_TIMER); }
-    static void open_explorer(lv_event_t* e) { AppManager::switchTo(APP_EXPLORER); }
-    static void open_new_home(lv_event_t* e) { AppManager::switchTo(APP_OLD_HOME); }
-    static void open_phone(lv_event_t* e) { AppManager::switchTo(APP_PHONE); }
-    static void open_sms(lv_event_t* e) { AppManager::switchTo(APP_SMS); }
-    static void open_webradio(lv_event_t* e) { AppManager::switchTo(APP_WEBRADIO); }
-    static void open_python_test(lv_event_t* e) { AppManager::switchTo(APP_PYTHON_TEST); }
-    static void open_store(lv_event_t* e) { AppManager::switchTo(APP_STORE); }
 
     // --- GESTION DE L'ANIMATION ---
     static void anim_y_cb(void * var, int32_t v) {
@@ -132,7 +136,7 @@ private:
 
     static void next_page_cb(lv_event_t* e) {
         NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
-        int total_pages = (app->total_apps + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        int total_pages = ((int)app->loaded_apps.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
         if(app && app->current_page < total_pages - 1) {
             app->current_page++;
             app->renderCurrentPage();
@@ -140,7 +144,8 @@ private:
     }
 
     // --- DESSIN DES ELEMENTS UI ---
-    void create_list_item(lv_obj_t* parent, const AppEntry& entry) {
+    // Cree un element de liste a partir d'un HomeAppEntry (via pointeur stable dans loaded_apps)
+    void create_list_item(lv_obj_t* parent, HomeAppEntry* entry) {
         lv_obj_t* btn = lv_btn_create(parent);
         lv_obj_set_size(btn, 280, 60); 
         lv_obj_set_style_bg_color(btn, lv_color_black(), 0);
@@ -149,26 +154,72 @@ private:
         lv_obj_set_style_border_width(btn, 0, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         
-        if(entry.callback) lv_obj_add_event_cb(btn, entry.callback, LV_EVENT_CLICKED, NULL);
-        // swipe is now handled only on main_bg and app_list_cont
+        if (entry->isFolder()) {
+            // Pour les dossiers: trouver l'index dans loaded_apps
+            int folder_idx = -1;
+            for (int i = 0; i < (int)loaded_apps.size(); i++) {
+                if (&loaded_apps[i] == entry) { folder_idx = i; break; }
+            }
+            lv_obj_set_user_data(btn, (void*)(intptr_t)folder_idx);
+            lv_obj_add_event_cb(btn, folder_click_cb, LV_EVENT_CLICKED, (void*)this);
+        } else {
+            lv_obj_add_event_cb(btn, app_click_cb, LV_EVENT_CLICKED, (void*)entry);
+        }
 
         lv_obj_t* icon_bg = lv_obj_create(btn);
         lv_obj_set_size(icon_bg, 45, 45);
         lv_obj_set_style_radius(icon_bg, 15, 0);
-        lv_obj_set_style_bg_color(icon_bg, entry.color, 0);
+        lv_obj_set_style_bg_color(icon_bg, lv_color_hex(entry->color), 0);
         lv_obj_set_style_border_width(icon_bg, 0, 0);
         lv_obj_align(icon_bg, LV_ALIGN_LEFT_MID, 5, 0);
         lv_obj_clear_flag(icon_bg, LV_OBJ_FLAG_SCROLLABLE); 
 
         lv_obj_t* icon_lbl = lv_label_create(icon_bg);
-        lv_label_set_text(icon_lbl, entry.symbol);
+        lv_label_set_text(icon_lbl, entry->symbol.c_str());
         lv_obj_set_style_text_color(icon_lbl, lv_color_white(), 0);
         lv_obj_center(icon_lbl);
 
         lv_obj_t* lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, entry.name);
+        if (entry->isFolder()) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s (%d)", entry->name.c_str(), homeConfig::getFolderChildCount(entry->id));
+            lv_label_set_text(lbl, buf);
+        } else {
+            lv_label_set_text(lbl, entry->name.c_str());
+        }
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0); 
         lv_obj_set_style_text_color(lbl, lv_color_white(), 0); 
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 70, 0);
+    }
+
+    // Cree un bouton "Retour" pour sortir d'un dossier
+    void create_back_item(lv_obj_t* parent) {
+        lv_obj_t* btn = lv_btn_create(parent);
+        lv_obj_set_size(btn, 280, 60);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x3a3a3c), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_60, 0);
+        lv_obj_set_style_radius(btn, 15, 0);
+        lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, folder_back_cb, LV_EVENT_CLICKED, (void*)this);
+
+        lv_obj_t* icon_bg = lv_obj_create(btn);
+        lv_obj_set_size(icon_bg, 45, 45);
+        lv_obj_set_style_radius(icon_bg, 15, 0);
+        lv_obj_set_style_bg_color(icon_bg, lv_color_hex(0x007AFF), 0);
+        lv_obj_set_style_border_width(icon_bg, 0, 0);
+        lv_obj_align(icon_bg, LV_ALIGN_LEFT_MID, 5, 0);
+        lv_obj_clear_flag(icon_bg, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* icon_lbl = lv_label_create(icon_bg);
+        lv_label_set_text(icon_lbl, LV_SYMBOL_LEFT);
+        lv_obj_set_style_text_color(icon_lbl, lv_color_white(), 0);
+        lv_obj_center(icon_lbl);
+
+        lv_obj_t* lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, "Retour");
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 70, 0);
     }
 
@@ -176,15 +227,44 @@ private:
         if (!app_page_cont) return;
         lv_obj_clean(app_page_cont); 
 
-        int start_idx = current_page * ITEMS_PER_PAGE;
-        int end_idx = start_idx + ITEMS_PER_PAGE;
-        if (end_idx > total_apps) end_idx = total_apps;
-
-        for (int i = start_idx; i < end_idx; i++) {
-            create_list_item(app_page_cont, all_apps[i]);
+        // Determiner la liste source (principale ou dossier)
+        std::vector<HomeAppEntry>* source;
+        if (current_folder_index >= 0 && current_folder_index < (int)loaded_apps.size()
+            && loaded_apps[current_folder_index].isFolder()) {
+            source = &homeConfig::getFolderChildren(loaded_apps[current_folder_index].id);
+        } else {
+            current_folder_index = -1;
+            source = &loaded_apps;
         }
 
-        int total_pages = (total_apps + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        int total = (int)source->size();
+        int effective_items = ITEMS_PER_PAGE;
+
+        // Si on est dans un dossier, la premiere page a un bouton retour
+        bool show_back = (current_folder_index >= 0 && current_page == 0);
+        if (show_back) {
+            create_back_item(app_page_cont);
+            effective_items = ITEMS_PER_PAGE - 1;
+        }
+
+        int start_idx = current_page * ITEMS_PER_PAGE - (current_folder_index >= 0 && current_page > 0 ? 1 : 0);
+        if (current_page == 0) start_idx = 0;
+        int items_shown = 0;
+
+        for (int i = start_idx; i < total && items_shown < effective_items; i++) {
+            create_list_item(app_page_cont, &(*source)[i]);
+            items_shown++;
+        }
+
+        // Calcul total pages (la page 0 a 1 slot en moins si dossier)
+        int total_pages;
+        if (current_folder_index >= 0 && total > 0) {
+            total_pages = 1 + ((total - (ITEMS_PER_PAGE - 1) + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE);
+            if (total <= ITEMS_PER_PAGE - 1) total_pages = 1;
+        } else {
+            total_pages = (total + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        }
+        if (total_pages < 1) total_pages = 1;
 
         String dots = "";
         for(int i=0; i<total_pages; i++) {
@@ -374,47 +454,33 @@ private:
         lv_obj_set_style_border_opa(quick_actions_cont, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(quick_actions_cont, LV_OBJ_FLAG_SCROLLABLE);
 
-        AppEntry quick_apps[] = {
-            {"TG", LV_SYMBOL_GPS, lv_color_hex(0x0088CC), open_telegram},
-            {"Météo", LV_SYMBOL_CHARGE, lv_color_hex(0xFF9500), open_weather},
-            {"Velib", "V", lv_color_hex(0x34C759), open_velib}
+        struct QuickApp { const char* sym; uint32_t col; lv_event_cb_t cb; };
+        QuickApp qa[] = {
+            {LV_SYMBOL_GPS, 0x0088CC, open_telegram},
+            {LV_SYMBOL_CHARGE, 0xFF9500, open_weather},
+            {"V", 0x34C759, open_velib}
         };
 
         for(int i = 0; i < 3; i++) {
             lv_obj_t* icon = lv_btn_create(quick_actions_cont);
             lv_obj_set_size(icon, 55, 55);
-            lv_obj_set_style_bg_color(icon, quick_apps[i].color, 0);
+            lv_obj_set_style_bg_color(icon, lv_color_hex(qa[i].col), 0);
             lv_obj_set_style_radius(icon, 14, 0);
             lv_obj_align(icon, LV_ALIGN_LEFT_MID, i * 85 + 24, 0);
 
             lv_obj_t* icon_label = lv_label_create(icon);
-            lv_label_set_text(icon_label, quick_apps[i].symbol);
+            lv_label_set_text(icon_label, qa[i].sym);
             lv_obj_set_style_text_color(icon_label, lv_color_white(), 0);
             lv_obj_center(icon_label);
-            lv_obj_add_event_cb(icon, quick_apps[i].callback, LV_EVENT_CLICKED, NULL);
-            // no swipe callback on quick action icons
+            lv_obj_add_event_cb(icon, qa[i].cb, LV_EVENT_CLICKED, NULL);
         }
     }
 
 public: 
     void start(lv_obj_t* parent) override {
-        // Peuplement sécurisé des applications (sans static)
-        all_apps[0] = {"2048", "2048", lv_color_hex(0xFF9500), open_2048};
-        all_apps[1] = {"Ardoise", LV_SYMBOL_EDIT, lv_color_hex(0x5AC8FA), open_sketch};
-        all_apps[2] = {"Calculatrice", LV_SYMBOL_PLUS, lv_color_hex(0xFF3B30), open_calc};
-        all_apps[3] = {"Contacts", LV_SYMBOL_LIST, lv_color_hex(0x5856D6), open_contacts};
-        all_apps[4] = {"Explorateur", LV_SYMBOL_DIRECTORY, lv_color_hex(0x34C759), open_explorer};
-        all_apps[5] = {"Horloge", LV_SYMBOL_BELL, lv_color_hex(0x007AFF), open_timer};
-        all_apps[6] = {"Meteo", LV_SYMBOL_CHARGE, lv_color_hex(0x4CAF50), open_weather};
-        all_apps[7] = {"Phone", LV_SYMBOL_CALL, lv_color_hex(0x4CAF50), open_phone};
-        all_apps[8] = {"Settings", LV_SYMBOL_SETTINGS, lv_color_hex(0xFF9800), open_settings};
-        all_apps[9] = {"SMS", LV_SYMBOL_KEYBOARD, lv_color_hex(0xFF5722), open_sms};
-        all_apps[10] = {"Telegram", LV_SYMBOL_GPS, lv_color_hex(0x2196F3), open_telegram};
-        all_apps[11] = {"Velib", "V", lv_color_hex(0x9C27B0), open_velib};
-        all_apps[12] = {"WiFi", LV_SYMBOL_WIFI, lv_color_hex(0x00BCD4), open_wifi};
-        all_apps[13] = {"Radio", LV_SYMBOL_HOME, lv_color_hex(0x607D8B), open_webradio};
-        all_apps[14] = {"Python", LV_SYMBOL_BULLET, lv_color_hex(0xFF4081), open_python_test};
-        all_apps[15] = {"Store", LV_SYMBOL_DOWNLOAD, lv_color_hex(0x1565C0), open_store};
+        // Charger les apps depuis la config persistante
+        homeConfig::loadConfig(loaded_apps);
+        current_folder_index = -1;
 
         main_bg = parent;
         app_list_open = false; // Réinitialise l'état au démarrage

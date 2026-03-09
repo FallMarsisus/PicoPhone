@@ -9,6 +9,7 @@ enum AppID {
     APP_HOME,
     APP_BOOTLOADER,
     APP_WIFI,
+    APP_WALLET,
     APP_TOUCH_CALIB,
     APP_WEATHER,
     APP_TELEGRAM,

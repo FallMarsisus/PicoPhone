@@ -13,6 +13,7 @@
 #include "applications/HomeApp.h"
 #include "applications/BootloaderApp.h"
 #include "applications/WifiApp.h"
+#include "applications/WalletApp.h"
 #include "applications/TouchCalibApp.h"
 #include "applications/WeatherApp.h"
 #include "applications/TelegramApp.h"
@@ -79,7 +80,14 @@ void loadApp(AppID id) {
         currentApp->preClean();
     }
 
-    // 2b. On nettoie LVGL (widgets)
+    // 2b. Attendre que tous les timers LVGL du script se terminent avant de nettoyer les objets
+    // Cela évite une situation où un timer s'exécute et accède à des widgets détruits
+    for (int i = 0; i < 5; i++) {
+        lv_timer_handler();
+        delay(5);
+    }
+
+    // 2c. On nettoie LVGL (widgets)
     lv_obj_clean(scr); 
 
     // 3. Maintenant que l'écran est vide, on peut tuer l'App C++ en sécurité
@@ -102,6 +110,9 @@ void loadApp(AppID id) {
             break;
         case APP_WIFI:
             currentApp = new WifiApp();
+            break;
+        case APP_WALLET:
+            currentApp = new WalletApp();
             break;
         case APP_TOUCH_CALIB:
             currentApp = new TouchCalibApp();
@@ -282,5 +293,4 @@ void loop1() {
     watchdog_update();
 
     yield();
-    delay(5);
 }

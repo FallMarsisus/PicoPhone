@@ -3,11 +3,14 @@
 
 #include <Arduino.h>
 #include <time.h>
+#include <vector>
 #include "App.h"
 #include "AppManager.h"
 #include <WiFi.h>
 #include "../system/Battery.h"
 #include "../system/Settings.h"
+#include "../system/HomeConfig.h"
+#include "./PythonApp.h"
 
 class HomeApp : public App {
 private:
@@ -17,23 +20,29 @@ private:
     lv_obj_t* batt_label;
     lv_obj_t* batt_icon;
     
+    // Configuration des apps
+    std::vector<HomeAppEntry> homeApps;
+    
     // Swipe detection pour Control Center
     lv_coord_t touch_start_y = 0;
     bool touch_active = false;
 
-    static void open_telegram(lv_event_t* e) { AppManager::switchTo(APP_TELEGRAM); }
-    static void open_bl(lv_event_t* e) { AppManager::switchTo(APP_BOOTLOADER); }
-    static void open_weather(lv_event_t* e) { AppManager::switchTo(APP_WEATHER); }
-    static void open_velib(lv_event_t* e) { AppManager::switchTo(APP_VELIB); }
-    static void open_2048(lv_event_t* e) { AppManager::switchTo(APP_2048); }
-    static void open_sketch(lv_event_t* e) { AppManager::switchTo(APP_SKETCH); }
-    static void open_calc(lv_event_t* e) { AppManager::switchTo(APP_CALC); }
-    static void open_wifi(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
-    static void open_settings(lv_event_t* e) { AppManager::switchTo(APP_SETTINGS); }
-    static void open_contacts(lv_event_t* e) { AppManager::switchTo(APP_CONTACTS); }
-    static void open_timer(lv_event_t* e) { AppManager::switchTo(APP_TIMER); }
-    static void open_explorer(lv_event_t* e) { AppManager::switchTo(APP_EXPLORER); }
-    static void open_new_home(lv_event_t* e) { AppManager::switchTo(APP_OLD_HOME); }
+    // Callback de clic sur une icône d'app
+    static void app_click_callback(lv_event_t* e) {
+        HomeAppEntry* entry = (HomeAppEntry*)lv_event_get_user_data(e);
+        if (entry == nullptr) {
+            return;
+        }
+        
+        if (entry->appId >= 0) {
+            // App système
+            AppManager::switchTo((AppID)entry->appId);
+        } else {
+            // App Python
+            PythonApp::queueScriptFromFile(entry->pythonPath);
+            AppManager::switchTo(APP_PYTHON_TEST);
+        }
+    }
 
     // Swipe down = Control Center
     static void screen_touch_event(lv_event_t* e) {
@@ -59,7 +68,7 @@ private:
         }
     }
 
-    void createIcon(lv_obj_t* parent, const char* name, lv_color_t color, const char* symbol, lv_event_cb_t cb) {
+    void createIcon(lv_obj_t* parent, const HomeAppEntry& entry) {
         lv_obj_t* cont = lv_obj_create(parent);
         lv_obj_set_size(cont, 70, 85);
         lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
@@ -71,21 +80,23 @@ private:
 
         lv_obj_t* btn = lv_btn_create(cont);
         lv_obj_set_size(btn, 55, 55);
-        lv_obj_set_style_bg_color(btn, color, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(entry.color), 0);
         lv_obj_set_style_radius(btn, 14, 0);
         lv_obj_set_style_shadow_width(btn, 8, 0);
         lv_obj_set_style_shadow_color(btn, lv_color_hex(0x333333), 0);
         lv_obj_set_style_shadow_ofs_y(btn, 3, 0);
         lv_obj_set_style_shadow_opa(btn, LV_OPA_40, 0);
-        if (cb) lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+        
+        // Passe l'entry directement en user_data de l'event callback.
+        lv_obj_add_event_cb(btn, app_click_callback, LV_EVENT_CLICKED, (void*)&entry);
 
         lv_obj_t* icon = lv_label_create(btn);
-        lv_label_set_text(icon, symbol);
+        lv_label_set_text(icon, entry.symbol.c_str());
         lv_obj_set_style_text_color(icon, lv_color_white(), 0);
         lv_obj_center(icon);
 
         lv_obj_t* label = lv_label_create(cont);
-        lv_label_set_text(label, name);
+        lv_label_set_text(label, entry.name.c_str());
         lv_obj_set_style_text_color(label, lv_color_hex(0xCCCCCC), 0);
         lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
     }
@@ -93,6 +104,10 @@ private:
 public:
     void start(lv_obj_t* parent) override {
         main_bg = parent;
+        
+        // Charger la configuration des apps
+        homeConfig::loadConfig(homeApps);
+        homeConfig::removeAppById(homeApps, "wifi");
         
         // Fond dégradé sombre
         lv_obj_set_style_bg_color(parent, lv_color_hex(0x0a0a0a), 0);
@@ -103,10 +118,10 @@ public:
 
         // === STATUS BAR (style iOS) ===
         lv_obj_t* bar = lv_obj_create(parent);
-        lv_obj_set_size(bar, 320, 35);
+        lv_obj_set_size(bar, 320, 30);
         lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(bar, 0, 0);
-        lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, -3);
         lv_obj_set_scrollbar_mode(bar, LV_SCROLLBAR_MODE_OFF);
         lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(bar, LV_OBJ_FLAG_EVENT_BUBBLE); // Laisse passer le swipe
@@ -142,20 +157,10 @@ public:
         lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(grid, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-        // --- ICONES ---
-        createIcon(grid, "Meteo",    lv_color_hex(0xFF9500), LV_SYMBOL_CHARGE,   open_weather);
-        createIcon(grid, "Telegram", lv_color_hex(0x0088CC), LV_SYMBOL_GPS, open_telegram);
-        createIcon(grid, "Velib'",   lv_color_hex(0x34C759), "V",    open_velib);
-        createIcon(grid, "2048",     lv_color_hex(0xFF375F), "2048",  open_2048);
-        createIcon(grid, "Ardoise",  lv_color_hex(0x5AC8FA), LV_SYMBOL_EDIT,     open_sketch);
-        createIcon(grid, "WiFi",     lv_color_hex(0x007AFF), LV_SYMBOL_WIFI,     open_wifi);
-        createIcon(grid, "Calcul",   lv_color_hex(0xFF3B30), LV_SYMBOL_PLUS,     open_calc);
-        // createIcon(grid, "Systeme",  lv_color_hex(0x8E8E93), LV_SYMBOL_REFRESH,  open_bl);
-        createIcon(grid, "Reglages", lv_color_hex(0x636366), LV_SYMBOL_SETTINGS, open_settings);
-        createIcon(grid, "Contacts", lv_color_hex(0x5856D6), LV_SYMBOL_LIST, open_contacts);
-        createIcon(grid, "Timer",    lv_color_hex(0xFF9F0A), LV_SYMBOL_BELL, open_timer);
-        createIcon(grid, "Explorer", lv_color_hex(0x32D74B), LV_SYMBOL_DIRECTORY, open_explorer);
-        createIcon(grid, "New Home", lv_color_hex(0xAF52DE), LV_SYMBOL_HOME, open_new_home);
+        // --- ICONES (chargées dynamiquement) ---
+        for (const auto& app_entry : homeApps) {
+            createIcon(grid, app_entry);
+        }
     }
 
     void update() override {
