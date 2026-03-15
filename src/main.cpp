@@ -31,6 +31,9 @@
 #include "applications/SettingsApp.h"
 #include "applications/FileExplorerApp.h"
 #include "applications/AppStoreApp.h"
+#include "applications/CryptoApp.h"
+#include "applications/NewsApp.h"
+#include "applications/AirQualityApp.h"
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
 #include "services/SmsNotifyService.h"
@@ -170,6 +173,15 @@ void loadApp(AppID id) {
         case APP_STORE:
             currentApp = new AppStoreApp();
             break;
+        case APP_CRYPTO:
+            currentApp = new CryptoApp();
+            break;
+        case APP_NEWS:
+            currentApp = new NewsApp();
+            break;
+        case APP_AIR_QUALITY:
+            currentApp = new AirQualityApp();
+            break;
         default:
             currentApp = new NewHomeApp();
             break;
@@ -259,7 +271,6 @@ void loop() {
     }
 
     yield();
-    delay(1);
 }
 
 void setup1() {

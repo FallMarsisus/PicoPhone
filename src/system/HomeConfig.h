@@ -83,8 +83,11 @@ namespace homeConfig {
         {"wifi",      "WiFi",         LV_SYMBOL_WIFI,      0x00BCD4, APP_WIFI, ""},
         {"webradio",  "Radio",        LV_SYMBOL_HOME,      0x607D8B, APP_WEBRADIO, ""},
         {"store",     "Store",        LV_SYMBOL_DOWNLOAD,  0x1565C0, APP_STORE, ""},
+        {"crypto",    "Crypto",       LV_SYMBOL_CHARGE,    0xF7931A, APP_CRYPTO, ""},
+        {"news",      "Actualites",   LV_SYMBOL_LIST,      0xFF3B30, APP_NEWS, ""},
+        {"airquality","Qualite Air",  LV_SYMBOL_HOME,      0x27AE60, APP_AIR_QUALITY, ""},
     };
-    const int ALL_APPS_COUNT = 16;
+    const int ALL_APPS_COUNT = 19;
 
     // Charge la config. Si pas de fichier -> toutes les apps par defaut.
     bool loadConfig(std::vector<HomeAppEntry>& apps) {
