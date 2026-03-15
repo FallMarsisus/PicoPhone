@@ -41,7 +41,7 @@
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
 // Taille du buffer (ne pas augmenter si on manque de RAM, le DMA compense)
-static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
+static constexpr uint32_t LV_BUF_PIXELS = 320u * 150u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 
@@ -335,11 +335,13 @@ void touch_read_spi_sdk(uint16_t& x, uint16_t& y, uint16_t& z) {
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     mutex_enter_blocking(&spi_mutex);
 
-    uint16_t x_raw = 0, y_raw = 0, z_raw = 0;
+    // 1. Attendre impérativement la fin du transfert image précédent
+    tft.dmaWait(); 
     
-    // Le TFT doit avoir libéré le bus avant de toucher au SPI
+    // 2. Terminer proprement la transaction TFT (remonte le Chip Select de l'écran)
     tft.endWrite(); 
     
+    uint16_t x_raw = 0, y_raw = 0, z_raw = 0;
     touch_read_spi_sdk(x_raw, y_raw, z_raw);
     
     if (z_raw > 200) {
@@ -356,28 +358,31 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         data->state = LV_INDEV_STATE_REL;
     }
 
-
     mutex_exit(&spi_mutex); 
 }
 
-// === AFFICHAGE OPTIMISÉ DMA ===
+// === AFFICHAGE OPTIMISÉ DMA ASYNCHRONE ===
 void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
     mutex_enter_blocking(&spi_mutex);
 
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
     
+    // Sécurité : s'assurer que l'envoi précédent est fini avant de reconfigurer la fenêtre
+    tft.dmaWait(); 
+    
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
     
+    // Lancement du transfert DMA. Le CPU passe tout de suite à la suite !
     tft.pushPixelsDMA((uint16_t *)&color_p->full, w * h);
     
-    // Attendre explicitement que le DMA ait fini avant de libérer le buffer (ou pas)
-    // tft.dmaWait(); 
+    // NE SURTOUT PAS FAIRE tft.endWrite() ni tft.dmaWait() ICI
+    // Cela laisse le transfert se faire en arrière-plan.
     
-    tft.endWrite();
     mutex_exit(&spi_mutex);
 
+    // On dit à LVGL qu'il peut déjà commencer à calculer le buffer suivant (buf2)
     lv_disp_flush_ready(disp);
 }
 

@@ -63,47 +63,35 @@ static inline void feed_watchdog() {
     watchdog_update();
 }
 
-
+// Callback appelé automatiquement par LVGL quand l'animation est finie
+static void on_screen_unloaded_cb(lv_event_t * e) {
+    App* old_app = (App*)lv_event_get_user_data(e);
+    if (old_app) {
+        old_app->stop();
+        delete old_app;
+    }
+}
 
 
 void loadApp(AppID id) {
-    // 1. On essaie de prendre le mutex sans bloquer le Watchdog
-    // Si Core 1 bloque, on nourrit le chien en attendant
     while (!mutex_try_enter(&app_switch_mutex, nullptr)) {
         feed_watchdog();
         delay(10);
     }
 
-    // --- ZONE CRITIQUE ---
+    // --- 1. Récupération de l'écran et de l'app actuels ---
+    lv_obj_t* old_scr = lv_scr_act();
+    App* old_app = currentApp;
 
-    lv_obj_t* scr = lv_scr_act();
-
-    // 2a. Laisser l'app nettoyer ses timers/callbacks AVANT la destruction des widgets
-    if (currentApp != nullptr) {
-        currentApp->preClean();
+    // Si une app est déjà ouverte, on prépare sa suppression après l'animation
+    if (old_scr != nullptr && old_app != nullptr) {
+        old_app->preClean();
+        // On attache le callback pour supprimer l'objet C++ (delete) une fois l'écran débarrassé
+        lv_obj_add_event_cb(old_scr, on_screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, old_app);
     }
 
-    // 2b. Attendre que tous les timers LVGL du script se terminent avant de nettoyer les objets
-    // Cela évite une situation où un timer s'exécute et accède à des widgets détruits
-    for (int i = 0; i < 5; i++) {
-        lv_timer_handler();
-        delay(5);
-    }
-
-    // 2c. On nettoie LVGL (widgets)
-    lv_obj_clean(scr); 
-
-    // 3. Maintenant que l'écran est vide, on peut tuer l'App C++ en sécurité
-    if (currentApp != nullptr) {
-        currentApp->stop();
-        delete currentApp;
-        currentApp = nullptr;
-    }
-
-    // 4. On force un petit nettoyage mémoire LVGL (optionnel mais sain)
-    lv_mem_monitor_t mon;
-    lv_mem_monitor(&mon);
-    // 2. Création (Factory)
+    // --- 2. Création du nouvel écran indépendant ---
+    lv_obj_t* new_scr = lv_obj_create(NULL);
     switch (id) {
         case APP_OLD_HOME:
             currentApp = new HomeApp();
@@ -187,13 +175,20 @@ void loadApp(AppID id) {
             break;
     }
 
-    // 3. Démarrage
+    // --- 4. Démarrage de la nouvelle App sur le NOUVEL écran ---
     if (currentApp) {
-        currentApp->start(lv_scr_act());
+        currentApp->start(new_scr);
     }
 
+    // --- 5. Lancement de l'animation ---
+    if (old_scr == nullptr) {
+        // Premier boot : on charge l'écran directement
+        lv_scr_load(new_scr);
+    } else {
+        // Transition animée (ex: Slide depuis la droite, 300ms, délai 0, true = effacer old_scr)
+        lv_scr_load_anim(new_scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, true);
+    }
 
-    // Reset du flag
     mutex_exit(&app_switch_mutex);
 }
 
