@@ -115,8 +115,6 @@ private:
         lv_anim_init(&a_list);
         lv_anim_set_var(&a_list, app_list_cont);
         lv_anim_set_exec_cb(&a_list, (lv_anim_exec_xcb_t)anim_y_cb);
-        lv_anim_set_time(&a_list, 300);
-        lv_anim_set_path_cb(&a_list, lv_anim_path_ease_in_out);
 
         // Animation de fondu des actions rapides
         lv_anim_t a_qa;
@@ -125,18 +123,29 @@ private:
             lv_obj_clear_flag(quick_actions_cont, LV_OBJ_FLAG_HIDDEN);
             lv_anim_set_var(&a_qa, quick_actions_cont);
             lv_anim_set_exec_cb(&a_qa, (lv_anim_exec_xcb_t)anim_opa_cb);
-            lv_anim_set_time(&a_qa, 200);
-            lv_anim_set_path_cb(&a_qa, lv_anim_path_ease_in_out);
+            lv_anim_set_path_cb(&a_qa, lv_anim_path_ease_out);
         }
 
         if (open) {
+            // Ouverture : overshoot pour un effet elastique iOS-like
+            lv_anim_set_time(&a_list, 380);
+            lv_anim_set_path_cb(&a_list, lv_anim_path_overshoot);
             lv_anim_set_values(&a_list, cur_ty, 0);
-            if (quick_actions_cont) lv_anim_set_values(&a_qa, 255, 0); // Fade out
+            if (quick_actions_cont) {
+                lv_anim_set_time(&a_qa, 220);
+                lv_anim_set_values(&a_qa, 255, 0); // Fade out
+            }
         } else {
+            // Fermeture : ease_in rapide
+            lv_anim_set_time(&a_list, 250);
+            lv_anim_set_path_cb(&a_list, lv_anim_path_ease_in);
             lv_anim_set_values(&a_list, cur_ty, drawer_hidden_ty);
-            if (quick_actions_cont) lv_anim_set_values(&a_qa, 0, 255); // Fade in
+            if (quick_actions_cont) {
+                lv_anim_set_time(&a_qa, 200);
+                lv_anim_set_values(&a_qa, 0, 255); // Fade in
+            }
         }
-        
+
         lv_anim_start(&a_list);
         if (quick_actions_cont) lv_anim_start(&a_qa);
     }
@@ -320,13 +329,13 @@ private:
             lv_anim_init(&a_slide);
             lv_anim_set_var(&a_slide, app_page_cont);
             lv_anim_set_exec_cb(&a_slide, (lv_anim_exec_xcb_t)anim_x_cb);
-            lv_anim_set_time(&a_slide, 200);
+            lv_anim_set_time(&a_slide, 180);
             lv_anim_set_path_cb(&a_slide, lv_anim_path_ease_out);
-            
+
             if (direction > 0) {
-                lv_anim_set_values(&a_slide, 120, 0); // Vient de la droite
+                lv_anim_set_values(&a_slide, 100, 0); // Vient de la droite
             } else {
-                lv_anim_set_values(&a_slide, -120, 0); // Vient de la gauche
+                lv_anim_set_values(&a_slide, -100, 0); // Vient de la gauche
             }
             lv_anim_start(&a_slide);
 
@@ -334,9 +343,9 @@ private:
             lv_anim_init(&a_fade);
             lv_anim_set_var(&a_fade, app_page_cont);
             lv_anim_set_exec_cb(&a_fade, (lv_anim_exec_xcb_t)anim_opa_cb);
-            lv_anim_set_time(&a_fade, 280);
-            lv_anim_set_values(&a_fade, 150, 255); // Fade plus doux et plus long
-            lv_anim_set_path_cb(&a_fade, lv_anim_path_linear);
+            lv_anim_set_time(&a_fade, 220);
+            lv_anim_set_values(&a_fade, 100, 255); // Fade-in plus rapide
+            lv_anim_set_path_cb(&a_fade, lv_anim_path_ease_out);
             lv_anim_start(&a_fade);
         }
     }
@@ -543,9 +552,9 @@ public:
         app_list_open = false; 
         press_started_top = false;
 
-        // Préparation du descripteur de transition pour le bouton
+        // Préparation du descripteur de transition pour le bouton (press snappy)
         static const lv_style_prop_t props[] = {LV_STYLE_TRANSLATE_Y, (lv_style_prop_t)0};
-        lv_style_transition_dsc_init(&btn_trans, props, lv_anim_path_ease_out, 120, 0, NULL);
+        lv_style_transition_dsc_init(&btn_trans, props, lv_anim_path_ease_out, 80, 0, NULL);
 
         // Calculer l'offset pour cacher le tiroir (480 - 65 = 415)
         drawer_hidden_ty = 415;
