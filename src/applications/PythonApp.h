@@ -198,6 +198,7 @@ private:
     String scriptSource;
     String appName;
     String appPath;
+    String appVersion;
     bool splash_done;
     bool runtime_cleaned;
     lv_timer_t* start_script_timer;
@@ -278,7 +279,9 @@ private:
         if (appName.length() == 0) {
             appName = "Python App";
         }
-        Serial.printf("[PythonApp] App name: %s\n", appName.c_str());
+        appVersion = doc["version"].as<String>();
+        Serial.printf("[PythonApp] App name: %s, version: %s\n", appName.c_str(),
+                      appVersion.length() ? appVersion.c_str() : "(none)");
     }
 
     // Compile le script Python vers un fichier bytecode .pyo pour accélérer les exécutions suivantes
@@ -315,6 +318,16 @@ private:
                     size_t fileSize = check.size();
                     check.close();
                     Serial.printf("[PythonApp] Bytecode file created: %d bytes\n", fileSize);
+                    // Ecrire le fichier .ver avec la version du manifest
+                    if (appVersion.length() > 0) {
+                        String verPath = pyoPath + ".ver";
+                        File vf = LittleFS.open(verPath, "w");
+                        if (vf) {
+                            vf.print(appVersion);
+                            vf.close();
+                            Serial.printf("[PythonApp] Version file written: %s\n", appVersion.c_str());
+                        }
+                    }
                     return true;
                 }
             }
@@ -346,36 +359,47 @@ private:
         return (result != nullptr);
     }
 
-    // Vérifie si le bytecode est à jour par rapport au fichier source
+    // Vérifie si le bytecode est à jour via la version du manifest.json
+    // Stockée dans un fichier .ver compagnon (on ne peut pas modifier le .pyo binaire).
+    // Pas de version dans le manifest → toujours recompiler.
     bool isBytecodeUpToDate(const String& pyPath, const String& pyoPath) {
         if (!LittleFS.exists(pyoPath)) {
             return false;
         }
-        
-        // Comparer les dates de modification
-        File pyFile = LittleFS.open(pyPath, "r");
-        File pyoFile = LittleFS.open(pyoPath, "r");
-        
-        if (!pyFile || !pyoFile) {
-            if (pyFile) pyFile.close();
-            if (pyoFile) pyoFile.close();
+
+        // Pas de version dans le manifest → pas de cache fiable
+        if (appVersion.length() == 0) {
+            Serial.println("[PythonApp] No version in manifest, forcing recompile");
+            LittleFS.remove(pyoPath);
             return false;
         }
-        
-        time_t pyTime = pyFile.getLastWrite();
-        time_t pyoTime = pyoFile.getLastWrite();
-        
-        pyFile.close();
-        pyoFile.close();
-        
-        // Si le source est plus récent que le bytecode, invalider le cache
-        if (pyTime > pyoTime) {
-            Serial.printf("[PythonApp] Source file is newer than bytecode, recompiling\n");
-            LittleFS.remove(pyoPath); // Supprimer l'ancien bytecode
+
+        // Lire la version stockée dans le fichier .ver
+        String verPath = pyoPath + ".ver";
+        if (!LittleFS.exists(verPath)) {
+            Serial.println("[PythonApp] No .ver file found, forcing recompile");
+            LittleFS.remove(pyoPath);
             return false;
         }
-        
-        Serial.printf("[PythonApp] Bytecode is up to date\n");
+
+        File vf = LittleFS.open(verPath, "r");
+        if (!vf) {
+            LittleFS.remove(pyoPath);
+            return false;
+        }
+        String cachedVersion = vf.readString();
+        vf.close();
+        cachedVersion.trim();
+
+        if (cachedVersion != appVersion) {
+            Serial.printf("[PythonApp] Version mismatch: cached='%s' manifest='%s', recompiling\n",
+                          cachedVersion.c_str(), appVersion.c_str());
+            LittleFS.remove(pyoPath);
+            LittleFS.remove(verPath);
+            return false;
+        }
+
+        Serial.printf("[PythonApp] Bytecode up to date (v%s)\n", appVersion.c_str());
         return true;
     }
 
