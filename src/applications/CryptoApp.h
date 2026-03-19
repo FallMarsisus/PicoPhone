@@ -4,6 +4,7 @@
 #include "AppManager.h"
 #include <lvgl.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h> // <-- AJOUT INDISPENSABLE POUR LE HTTPS
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <pico/mutex.h>
@@ -251,9 +252,13 @@ public:
         String payload;
 
         if (use_wifi) {
+            // --- CORRECTION HTTPS ICI ---
+            WiFiClientSecure secureClient;
+            secureClient.setInsecure(); // On ignore la validation stricte du certificat pour simplifier
+            
             HTTPClient http;
             http.setTimeout(10000);
-            http.begin(url);
+            http.begin(secureClient, url); // On passe le client sécurisé
             int code = http.GET();
             watchdog_update();
             if (code == 200) {

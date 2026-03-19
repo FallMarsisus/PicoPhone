@@ -14,8 +14,8 @@
 
 // --- NewsAPI.org (free tier, requires a free API key at newsapi.org) ---
 // Replace with your own key from https://newsapi.org/register
-#define NEWS_API_KEY   "YOUR_NEWS_API_KEY"
-#define NEWS_API_URL   "https://newsapi.org/v2/top-headlines?country=fr&pageSize=5&apiKey=" NEWS_API_KEY
+#define NEWS_API_KEY   "3028730fa95248a79da671f75618581f"
+#define NEWS_API_URL   "http://newsapi.org/v2/top-headlines?sources=le-monde&apiKey=" NEWS_API_KEY
 #define NEWS_MAX_ITEMS 5
 
 LV_FONT_DECLARE(lv_font_montserrat_12);

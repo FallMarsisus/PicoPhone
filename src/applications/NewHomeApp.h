@@ -40,14 +40,11 @@ private:
     int current_page = 0;
     static const int ITEMS_PER_PAGE = 4;
 
-    // Apps chargees depuis HomeConfig (dynamique)
     std::vector<HomeAppEntry> loaded_apps;
-    int current_folder_index = -1; // -1 = vue principale, >=0 = dans un dossier
+    int current_folder_index = -1; 
 
-    // Transition globale pour les effets de clic (boutons qui s'enfoncent)
     lv_style_transition_dsc_t btn_trans;
 
-    // Callback generique : lit le HomeAppEntry depuis user_data
     static void app_click_cb(lv_event_t* e) {
         HomeAppEntry* entry = (HomeAppEntry*)lv_event_get_user_data(e);
         if (!entry) return;
@@ -59,7 +56,6 @@ private:
         }
     }
 
-    // Callback pour ouvrir un dossier
     static void folder_click_cb(lv_event_t* e) {
         NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
         int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
@@ -67,24 +63,20 @@ private:
         if (!app->loaded_apps[idx].isFolder()) return;
         app->current_folder_index = idx;
         app->current_page = 0;
-        app->renderCurrentPage(1); // Animation vers l'avant
+        app->renderCurrentPage(1); 
     }
 
-    // Callback pour revenir a la liste principale
     static void folder_back_cb(lv_event_t* e) {
         NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
         app->current_folder_index = -1;
         app->current_page = 0;
-        app->renderCurrentPage(-1); // Animation vers l'arrière
+        app->renderCurrentPage(-1); 
     }
 
-    // Callbacks fixes pour les quick actions
     static void open_telegram(lv_event_t* e) { AppManager::switchTo(APP_TELEGRAM); }
     static void open_weather(lv_event_t* e) { AppManager::switchTo(APP_WEATHER); }
     static void open_velib(lv_event_t* e) { AppManager::switchTo(APP_VELIB); }
 
-    // --- GESTION DES ANIMATIONS NATIVES LVGL ---
-    // translate_y/x : décalage visuel sans recalcul de layout → beaucoup plus fluide
     static void anim_y_cb(void * var, int32_t v) {
         lv_obj_set_style_translate_y((lv_obj_t*)var, v, 0);
     }
@@ -97,26 +89,22 @@ private:
         lv_obj_set_style_opa((lv_obj_t*)var, v, 0);
     }
 
-    // Offset translate_y pour cacher le tiroir hors écran (calculé dans start)
     lv_coord_t drawer_hidden_ty = 435;
 
     void toggleAppList(bool open) {
         if (!app_list_cont) return;
         app_list_open = open;
 
-        // Nettoyer les animations précédentes pour éviter les conflits
         lv_anim_del(app_list_cont, (lv_anim_exec_xcb_t)anim_y_cb);
         if (quick_actions_cont) lv_anim_del(quick_actions_cont, (lv_anim_exec_xcb_t)anim_opa_cb);
 
         int32_t cur_ty = lv_obj_get_style_translate_y(app_list_cont, 0);
 
-        // Animation du tiroir d'applications (translate_y)
         lv_anim_t a_list;
         lv_anim_init(&a_list);
         lv_anim_set_var(&a_list, app_list_cont);
         lv_anim_set_exec_cb(&a_list, (lv_anim_exec_xcb_t)anim_y_cb);
 
-        // Animation de fondu des actions rapides
         lv_anim_t a_qa;
         lv_anim_init(&a_qa);
         if (quick_actions_cont) {
@@ -127,22 +115,21 @@ private:
         }
 
         if (open) {
-            // Ouverture : overshoot pour un effet elastique iOS-like
-            lv_anim_set_time(&a_list, 380);
-            lv_anim_set_path_cb(&a_list, lv_anim_path_overshoot);
+            // CORRECTION 2: ease_out au lieu de overshoot pour ne pas monter trop haut
+            lv_anim_set_time(&a_list, 300);
+            lv_anim_set_path_cb(&a_list, lv_anim_path_ease_out);
             lv_anim_set_values(&a_list, cur_ty, 0);
             if (quick_actions_cont) {
                 lv_anim_set_time(&a_qa, 220);
-                lv_anim_set_values(&a_qa, 255, 0); // Fade out
+                lv_anim_set_values(&a_qa, 255, 0); 
             }
         } else {
-            // Fermeture : ease_in rapide
             lv_anim_set_time(&a_list, 250);
             lv_anim_set_path_cb(&a_list, lv_anim_path_ease_in);
             lv_anim_set_values(&a_list, cur_ty, drawer_hidden_ty);
             if (quick_actions_cont) {
                 lv_anim_set_time(&a_qa, 200);
-                lv_anim_set_values(&a_qa, 0, 255); // Fade in
+                lv_anim_set_values(&a_qa, 0, 255); 
             }
         }
 
@@ -155,12 +142,11 @@ private:
         if(app) app->toggleAppList(false);
     }
 
-    // --- NAVIGATION PAGINATION ---
     static void prev_page_cb(lv_event_t* e) {
         NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
         if(app && app->current_page > 0) {
             app->current_page--;
-            app->renderCurrentPage(-1); // Animation de slide vers la droite
+            app->renderCurrentPage(-1); 
         }
     }
 
@@ -169,11 +155,10 @@ private:
         int total_pages = ((int)app->loaded_apps.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
         if(app && app->current_page < total_pages - 1) {
             app->current_page++;
-            app->renderCurrentPage(1); // Animation de slide vers la gauche
+            app->renderCurrentPage(1); 
         }
     }
 
-    // --- DESSIN DES ELEMENTS UI ---
     void apply_btn_style(lv_obj_t* btn) {
         lv_obj_set_style_translate_y(btn, 4, LV_STATE_PRESSED);
         lv_obj_set_style_transition(btn, &btn_trans, 0);
@@ -189,7 +174,6 @@ private:
         lv_obj_set_style_border_width(btn, 0, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         
-        // Ajout de l'effet d'enfoncement
         apply_btn_style(btn);
         
         if (entry->isFolder()) {
@@ -261,17 +245,12 @@ private:
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 70, 0);
     }
 
-    // Dir: 1 = Slide Left, -1 = Slide Right, 0 = No animation
     void renderCurrentPage(int direction = 0) {
         if (!app_page_cont) return;
         
-        // Annuler toute animation en cours et reset des styles AVANT de nettoyer les enfants
         lv_anim_del(app_page_cont, (lv_anim_exec_xcb_t)anim_x_cb);
-        lv_anim_del(app_page_cont, (lv_anim_exec_xcb_t)anim_opa_cb);
         lv_obj_set_style_translate_x(app_page_cont, 0, 0);
-        lv_obj_set_style_opa(app_page_cont, LV_OPA_COVER, 0);
 
-        // Maintenant nettoyer les enfants
         lv_obj_clean(app_page_cont); 
 
         std::vector<HomeAppEntry>* source;
@@ -323,38 +302,29 @@ private:
         if (current_page >= total_pages - 1) lv_obj_add_state(btn_next, LV_STATE_DISABLED);
         else lv_obj_clear_state(btn_next, LV_STATE_DISABLED);
 
-        // Déclencher l'animation de page si demandée
+        // CORRECTION 3: Vrai slide propre, toute la largeur de l'écran, sans le Fade qui saccadait.
         if (direction != 0) {
             lv_anim_t a_slide;
             lv_anim_init(&a_slide);
             lv_anim_set_var(&a_slide, app_page_cont);
             lv_anim_set_exec_cb(&a_slide, (lv_anim_exec_xcb_t)anim_x_cb);
-            lv_anim_set_time(&a_slide, 180);
+            lv_anim_set_time(&a_slide, 220); // Vitesse adaptée pour un bel effet de glissement
             lv_anim_set_path_cb(&a_slide, lv_anim_path_ease_out);
 
             if (direction > 0) {
-                lv_anim_set_values(&a_slide, 100, 0); // Vient de la droite
+                lv_anim_set_values(&a_slide, 300, 0); // Vient entièrement de l'extérieur droit
             } else {
-                lv_anim_set_values(&a_slide, -100, 0); // Vient de la gauche
+                lv_anim_set_values(&a_slide, -300, 0); // Vient entièrement de l'extérieur gauche
             }
             lv_anim_start(&a_slide);
-
-            lv_anim_t a_fade;
-            lv_anim_init(&a_fade);
-            lv_anim_set_var(&a_fade, app_page_cont);
-            lv_anim_set_exec_cb(&a_fade, (lv_anim_exec_xcb_t)anim_opa_cb);
-            lv_anim_set_time(&a_fade, 220);
-            lv_anim_set_values(&a_fade, 100, 255); // Fade-in plus rapide
-            lv_anim_set_path_cb(&a_fade, lv_anim_path_ease_out);
-            lv_anim_start(&a_fade);
         }
     }
 
     void createAppListUI() {
         app_list_cont = lv_obj_create(main_bg);
         lv_obj_set_size(app_list_cont, 300, 410);
-        lv_obj_set_pos(app_list_cont, 10, 65); // Position de base = ouverte
-        lv_obj_set_style_translate_y(app_list_cont, drawer_hidden_ty, 0); // Caché hors écran
+        lv_obj_set_pos(app_list_cont, 10, 65); 
+        lv_obj_set_style_translate_y(app_list_cont, drawer_hidden_ty, 0); 
         lv_obj_set_style_bg_color(app_list_cont, lv_color_hex(0x222222), 0);
         lv_obj_set_style_bg_opa(app_list_cont, LV_OPA_50, 0); 
         lv_obj_set_style_border_width(app_list_cont, 0, 0);
@@ -362,7 +332,6 @@ private:
         lv_obj_set_scrollbar_mode(app_list_cont, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_scroll_dir(app_list_cont, LV_DIR_NONE);
 
-        // --- 1. HEADER ---
         lv_obj_t* header_btn = lv_btn_create(app_list_cont);
         lv_obj_set_size(header_btn, 280, 40);
         lv_obj_align(header_btn, LV_ALIGN_TOP_MID, 0, 5);
@@ -380,7 +349,6 @@ private:
         lv_obj_set_style_text_color(header_lbl, lv_color_white(), 0);
         lv_obj_center(header_lbl);
 
-        // --- 2. MIDDLE ---
         app_page_cont = lv_obj_create(app_list_cont);
         lv_obj_set_size(app_page_cont, 280, 280);
         lv_obj_align(app_page_cont, LV_ALIGN_TOP_MID, 0, 45);
@@ -391,7 +359,6 @@ private:
         lv_obj_set_flex_align(app_page_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_gap(app_page_cont, 10, 0);
 
-        // --- 3. FOOTER ---
         lv_obj_t* footer_cont = lv_obj_create(app_list_cont);
         lv_obj_set_size(footer_cont, 280, 60);
         lv_obj_align(footer_cont, LV_ALIGN_BOTTOM_MID, 0, 8);
@@ -429,7 +396,7 @@ private:
         apply_btn_style(btn_next);
 
         current_page = 0;
-        renderCurrentPage(0); // Pas d'animation au premier rendu
+        renderCurrentPage(0); 
 
         lv_obj_add_event_cb(app_list_cont, screen_touch_event, LV_EVENT_ALL, this);
     }
@@ -552,17 +519,14 @@ public:
         app_list_open = false; 
         press_started_top = false;
 
-        // Préparation du descripteur de transition pour le bouton (press snappy)
         static const lv_style_prop_t props[] = {LV_STYLE_TRANSLATE_Y, (lv_style_prop_t)0};
         lv_style_transition_dsc_init(&btn_trans, props, lv_anim_path_ease_out, 80, 0, NULL);
 
-        // Calculer l'offset pour cacher le tiroir (480 - 65 = 415)
         drawer_hidden_ty = 415;
 
-        lv_obj_set_style_bg_color(main_bg, lv_color_black(), 0);
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE); 
 
-        bg_img = lv_img_create(main_bg);
+         bg_img = lv_img_create(main_bg);
         lv_img_set_src(bg_img, &fondecran);
         lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
         lv_obj_clear_flag(bg_img, LV_OBJ_FLAG_CLICKABLE); 

@@ -10,16 +10,22 @@
 #include <AudioOutputI2S.h>
 #include <I2S.h> 
 #include <hardware/vreg.h>
+#include <Wire.h> // Ajout pour la communication avec le tactile capacitif (I2C)
 #include "assets/startuplogo.c"
 #include "system/Battery.h"
 
-// --- PINS ---
-#define TP_CS 16
-#define TP_CLK 10
-#define TP_MOSI 11
-#define TP_MISO 12
-#define LCD_RST_PIN 15
-#define LCD_CS_PIN 9
+// --- PINS ECRAN (Mise à jour) ---
+#define LCD_CS_PIN  9
+#define LCD_DC_PIN  14
+#define LCD_RST_PIN 13
+#define LCD_BL_PIN  15
+
+// --- PINS TACTILE CAPACITIF (FT6336U) ---
+#define TP_SDA 6
+#define TP_SCL 7
+#define TP_INT 8
+#define TP_RST 5
+#define FT6336U_ADDR 0x38
 
 #define SD_CS_PIN 22 
 
@@ -46,7 +52,6 @@ static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 
 mutex_t spi_mutex;
-
 
 static inline void audio_pins_quiet() {
     pinMode(I2S_OUT_DIN, INPUT_PULLDOWN);
@@ -294,71 +299,38 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     audio_pins_quiet();
 }
 
-// --- LECTURE TACTILE ---
-void touch_read_spi_sdk(uint16_t& x, uint16_t& y, uint16_t& z) {
-    uint8_t tx_buff[3];
-    uint8_t rx_buff[3];
-    const uint32_t old_baud = spi_get_baudrate(spi1);
-    
-    // Vitesse lente obligatoire pour le XPT2046
-    spi_set_baudrate(spi1, 1000000); 
-    spi_set_format(spi1, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
-
-    // Lecture Z
-    gpio_put(TP_CS, 0);
-    tx_buff[0] = 0xB0; tx_buff[1] = 0; tx_buff[2] = 0; 
-    spi_write_read_blocking(spi1, tx_buff, rx_buff, 3);
-    gpio_put(TP_CS, 1);
-    z = ((rx_buff[1] << 8) | rx_buff[2]) >> 3;
-
-    if (z > 200) {
-        // Lecture X
-        gpio_put(TP_CS, 0); 
-        tx_buff[0] = 0xD0; tx_buff[1] = 0; tx_buff[2] = 0; 
-        spi_write_read_blocking(spi1, tx_buff, rx_buff, 3);
-        spi_write_read_blocking(spi1, tx_buff, rx_buff, 3);
-        gpio_put(TP_CS, 1);
-        x = ((rx_buff[1] << 8) | rx_buff[2]) >> 3;
-
-        // Lecture Y
-        gpio_put(TP_CS, 0);
-        tx_buff[0] = 0x90; tx_buff[1] = 0; tx_buff[2] = 0; 
-        spi_write_read_blocking(spi1, tx_buff, rx_buff, 3);
-        spi_write_read_blocking(spi1, tx_buff, rx_buff, 3);
-        gpio_put(TP_CS, 1);
-        y = ((rx_buff[1] << 8) | rx_buff[2]) >> 3;
-    }
-
-    spi_set_baudrate(spi1, old_baud);
-}
-
+// --- LECTURE TACTILE CAPACITIF I2C ---
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-    mutex_enter_blocking(&spi_mutex);
-
-    // 1. Attendre impérativement la fin du transfert image précédent
-    tft.dmaWait(); 
-    
-    // 2. Terminer proprement la transaction TFT (remonte le Chip Select de l'écran)
-    tft.endWrite(); 
-    
-    uint16_t x_raw = 0, y_raw = 0, z_raw = 0;
-    touch_read_spi_sdk(x_raw, y_raw, z_raw);
-    
-    if (z_raw > 200) {
-        data->state = LV_INDEV_STATE_PR;
-        long map_x = map(x_raw, 3840, 300, 0, 320);
-        long map_y = map(y_raw, 3960, 240, 0, 480);
-        
-        if(map_x < 0) map_x = 0; if(map_x > 319) map_x = 319;
-        if(map_y < 0) map_y = 0; if(map_y > 479) map_y = 479;
-        
-        data->point.x = (int16_t)map_x;
-        data->point.y = (int16_t)map_y;
-    } else {
+    // Plus de mutex SPI ici ! Le CPU interroge l'I2C tranquillement pendant que le DMA s'occupe de l'écran.
+    Wire.beginTransmission(FT6336U_ADDR);
+    Wire.write(0x02); // Registre TD_STATUS (Nombre de doigts détectés)
+    if (Wire.endTransmission(false) != 0) {
         data->state = LV_INDEV_STATE_REL;
+        return;
     }
 
-    mutex_exit(&spi_mutex); 
+    Wire.requestFrom(FT6336U_ADDR, 5);
+    if (Wire.available() >= 5) {
+        uint8_t touches = Wire.read() & 0x0F;
+        uint8_t p1_xh = Wire.read();
+        uint8_t p1_xl = Wire.read();
+        uint8_t p1_yh = Wire.read();
+        uint8_t p1_yl = Wire.read();
+
+        if (touches > 0) {
+            uint16_t x = ((p1_xh & 0x0F) << 8) | p1_xl;
+            uint16_t y = ((p1_yh & 0x0F) << 8) | p1_yl;
+            
+            // Le FT6336U envoie les coordonnées brutes (0-320 et 0-480).
+            // Selon l'orientation de votre écran, il faudra peut-être inverser x et y.
+            data->point.x = (int16_t)x;
+            data->point.y = (int16_t)y;
+            data->state = LV_INDEV_STATE_PR;
+            return;
+        }
+    }
+    
+    data->state = LV_INDEV_STATE_REL;
 }
 
 // === AFFICHAGE OPTIMISÉ DMA ASYNCHRONE ===
@@ -368,35 +340,37 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
     
-    // Sécurité : s'assurer que l'envoi précédent est fini avant de reconfigurer la fenêtre
     tft.dmaWait(); 
     
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-    
-    // Lancement du transfert DMA. Le CPU passe tout de suite à la suite !
     tft.pushPixelsDMA((uint16_t *)&color_p->full, w * h);
-    
-    // NE SURTOUT PAS FAIRE tft.endWrite() ni tft.dmaWait() ICI
-    // Cela laisse le transfert se faire en arrière-plan.
     
     mutex_exit(&spi_mutex);
 
-    // On dit à LVGL qu'il peut déjà commencer à calculer le buffer suivant (buf2)
     lv_disp_flush_ready(disp);
 }
 
 void hardware_init() {
     Serial.begin(115200);
     audio_pins_quiet();
-    battery::begin();
+    // battery::begin(); // Décommentez si vous l'utilisez
 
     mutex_init(&spi_mutex);
 
-    // vreg_set_voltage(VREG_VOLTAGE_1_20);
+    // Initialisation du bus I2C pour le FT6336U (Tactile)
+    pinMode(TP_RST, OUTPUT);
+    digitalWrite(TP_RST, LOW);
+    delay(10);
+    digitalWrite(TP_RST, HIGH);
+    delay(50);
     
-    pinMode(13, OUTPUT); digitalWrite(13, HIGH);
-    gpio_init(TP_CS); gpio_set_dir(TP_CS, GPIO_OUT); gpio_put(TP_CS, 1);
+    Wire.setSDA(TP_SDA);
+    Wire.setSCL(TP_SCL);
+    Wire.begin();
+    
+    // Initialisation de l'écran
+    pinMode(LCD_BL_PIN, OUTPUT); digitalWrite(LCD_BL_PIN, HIGH); // Rétroéclairage ON
     pinMode(LCD_CS_PIN, OUTPUT); digitalWrite(LCD_CS_PIN, HIGH);
 
     pinMode(LCD_RST_PIN, OUTPUT);
@@ -405,30 +379,21 @@ void hardware_init() {
     digitalWrite(LCD_RST_PIN, HIGH); delay(150);
     
     tft.init();
-    tft.setRotation(0);
-
+    tft.setRotation(0); // Ajustez selon votre design
     tft.initDMA();  
         
     // ==========================================
     // DEBUT DES TESTS HARDWARE AU DEMARRAGE
     // ==========================================
     tft.fillScreen(TFT_BLACK);
-    tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
-    tft.drawBitmap((320-61)/2, 480-45, epd_bitmap_marsisus_logo, 61, 18, TFT_WHITE);
-
-    // If it's not, convert it to the correct format before calling pushImage.
+    // tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
+    // tft.drawBitmap((320-61)/2, 480-45, epd_bitmap_marsisus_logo, 61, 18, TFT_WHITE);
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2); 
     tft.setCursor(0, 0);
 
-    
-
-    // test_audio_loopback(tft, 4000); 
-
-    // 1. Test du Modem 4G (A7670E)
-    test_sim800l(tft);
-    // run_sim_diagnostic(tft);
+    // test_sim800l(tft);
     
     // ==========================================
 

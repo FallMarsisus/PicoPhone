@@ -186,7 +186,7 @@ void loadApp(AppID id) {
         lv_scr_load(new_scr);
     } else {
         // Transition animée (ex: Slide depuis la droite, 300ms, délai 0, true = effacer old_scr)
-        lv_scr_load_anim(new_scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, true);
+        lv_scr_load_anim(new_scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 350, 0, true);
     }
 
     mutex_exit(&app_switch_mutex);
