@@ -10,43 +10,42 @@
 #include <AudioOutputI2S.h>
 #include <I2S.h> 
 #include <hardware/vreg.h>
-#include <Wire.h> // Ajout pour la communication avec le tactile capacitif (I2C)
+#include <Wire.h> 
 #include "assets/startuplogo.c"
 #include "system/Battery.h"
 
-// --- PINS ECRAN (Mise à jour) ---
+// --- PINS ECRAN (SANS CONFLIT AUDIO) ---
 #define LCD_CS_PIN  9
-#define LCD_DC_PIN  14
+#define LCD_DC_PIN  8    // Changé en GP8 !
 #define LCD_RST_PIN 13
 #define LCD_BL_PIN  15
 
 // --- PINS TACTILE CAPACITIF (FT6336U) ---
-#define TP_SDA 6
-#define TP_SCL 7
-#define TP_INT 8
-#define TP_RST 5
+#define TP_SDA 16  // Changé en GP16 (I2C0)
+#define TP_SCL 17  // Changé en GP17 (I2C0)
+#define TP_INT 18
+#define TP_RST 19
 #define FT6336U_ADDR 0x38
 
 #define SD_CS_PIN 22 
 
-// Pour le MAX98357A (Sortie)
+// Pour le MAX98357A (Sortie) -> RESTE INCHANGÉ
 #define I2S_OUT_BCLK 6
 #define I2S_OUT_WS   7 
 #define I2S_OUT_DIN  14
 
-// Pour le INMP441 (Entrée)
+// Pour le INMP441 (Entrée) -> RESTE INCHANGÉ
 #define I2S_IN_BCLK  2
 #define I2S_IN_WS    3
 #define I2S_IN_DOUT  4
 
-// Pour le SIM800L / A7670E (UART0)
-#define SIM800_TX    0 // TX du Pico
-#define SIM800_RX    1 // RX du Pico
-#define A7670_PWRKEY 26 // Broche K (KEY) du A7670E
+// Pour le SIM800L / A7670E (UART0) -> RESTE INCHANGÉ
+#define SIM800_TX    0 
+#define SIM800_RX    1 
+#define A7670_PWRKEY 26 
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
-// Taille du buffer (ne pas augmenter si on manque de RAM, le DMA compense)
 static constexpr uint32_t LV_BUF_PIXELS = 320u * 150u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
@@ -62,7 +61,6 @@ static inline void audio_pins_quiet() {
     pinMode(I2S_IN_WS, INPUT_PULLDOWN);
 }
 
-// --- TEST AUDIO (Micro -> Haut-parleur) avec DSP propre ---
 // --- TEST AUDIO (Micro -> Haut-parleur) ---
 void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
     const int SAMPLE_RATE = 16000;
@@ -301,9 +299,8 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
 
 // --- LECTURE TACTILE CAPACITIF I2C ---
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-    // Plus de mutex SPI ici ! Le CPU interroge l'I2C tranquillement pendant que le DMA s'occupe de l'écran.
     Wire.beginTransmission(FT6336U_ADDR);
-    Wire.write(0x02); // Registre TD_STATUS (Nombre de doigts détectés)
+    Wire.write(0x02); // Registre TD_STATUS
     if (Wire.endTransmission(false) != 0) {
         data->state = LV_INDEV_STATE_REL;
         return;
@@ -321,8 +318,6 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
             uint16_t x = ((p1_xh & 0x0F) << 8) | p1_xl;
             uint16_t y = ((p1_yh & 0x0F) << 8) | p1_yl;
             
-            // Le FT6336U envoie les coordonnées brutes (0-320 et 0-480).
-            // Selon l'orientation de votre écran, il faudra peut-être inverser x et y.
             data->point.x = (int16_t)x;
             data->point.y = (int16_t)y;
             data->state = LV_INDEV_STATE_PR;
@@ -333,18 +328,20 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     data->state = LV_INDEV_STATE_REL;
 }
 
-// === AFFICHAGE OPTIMISÉ DMA ASYNCHRONE ===
+// === AFFICHAGE SANS DMA (Compatible Pico 2) MAIS AVEC MUTEX (Pour sauver la SD) ===
 void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+    // LE MUTEX EST VITAL ICI ! Il empêche la carte SD de parler en même temps.
     mutex_enter_blocking(&spi_mutex);
 
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
     
-    tft.dmaWait(); 
-    
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-    tft.pushPixelsDMA((uint16_t *)&color_p->full, w * h);
+    
+    // On envoie via le processeur classique (très rapide grâce à tes 240MHz)
+    tft.pushPixels((uint16_t *)&color_p->full, w * h);
+    tft.endWrite();
     
     mutex_exit(&spi_mutex);
 
@@ -353,12 +350,15 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 
 void hardware_init() {
     Serial.begin(115200);
+    
+    // 1. ALLUMAGE IMMÉDIAT DU RÉTROÉCLAIRAGE
+    pinMode(LCD_BL_PIN, OUTPUT); 
+    digitalWrite(LCD_BL_PIN, HIGH);
+    
     audio_pins_quiet();
-    // battery::begin(); // Décommentez si vous l'utilisez
-
     mutex_init(&spi_mutex);
 
-    // Initialisation du bus I2C pour le FT6336U (Tactile)
+    // 2. Initialisation du bus I2C (Tactile)
     pinMode(TP_RST, OUTPUT);
     digitalWrite(TP_RST, LOW);
     delay(10);
@@ -369,34 +369,19 @@ void hardware_init() {
     Wire.setSCL(TP_SCL);
     Wire.begin();
     
-    // Initialisation de l'écran
-    pinMode(LCD_BL_PIN, OUTPUT); digitalWrite(LCD_BL_PIN, HIGH); // Rétroéclairage ON
-    pinMode(LCD_CS_PIN, OUTPUT); digitalWrite(LCD_CS_PIN, HIGH);
-
-    pinMode(LCD_RST_PIN, OUTPUT);
-    digitalWrite(LCD_RST_PIN, HIGH); delay(50);
-    digitalWrite(LCD_RST_PIN, LOW);  delay(100);
-    digitalWrite(LCD_RST_PIN, HIGH); delay(150);
+    // 3. FORCER LE ROUTAGE SPI1 DU PICO 2
+    SPI1.setRX(12);
+    SPI1.setTX(11);
+    SPI1.setSCK(10);
     
+    // 4. Initialisation de l'écran TFT
     tft.init();
-    tft.setRotation(0); // Ajustez selon votre design
-    tft.initDMA();  
+    tft.setRotation(0); 
+    // tft.initDMA(); <--- ON LAISSE DÉSACTIVÉ ! Le DMA du Pico 2 fait crasher la lib.
         
-    // ==========================================
-    // DEBUT DES TESTS HARDWARE AU DEMARRAGE
-    // ==========================================
-    tft.fillScreen(TFT_BLACK);
-    // tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
-    // tft.drawBitmap((320-61)/2, 480-45, epd_bitmap_marsisus_logo, 61, 18, TFT_WHITE);
+    tft.fillScreen(TFT_BLACK); // Fond noir propre
 
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2); 
-    tft.setCursor(0, 0);
-
-    // test_sim800l(tft);
-    
-    // ==========================================
-
+    // Initialisation LVGL
     lv_init();
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LV_BUF_PIXELS);
 
