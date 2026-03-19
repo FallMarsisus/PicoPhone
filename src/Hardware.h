@@ -13,6 +13,9 @@
 #include <Wire.h> 
 #include "assets/startuplogo.c"
 #include "system/Battery.h"
+// Ajout pour accès à manager
+#include "AppManager.h"
+extern AppManager manager;
 
 // --- PINS ECRAN ---
 #define LCD_CS_PIN  9
@@ -44,9 +47,12 @@
 #define SIM800_RX    1 
 #define A7670_PWRKEY 26 
 
+// --- BOUTON VEILLE (GPIO21) ---
+#define SLEEP_BTN_PIN 21
+
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
-static constexpr uint32_t LV_BUF_PIXELS = 320u * 200u;
+static constexpr uint32_t LV_BUF_PIXELS = 320u * 120u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 
@@ -386,6 +392,56 @@ void hardware_init() {
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = _touch_read;
     lv_indev_drv_register(&indev_drv);
+
+    pinMode(SLEEP_BTN_PIN, INPUT_PULLUP);
 }
+
+// --- MODE VEILLE EFFICACE ---
+void hardware_sleep() {
+    // Extinction rétroéclairage
+    digitalWrite(LCD_BL_PIN, LOW);
+    // Mise en veille du TFT (commande ST7796S)
+    tft.writecommand(0x10); // Sleep mode
+    delay(5);
+    // Arrêt SPI/I2C (optionnel, pour économiser encore plus)
+    SPI1.end();
+    Wire.end();
+}
+
+void hardware_wake() {
+    // Réactivation bus
+    SPI1.begin();
+    Wire.begin();
+    // Sortie du mode veille TFT
+    tft.writecommand(0x11); // Wake up
+    delay(120); // Temps de réveil datasheet
+    // Rétroéclairage
+    digitalWrite(LCD_BL_PIN, HIGH);
+    // Réinitialisation du buffer LVGL (optionnel)
+    tft.fillScreen(TFT_BLACK);
+}
+
+// Appelle hardware_sleep() pour mettre en veille, hardware_wake() pour réveiller.
+// Pour sortir de veille : détecter touche ou tactile (TP_INT ou autre GPIO)
+
+void check_sleep_button() {
+    static bool last_state = true;
+    bool state = digitalRead(SLEEP_BTN_PIN);
+    static unsigned long last_debounce = 0;
+    if (state != last_state && millis() - last_debounce > 80) {
+        last_debounce = millis();
+        last_state = state;
+        if (!state) { // Bouton pressé (LOW)
+            if (!manager.isLocked()) {
+                manager.lockScreen.lock();
+            } else {
+                manager.lockScreen.unlock();
+            }
+        }
+    }
+}
+
+// À appeler dans loop() : check_sleep_button();
+// Initialisation dans hardware_init()
 
 #endif

@@ -1,3 +1,11 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern void hardware_sleep();
+extern void hardware_wake();
+#ifdef __cplusplus
+}
+#endif
 #ifndef LOCKSCREEN_H
 #define LOCKSCREEN_H
 
@@ -6,6 +14,7 @@
 #include <time.h>
 #include "Battery.h"
 #include "Settings.h"
+#include "../Hardware.h"
 
 class LockScreen {
 private:
@@ -325,13 +334,11 @@ public:
     void lock() {
         if (is_locked) return;
         is_locked = true;
-        
         pin_len = 0;
         memset(pin_input, 0, sizeof(pin_input));
         pin_error = false;
-        
-        // IMPORTANT: ne jamais toucher au GPIO13 ici (RESET TFT sur ce projet).
         analogWrite(LCD_BACKLIGHT_PIN, LOCK_DIM_PWM);
+        hardware_sleep(); // Met en veille l'écran et les bus
         showMainScreen();
         lv_obj_clear_flag(bg, LV_OBJ_FLAG_HIDDEN);
         updateTime();
@@ -341,8 +348,8 @@ public:
         is_locked = false;
         pin_len = 0;
         memset(pin_input, 0, sizeof(pin_input));
-        
         settings::applyBrightness();
+        hardware_wake(); // Réveille l'écran et les bus
         lv_obj_add_flag(bg, LV_OBJ_FLAG_HIDDEN);
         showMainScreen();
         lv_disp_trig_activity(NULL);

@@ -1,3 +1,10 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern void i2s_play_test_tone(int freq, int duration_ms, float gain);
+#ifdef __cplusplus
+}
+#endif
 #ifndef CONTROL_CENTER_H
 #define CONTROL_CENTER_H
 

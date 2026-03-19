@@ -33,7 +33,7 @@ enum AppID {
 };
 
 class AppManager {
-private:
+public:
     LockScreen lockScreen;
     ControlCenter controlCenter;
 
