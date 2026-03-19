@@ -10,6 +10,14 @@
  */
 namespace settings {
 
+// IMPORTANT: sur ce projet, GPIO13 = TFT_RST. La backlight est sur GPIO15.
+// On utilise TFT_BL si défini par TFT_eSPI / build_flags, sinon fallback à 15.
+#if defined(TFT_BL)
+static constexpr uint8_t BACKLIGHT_PIN = (uint8_t)TFT_BL;
+#else
+static constexpr uint8_t BACKLIGHT_PIN = 15;
+#endif
+
 static constexpr int SETTINGS_ADDR = 1024;
 static constexpr uint32_t SETTINGS_MAGIC = 0x53455454u; // 'SETT'
 
@@ -138,7 +146,8 @@ static void setBrightness(uint8_t v) {
     load();
     if (v < 10) v = 10;
     g_data.brightness = v;
-    analogWrite(13, v); // TFT_BL = pin 13
+    pinMode(BACKLIGHT_PIN, OUTPUT);
+    analogWrite(BACKLIGHT_PIN, v);
     save();
 }
 
@@ -153,7 +162,8 @@ static void applyBrightness() {
     load();
     uint8_t v = g_data.brightness;
     if (v < 10) v = 200;
-    analogWrite(13, v);
+    pinMode(BACKLIGHT_PIN, OUTPUT);
+    analogWrite(BACKLIGHT_PIN, v);
 }
 
 } // namespace settings

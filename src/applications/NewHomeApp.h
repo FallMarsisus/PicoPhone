@@ -526,12 +526,12 @@ public:
 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE); 
 
-         bg_img = lv_img_create(main_bg);
-        lv_img_set_src(bg_img, &fondecran);
-        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_clear_flag(bg_img, LV_OBJ_FLAG_CLICKABLE); 
-        lv_obj_set_style_img_recolor(bg_img, lv_color_black(), 0);
-        lv_obj_set_style_img_recolor_opa(bg_img, LV_OPA_30, 0); 
+        // bg_img = lv_img_create(main_bg);
+        //lv_img_set_src(bg_img, &fondecran);
+        //lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+        // lv_obj_clear_flag(bg_img, LV_OBJ_FLAG_CLICKABLE); 
+        // lv_obj_set_style_img_recolor(bg_img, lv_color_black(), 0);
+        // lv_obj_set_style_img_recolor_opa(bg_img, LV_OPA_30, 0); 
         
         lv_obj_add_flag(main_bg, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_event_cb(main_bg, screen_touch_event);

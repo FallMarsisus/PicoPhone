@@ -181,8 +181,9 @@ void loadApp(AppID id) {
     }
 
     // --- 5. Lancement de l'animation ---
-    if (old_scr == nullptr) {
-        // Premier boot : on charge l'écran directement
+    if (old_app == nullptr) {
+        // Premier écran réel: charger sans animation pour éviter de rester
+        // bloqué sur l'écran noir par défaut si le tick LVGL n'est pas prêt.
         lv_scr_load(new_scr);
     } else {
         // Transition animée (ex: Slide depuis la droite, 300ms, délai 0, true = effacer old_scr)

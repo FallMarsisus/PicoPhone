@@ -9,6 +9,9 @@
 
 class LockScreen {
 private:
+    static constexpr uint8_t LCD_BACKLIGHT_PIN = 15;
+    static constexpr uint8_t LOCK_DIM_PWM = 50;
+
     lv_obj_t* layer = nullptr;
     lv_obj_t* bg = nullptr;
     
@@ -327,7 +330,8 @@ public:
         memset(pin_input, 0, sizeof(pin_input));
         pin_error = false;
         
-        analogWrite(13, 50);
+        // IMPORTANT: ne jamais toucher au GPIO13 ici (RESET TFT sur ce projet).
+        analogWrite(LCD_BACKLIGHT_PIN, LOCK_DIM_PWM);
         showMainScreen();
         lv_obj_clear_flag(bg, LV_OBJ_FLAG_HIDDEN);
         updateTime();
@@ -338,6 +342,7 @@ public:
         pin_len = 0;
         memset(pin_input, 0, sizeof(pin_input));
         
+        settings::applyBrightness();
         lv_obj_add_flag(bg, LV_OBJ_FLAG_HIDDEN);
         showMainScreen();
         lv_disp_trig_activity(NULL);
