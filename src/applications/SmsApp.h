@@ -168,7 +168,7 @@ private:
         SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
         lv_obj_clear_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
-        lv_t9_kb_set_textarea(app->keyboard_cont, app->ta_visible);
+        lv_keyboard_set_textarea(app->keyboard_cont, app->ta_visible);
         lv_obj_scroll_to_y(app->msg_list, 10000, LV_ANIM_ON);
     }
 
@@ -239,7 +239,7 @@ private:
                 lv_label_set_text(app->header_title, app->contacts[idx].name.c_str());
                 lv_obj_clear_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
-                lv_t9_kb_set_textarea(app->keyboard_cont, app->ta_visible);
+                lv_keyboard_set_textarea(app->keyboard_cont, app->ta_visible);
                 app->load_history_to_ui(app->contacts[idx].number);
                 lv_obj_scroll_to_y(app->msg_list, 10000, LV_ANIM_OFF);
             }, LV_EVENT_CLICKED, this);
@@ -403,7 +403,7 @@ public:
         lv_obj_add_flag(ta_visible, LV_OBJ_FLAG_HIDDEN);
 
 
-        keyboard_cont = lv_t9_kb_create(main_bg);
+        keyboard_cont = lv_keyboard_create(main_bg);
         lv_obj_add_flag(keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_event_cb(keyboard_cont, kb_send_event, LV_EVENT_READY, this);
         lv_obj_add_event_cb(keyboard_cont, kb_cancel_event, LV_EVENT_CANCEL, this);

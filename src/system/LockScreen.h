@@ -15,6 +15,7 @@ extern void hardware_wake();
 #include "Battery.h"
 #include "Settings.h"
 #include "../Hardware.h"
+#include "LTE.h"
 
 class LockScreen {
 private:
@@ -331,29 +332,37 @@ public:
         
     }
 
-    void lock() {
-        if (is_locked) return;
-        is_locked = true;
-        pin_len = 0;
-        memset(pin_input, 0, sizeof(pin_input));
-        pin_error = false;
-        analogWrite(LCD_BACKLIGHT_PIN, LOCK_DIM_PWM);
-        hardware_sleep(); // Met en veille l'écran et les bus
-        showMainScreen();
-        lv_obj_clear_flag(bg, LV_OBJ_FLAG_HIDDEN);
-        updateTime();
-    }
+    // Dans LockScreen.h (Modifie ces méthodes)
 
-    void unlock() {
-        is_locked = false;
-        pin_len = 0;
-        memset(pin_input, 0, sizeof(pin_input));
-        settings::applyBrightness();
-        hardware_wake(); // Réveille l'écran et les bus
-        lv_obj_add_flag(bg, LV_OBJ_FLAG_HIDDEN);
-        showMainScreen();
-        lv_disp_trig_activity(NULL);
-    }
+void lock() {
+    if (is_locked) return;
+    is_locked = true;
+    
+    // 1. Matériel écran & Bus
+    hardware_sleep(); 
+    
+    // 2. Mise en veille de la puce LTE A7670E
+    
+
+    lv_obj_clear_flag(bg, LV_OBJ_FLAG_HIDDEN);
+}
+
+void unlock() {
+    if (!is_locked) return;
+    
+    // D'abord l'image !
+    hardware_wake(); 
+    
+    // Ensuite l'interface
+    lv_obj_add_flag(bg, LV_OBJ_FLAG_HIDDEN); 
+    showMainScreen();
+    
+    // Enfin la SIM (qui peut prendre du temps à répondre)
+    LTE::setLowPower(false); 
+    
+    is_locked = false;
+    lv_disp_trig_activity(NULL);
+}
 
     bool isLocked() const { return is_locked; }
 

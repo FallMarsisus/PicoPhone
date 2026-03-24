@@ -274,7 +274,7 @@ private:
         TelegramApp* app = (TelegramApp*)lv_event_get_user_data(e);
         lv_obj_clear_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
-        lv_t9_kb_set_textarea(app->keyboard_cont, app->ta_visible);
+        lv_keyboard_set_textarea(app->keyboard_cont, app->ta_visible);
         lv_obj_scroll_to_y(app->msg_list, 10000, LV_ANIM_ON);
     }
 
@@ -609,12 +609,12 @@ public:
         // CLAVIER
         ta_visible = lv_textarea_create(main_bg);
         lv_obj_set_size(ta_visible, 220, 40);
-        lv_obj_align(ta_visible, LV_ALIGN_BOTTOM_MID, 0, -170);
+        lv_obj_align(ta_visible, LV_ALIGN_BOTTOM_MID, 0, -240);
         lv_obj_set_style_border_color(ta_visible, lv_color_hex(0x007AFF), 0);
         lv_obj_set_style_border_width(ta_visible, 2, 0);
         lv_obj_add_flag(ta_visible, LV_OBJ_FLAG_HIDDEN);
 
-        keyboard_cont = lv_t9_kb_create(main_bg);
+        keyboard_cont = lv_keyboard_create(main_bg);
         lv_obj_add_flag(keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         
         lv_obj_add_event_cb(keyboard_cont, kb_send_event, LV_EVENT_READY, this);

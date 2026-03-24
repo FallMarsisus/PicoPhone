@@ -10,6 +10,7 @@
 #include "system/NotificationCenter.h"
 #include "system/LockScreen.h"
 #include "system/BackgroundServices.h"
+#include "services/CastService.h"
 #include "applications/HomeApp.h"
 #include "applications/BootloaderApp.h"
 #include "applications/WifiApp.h"
@@ -219,6 +220,7 @@ void setup() {
     background_services::manager().registerService(&telegram_service::instance());
     background_services::manager().registerService(&timer_service::instance());
     background_services::manager().registerService(&sms_service::instance());
+    background_services::manager().registerService(&cast_service::instance());
     background_services::manager().begin();
 
     loadApp(APP_HOME);
@@ -235,6 +237,8 @@ void setup() {
 }
 
 void loop() {
+    check_sleep_button();
+    
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) {
         delay(1);
         return;
@@ -275,13 +279,24 @@ void setup1() {
     }
 }
 
+// Ajoute cette ligne juste avant loop1() pour qu'il connaisse la variable
+extern volatile bool system_is_shutting_down;
+
 void loop1() {
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) return;
 
+    // --- LE CORE 1 SE FIGE ICI EN CAS D'EXTINCTION ---
+    if (system_is_shutting_down) {
+        while (true) {
+            watchdog_update(); // Garde le système en vie
+            __wfi();           // Endort le Core 1 indéfiniment
+        }
+    }
+    // -------------------------------------------------
+
     watchdog_update();
 
-    // LTE est le SEUL gestionnaire de Serial1 – un seul appel par tour
-    // (synchro heure + SMS entrants + polling signal geres en interne)
+    // LTE est le SEUL gestionnaire de Serial1...
     LTE::update();
 
     core1_heartbeat = millis();

@@ -632,6 +632,19 @@ public:
     static int  getSignal()              { return signal_level; }
     static String getOperator()          { return operator_name; }
     static bool isReadyForData()         { return s_enabled && !s_airplane_mode && s_modem_confirmed && signal_level > 0; }
+    static void setLowPower(bool enable) {
+        if (enable) {
+            // Mode économie : Désactive la RF (Radio Fréquence)
+            // Consommation chute drastiquement (~1.5mA au lieu de 20-40mA)
+            Serial1.println("AT+CFUN=0"); 
+            Serial.println("[LTE] RF OFF (Mode Eco)");
+        } else {
+            // Mode normal : Réactive la 4G et la SIM
+            Serial1.println("AT+CFUN=1");
+            Serial.println("[LTE] RF ON (Full Function)");
+            // On peut ajouter un AT+CREG? après quelques secondes pour vérifier le réseau
+        }
+    }
 
     // ── Gestion des erreurs réseau ──
     static NetworkErrorCode getLastError()       { return s_last_error; }

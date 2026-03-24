@@ -525,6 +525,7 @@ public:
         drawer_hidden_ty = 415;
 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE); 
+        lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x408A71), 0);
 
         // bg_img = lv_img_create(main_bg);
         //lv_img_set_src(bg_img, &fondecran);

@@ -27,6 +27,8 @@ static bool   _pika_capture_active = false;
 static constexpr size_t PIKA_OUTPUT_MAX = 4096;
 
 extern "C" void pika_platform_printf(char* fmt, ...) {
+    watchdog_update(); // CRUCIAL : Nourrit le WDT pendant les longs logs de compilation
+    
     char tmp[256];
     va_list args;
     va_start(args, fmt);
@@ -45,6 +47,8 @@ extern "C" void pika_platform_printf(char* fmt, ...) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 extern "C" FILE* pika_platform_fopen(const char* filename, const char* modes) {
+    watchdog_update();
+    
     // Convertir les modes stdio vers les modes LittleFS
     const char* fsMode = "r"; // Par défaut lecture
     
@@ -61,7 +65,7 @@ extern "C" FILE* pika_platform_fopen(const char* filename, const char* modes) {
     File* f = new File(LittleFS.open(filename, fsMode));
     if (!f || !(*f)) {
         Serial.printf("[pika_fopen] FAILED to open '%s'\n", filename);
-        delete f;
+        if (f) delete f; // Suppression sécurisée
         return nullptr;
     }
     
@@ -70,6 +74,7 @@ extern "C" FILE* pika_platform_fopen(const char* filename, const char* modes) {
 }
 
 extern "C" int pika_platform_fclose(FILE* stream) {
+    watchdog_update();
     if (!stream) return -1;
     File* f = (File*)stream;
     Serial.printf("[pika_fclose] Closing file handle: %p\n", (void*)f);
@@ -79,20 +84,20 @@ extern "C" int pika_platform_fclose(FILE* stream) {
 }
 
 extern "C" size_t pika_platform_fwrite(const void* ptr, size_t size, size_t n, FILE* stream) {
+    watchdog_update(); // CRUCIAL : Évite un reboot pendant la génération du bytecode (.pyo)
     if (!stream) return 0;
     File* f = (File*)stream;
     size_t total = size * n;
     size_t written = f->write((const uint8_t*)ptr, total);
-    // Serial.printf("[pika_fwrite] Wrote %d/%d bytes\n", written, total); // Trop verbeux
     return written;
 }
 
 extern "C" size_t pika_platform_fread(void* ptr, size_t size, size_t n, FILE* stream) {
+    watchdog_update();
     if (!stream) return 0;
     File* f = (File*)stream;
     size_t total = size * n;
     size_t bytes_read = f->read((uint8_t*)ptr, total);
-    // Serial.printf("[pika_fread] Read %d/%d bytes\n", bytes_read, total); // Trop verbeux
     return bytes_read;
 }
 
@@ -245,8 +250,6 @@ private:
 
     // Lit le manifest.json pour obtenir le nom de l'appli
     void readManifest(const String& scriptPath) {
-        // Extraire le dossier de l'appli depuis le chemin du script
-        // Ex: /apps/wordle/main.py -> /apps/wordle
         int lastSlash = scriptPath.lastIndexOf('/');
         if (lastSlash == -1) {
             appName = "Python App";
@@ -360,8 +363,6 @@ private:
     }
 
     // Vérifie si le bytecode est à jour via la version du manifest.json
-    // Stockée dans un fichier .ver compagnon (on ne peut pas modifier le .pyo binaire).
-    // Pas de version dans le manifest → toujours recompiler.
     bool isBytecodeUpToDate(const String& pyPath, const String& pyoPath) {
         if (!LittleFS.exists(pyoPath)) {
             return false;
@@ -407,24 +408,20 @@ private:
     void showSplashScreen() {
         lv_obj_t* scr = lv_scr_act();
         
-        // Fond dégradé bleu
         lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A3E), LV_PART_MAIN);
         
-        // Icône au centre (symbole fichier/script)
         lv_obj_t* iconLbl = lv_label_create(scr);
         lv_label_set_text(iconLbl, LV_SYMBOL_FILE);
         lv_obj_set_style_text_color(iconLbl, lv_color_hex(0x00D9FF), LV_PART_MAIN);
         lv_obj_set_style_text_font(iconLbl, &lv_font_montserrat_28, LV_PART_MAIN);
         lv_obj_align(iconLbl, LV_ALIGN_CENTER, 0, -40);
         
-        // Nom de l'appli
         lv_obj_t* nameLbl = lv_label_create(scr);
         lv_label_set_text(nameLbl, appName.c_str());
         lv_obj_set_style_text_color(nameLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
         lv_obj_set_style_text_font(nameLbl, &lv_font_montserrat_18, LV_PART_MAIN);
         lv_obj_align(nameLbl, LV_ALIGN_CENTER, 0, 30);
         
-        // Texte "Chargement..."
         lv_obj_t* loadingLbl = lv_label_create(scr);
         lv_label_set_text(loadingLbl, "Chargement...");
         lv_obj_set_style_text_color(loadingLbl, lv_color_hex(0x888888), LV_PART_MAIN);
@@ -467,7 +464,9 @@ private:
             
             // Vérifier si le bytecode existe et est à jour
             if (isBytecodeUpToDate(pyPath, pyoPath)) {
-                // Essayer de charger le bytecode existant
+                // Libération immédiate de la RAM de scriptSource
+                scriptSource = ""; 
+                
                 if (tryRunBytecode(pyoPath)) {
                     executedFromBytecode = true;
                     Serial.println("[PythonApp] Executed from cached bytecode");
@@ -478,7 +477,9 @@ private:
             if (!executedFromBytecode) {
                 Serial.println("[PythonApp] Compiling to bytecode...");
                 if (compileScriptToBytecode(pyPath, pyoPath)) {
-                    // Compiler a réussi, exécuter le bytecode fraîchement créé
+                    // CRUCIAL : La compilation a réussi, on libère le texte source (jusqu'à 24ko de RAM gagnée)
+                    scriptSource = ""; 
+                    
                     if (tryRunBytecode(pyoPath)) {
                         executedFromBytecode = true;
                         Serial.println("[PythonApp] Executed from newly compiled bytecode");
@@ -487,8 +488,8 @@ private:
             }
         }
         
-        // Fallback: si le bytecode n'a pas fonctionné, utiliser l'ancienne méthode
-        if (!executedFromBytecode) {
+        // Fallback: si le bytecode n'a pas fonctionné ou pas de chemin, utiliser le source
+        if (!executedFromBytecode && scriptSource.length() > 0) {
             Serial.printf("[PythonApp] Running script from source (%d bytes)...\n", scriptSource.length());
             unsigned long exec_start = millis();
             watchdog_update();
@@ -499,6 +500,8 @@ private:
             Serial.printf("[PythonApp] Script execution took %lu ms\n", exec_time);
         }
 
+        // Nettoyage final pour garantir la libération de la mémoire
+        scriptSource = "";
         _pika_capture_active = false;
 
         // Vérifier les erreurs
@@ -519,17 +522,14 @@ private:
     void showErrorScreen(lv_obj_t* parent, int errCode, const String& output) {
         lv_obj_t* scr = lv_scr_act();
 
-        // Fond rouge foncé
         lv_obj_set_style_bg_color(scr, lv_color_hex(0x330000), LV_PART_MAIN);
 
-        // Titre
         lv_obj_t* titleLbl = lv_label_create(scr);
         lv_label_set_text(titleLbl, LV_SYMBOL_WARNING " Erreur Python");
         lv_obj_set_style_text_color(titleLbl, lv_color_hex(0xFF4444), LV_PART_MAIN);
         lv_obj_set_style_text_font(titleLbl, &lv_font_montserrat_18, LV_PART_MAIN);
         lv_obj_align(titleLbl, LV_ALIGN_TOP_MID, 0, 8);
 
-        // Code erreur
         char codeBuf[64];
         snprintf(codeBuf, sizeof(codeBuf), "Code erreur: %d", errCode);
         lv_obj_t* codeLbl = lv_label_create(scr);
@@ -537,7 +537,6 @@ private:
         lv_obj_set_style_text_color(codeLbl, lv_color_hex(0xFFAAAA), LV_PART_MAIN);
         lv_obj_align(codeLbl, LV_ALIGN_TOP_MID, 0, 34);
 
-        // Sortie PikaPython (erreurs, traces, etc.)
         lv_obj_t* container = lv_obj_create(scr);
         lv_obj_set_size(container, 300, 310);
         lv_obj_align(container, LV_ALIGN_TOP_MID, 0, 58);
@@ -554,7 +553,6 @@ private:
         lv_obj_set_style_text_color(outLbl, lv_color_hex(0xFFCCCC), LV_PART_MAIN);
         lv_obj_set_style_text_font(outLbl, &lv_font_montserrat_12, LV_PART_MAIN);
         if (output.length() > 0) {
-            // Tronquer si trop long pour l'affichage
             if (output.length() > 800) {
                 String truncated = output.substring(output.length() - 800);
                 lv_label_set_text(outLbl, truncated.c_str());
@@ -565,7 +563,6 @@ private:
             lv_label_set_text(outLbl, "(aucune sortie capturee)");
         }
 
-        // Bouton retour
         lv_obj_t* btn = lv_btn_create(scr);
         lv_obj_set_size(btn, 200, 44);
         lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -10);
@@ -599,7 +596,7 @@ public:
     static bool takeQueuedScript(String& outScript) {
         if (queuedScriptPath.length() == 0) return false;
         String path = queuedScriptPath;
-        lastScriptPath = path;  // Garder le chemin pour le manifest
+        lastScriptPath = path; 
         queuedScriptPath = "";
         return readScriptFromFs(path, outScript);
     }
@@ -665,26 +662,18 @@ public:
 
         runtime_cleaned = false;
         
-        // Lire le manifest si on vient d'un fichier queued
         if (lastScriptPath.length() > 0) {
             readManifest(lastScriptPath);
         }
         
-        // Afficher le splash screen
         showSplashScreen();
         
-       // Lancer un timer pour démarrer le script Python après un délai
-        // pour laisser l'UI se stabiliser
         start_script_timer = lv_timer_create([](lv_timer_t* t) {
             PythonApp* self = (PythonApp*)t->user_data;
             if (self) {
                 self->startPythonExecution();
-                
-                // CRUCIAL : On remet le pointeur à zéro pour que preClean l'ignore !
                 self->start_script_timer = nullptr; 
             }
-            // ATTENTION : Surtout pas de lv_timer_del(t) ici !
-            // LVGL s'en charge tout seul grâce au repeat_count = 1
         }, 500, this);
         
         lv_timer_set_repeat_count(start_script_timer, 1);

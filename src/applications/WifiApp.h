@@ -7,7 +7,6 @@
 #include "../system/Settings.h"
 #include <WiFi.h>
 #include <cstring>
-#include "../plugins/lv_t9_keyboard.h"
 
 // --- COULEURS (THÈME SOMBRE) ---
 #define COL_BG       0x000000 // Noir (Fond App)
@@ -125,7 +124,7 @@ private:
 
     static void ta_click_event(lv_event_t* e) {
         WifiApp* app = (WifiApp*)lv_event_get_user_data(e);
-        lv_t9_kb_set_textarea(app->lv_kb, app->ta_pass);
+        lv_keyboard_set_textarea(app->lv_kb, app->ta_pass);
     }
 
     static void list_btn_event(lv_event_t* e) {
@@ -139,7 +138,7 @@ private:
         lv_obj_clear_flag(overlay, LV_OBJ_FLAG_HIDDEN);
         lv_textarea_set_text(ta_pass, "");
         lv_textarea_set_placeholder_text(ta_pass, ssid);
-        lv_t9_kb_set_textarea(lv_kb, ta_pass);
+        lv_keyboard_set_textarea(lv_kb, ta_pass);
         disable_scroll_everywhere(overlay);
         disable_scroll_everywhere(ta_pass);
         disable_scroll_everywhere(lv_kb);
@@ -147,7 +146,7 @@ private:
 
     void close_password_prompt() {
         lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
-        lv_t9_kb_set_textarea(lv_kb, NULL);
+        lv_keyboard_set_textarea(lv_kb, NULL);
         lv_obj_t* sug = lv_obj_get_child(lv_kb, 0);
         if(sug) lv_obj_add_flag(sug, LV_OBJ_FLAG_HIDDEN);
     }
@@ -532,8 +531,8 @@ public:
         lv_obj_add_event_cb(ta_pass, ta_click_event, LV_EVENT_CLICKED, this);
 
         // Clavier
-        lv_kb = lv_t9_kb_create(overlay);
-        lv_t9_kb_set_textarea(lv_kb, ta_pass);
+        lv_kb = lv_keyboard_create(overlay);
+        lv_keyboard_set_textarea(lv_kb, ta_pass);
         lv_obj_set_width(lv_kb, 320);
         lv_obj_align(lv_kb, LV_ALIGN_BOTTOM_MID, 0, 10);
         lv_obj_add_event_cb(lv_kb, kb_event, LV_EVENT_ALL, this);
@@ -546,7 +545,7 @@ public:
         if (wifi_enabled) {
             wifi_store::autoconnect_init();
         }
-        set_wifi_enabled(wifi_enabled, wifi_enabled);
+        set_wifi_enabled(wifi_enabled, wifi_enabled);   
     }
     
     void update() override {

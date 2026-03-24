@@ -7,6 +7,11 @@
 #include <SDFS.h>
 #include <hardware/gpio.h>
 #include <hardware/spi.h>
+#include "hardware/clocks.h"
+#include "hardware/pll.h"
+#include "hardware/structs/clocks.h"
+#include "hardware/structs/xosc.h"
+#include "hardware/watchdog.h"
 #include <AudioOutputI2S.h>
 #include <I2S.h> 
 #include <hardware/vreg.h>
@@ -66,6 +71,176 @@ static inline void audio_pins_quiet() {
     pinMode(I2S_IN_DOUT, INPUT_PULLDOWN);
     pinMode(I2S_IN_BCLK, INPUT_PULLDOWN);
     pinMode(I2S_IN_WS, INPUT_PULLDOWN);
+}
+// Variable globale pour prévenir le Core 1 de l'extinction
+volatile bool system_is_shutting_down = false;
+
+void system_power_off() {
+    Serial.println("[POWER] Extinction matérielle en cours...");
+    
+    // 1. Prévenir le Core 1 de tout arrêter immédiatement
+    system_is_shutting_down = true;
+    delay(50); 
+
+    LTE::setLowPower(true);
+
+    watchdog_update(); 
+
+    // 2. EXTINCTION DU MODEM A7670E
+    Serial.println("[LTE] Envoi de la commande Power Down...");
+    Serial1.println("AT+CPOWD=1"); // Commande spécifique au A7670E
+    delay(1000); // Laisse le temps de se déconnecter de l'antenne
+    watchdog_update();
+
+    // Coupure matérielle (Équivalent de rester appuyé sur le bouton OFF)
+    // Le A7670E nécessite un état BAS d'au moins 2.5 à 3 secondes pour s'éteindre.
+    digitalWrite(A7670_PWRKEY, LOW);
+    delay(3000); 
+    watchdog_update();
+    digitalWrite(A7670_PWRKEY, HIGH);
+
+    // 3. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
+    // On désactive le port Série et on met les broches en haute impédance (INPUT)
+    // pour empêcher le RP2040 d'alimenter le modem par erreur.
+    Serial1.end();
+    pinMode(SIM800_TX, INPUT);
+    pinMode(SIM800_RX, INPUT);
+    digitalWrite(A7670_PWRKEY, LOW); // On relâche complètement la tension sur le PWRKEY
+    pinMode(A7670_PWRKEY, INPUT);
+
+    // 4. COUPURE DE L'AUDIO
+    audio_pins_quiet(); 
+
+    // 5. EXTINCTION DE L'ÉCRAN
+    digitalWrite(LCD_BL_PIN, LOW);
+    tft.writecommand(0x28); // Display OFF
+    tft.writecommand(0x10); // Sleep IN
+    delay(100);
+
+    // 6. ARRÊT DES BUS
+    SPI1.end();
+    Wire.end();
+
+    Serial.println("[POWER] CPU Zzz...");
+    Serial.flush(); 
+
+    // 7. BOUCLE DE VEILLE SÉCURISÉE (Core 0)
+    while (true) {
+        watchdog_update();
+        __wfi(); 
+
+        if (digitalRead(SLEEP_BTN_PIN) == LOW) {
+            uint32_t press_time = millis();
+            bool valid_press = true;
+
+            while (millis() - press_time < 1000) {
+                watchdog_update();
+                if (digitalRead(SLEEP_BTN_PIN) == HIGH) {
+                    valid_press = false; 
+                    break; 
+                }
+                delay(10);
+            }
+
+            if (valid_press) {
+                Serial.println("[POWER] Rallumage !");
+                watchdog_reboot(0, 0, 0);
+                while(true);
+            }
+        }
+    }
+}
+
+static void btn_poweroff_event_cb(lv_event_t * e) {
+    system_power_off(); 
+}
+
+static void btn_reboot_event_cb(lv_event_t * e) {
+    Serial.println("Redémarrage en cours...");
+    watchdog_reboot(0, 0, 0); 
+    while (true);
+}
+
+static void btn_cancel_event_cb(lv_event_t * e) {
+    lv_obj_t * btn = lv_event_get_target(e);
+    lv_obj_t * modal = lv_obj_get_parent(lv_obj_get_parent(btn)); 
+    lv_obj_del(modal); 
+}
+
+
+
+// --- CRÉATION DE L'INTERFACE ---
+
+void showPowerMenu() {
+    // 1. Fond noir semi-transparent qui couvre tout l'écran
+    lv_obj_t * modal_bg = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(modal_bg, 320, 480);
+    lv_obj_set_style_bg_color(modal_bg, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(modal_bg, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(modal_bg, 0, 0);
+    lv_obj_set_style_radius(modal_bg, 0, 0);
+    lv_obj_clear_flag(modal_bg, LV_OBJ_FLAG_SCROLLABLE);
+
+    // 2. Le conteneur du menu au centre
+    lv_obj_t * menu_box = lv_obj_create(modal_bg);
+    lv_obj_set_size(menu_box, 260, LV_SIZE_CONTENT);
+    lv_obj_center(menu_box);
+    lv_obj_set_style_bg_color(menu_box, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(menu_box, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_border_width(menu_box, 1, 0);
+    lv_obj_set_style_radius(menu_box, 15, 0);
+    lv_obj_set_flex_flow(menu_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(menu_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(menu_box, 20, 0);
+
+    // Titre
+    lv_obj_t * title = lv_label_create(menu_box);
+    lv_label_set_text(title, "Options d'alimentation");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_pad_bottom(title, 20, 0);
+
+    // --- Bouton Éteindre ---
+    lv_obj_t * btn_off = lv_btn_create(menu_box);
+    lv_obj_set_size(btn_off, 200, 50);
+    lv_obj_set_style_bg_color(btn_off, lv_color_hex(0xFF3B30), 0); // Rouge iOS
+    lv_obj_add_event_cb(btn_off, btn_poweroff_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lbl_off = lv_label_create(btn_off);
+    lv_label_set_text(lbl_off, LV_SYMBOL_POWER " Eteindre");
+    lv_obj_set_style_text_font(lbl_off, &lv_font_montserrat_18, 0);
+    lv_obj_center(lbl_off);
+
+    // --- Bouton Redémarrer ---
+    lv_obj_t * btn_reboot = lv_btn_create(menu_box);
+    lv_obj_set_size(btn_reboot, 200, 50);
+    lv_obj_set_style_bg_color(btn_reboot, lv_color_hex(0x333333), 0);
+    lv_obj_add_event_cb(btn_reboot, btn_reboot_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lbl_reboot = lv_label_create(btn_reboot);
+    lv_label_set_text(lbl_reboot, LV_SYMBOL_LOOP " Redemarrer");
+    lv_obj_set_style_text_font(lbl_reboot, &lv_font_montserrat_18, 0);
+    lv_obj_center(lbl_reboot);
+
+    // --- Bouton Annuler ---
+    lv_obj_t * btn_cancel = lv_btn_create(menu_box);
+    lv_obj_set_size(btn_cancel, 200, 50);
+    lv_obj_set_style_bg_color(btn_cancel, lv_color_hex(0x333333), 0);
+    lv_obj_add_event_cb(btn_cancel, btn_cancel_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lbl_cancel = lv_label_create(btn_cancel);
+    lv_label_set_text(lbl_cancel, "Annuler");
+    lv_obj_set_style_text_font(lbl_cancel, &lv_font_montserrat_18, 0);
+    lv_obj_center(lbl_cancel);
+
+    // Animation d'apparition
+    lv_obj_set_style_opa(menu_box, 0, 0);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, menu_box);
+    lv_anim_set_values(&a, 0, 255);
+    lv_anim_set_time(&a, 200);
+    lv_anim_set_exec_cb(&a, [](void * var, int32_t v) {
+        lv_obj_set_style_opa((lv_obj_t *)var, v, 0);
+    });
+    lv_anim_start(&a);
 }
 
 // --- TEST AUDIO (Micro -> Haut-parleur) ---
@@ -375,6 +550,10 @@ void hardware_init() {
 
     test_sim800l(tft);
 
+
+    LTE::setLowPower(false);
+
+
     // Initialisation LVGL
     lv_init();
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LV_BUF_PIXELS);
@@ -396,49 +575,84 @@ void hardware_init() {
     pinMode(SLEEP_BTN_PIN, INPUT_PULLUP);
 }
 
-// --- MODE VEILLE EFFICACE ---
+// Dans Hardware.h
+
 void hardware_sleep() {
-    // Extinction rétroéclairage
+    mutex_enter_blocking(&spi_mutex);
     digitalWrite(LCD_BL_PIN, LOW);
-    // Mise en veille du TFT (commande ST7796S)
-    tft.writecommand(0x10); // Sleep mode
-    delay(5);
-    // Arrêt SPI/I2C (optionnel, pour économiser encore plus)
-    SPI1.end();
-    Wire.end();
+    tft.writecommand(0x10); // Sleep
+    // On ne coupe pas forcément le SPI.end() ici pour éviter de perdre la config des pins
+    mutex_exit(&spi_mutex);
 }
 
-void hardware_wake() {
-    // Réactivation bus
-    SPI1.begin();
-    Wire.begin();
-    // Sortie du mode veille TFT
-    tft.writecommand(0x11); // Wake up
-    delay(120); // Temps de réveil datasheet
-    // Rétroéclairage
-    digitalWrite(LCD_BL_PIN, HIGH);
-    // Réinitialisation du buffer LVGL (optionnel)
-    tft.fillScreen(TFT_BLACK);
-}
 
 // Appelle hardware_sleep() pour mettre en veille, hardware_wake() pour réveiller.
 // Pour sortir de veille : détecter touche ou tactile (TP_INT ou autre GPIO)
 
 void check_sleep_button() {
-    static bool last_state = true;
-    bool state = digitalRead(SLEEP_BTN_PIN);
-    static unsigned long last_debounce = 0;
-    if (state != last_state && millis() - last_debounce > 80) {
-        last_debounce = millis();
-        last_state = state;
-        if (!state) { // Bouton pressé (LOW)
-            if (!manager.isLocked()) {
-                manager.lockScreen.lock();
-            } else {
-                manager.lockScreen.unlock();
+    static uint32_t press_start_time = 0;
+    static bool is_pressing = false;
+    static bool long_press_handled = false; // Pour savoir si le menu a déjà pop
+    
+    // On lit l'état (LOW = pressé car on a un INPUT_PULLUP)
+    bool state = digitalRead(SLEEP_BTN_PIN); 
+
+    if (state == LOW) {
+        if (!is_pressing) {
+            // 1. Le doigt vient TOUT JUSTE de se poser
+            is_pressing = true;
+            press_start_time = millis();
+            long_press_handled = false;
+        } 
+        else {
+            // 2. Le doigt est MAINTENU enfoncé
+            if (!long_press_handled && (millis() - press_start_time > 1500)) {
+                // Les 1.5s sont passées ! On affiche le menu IMMÉDIATEMENT
+                Serial.println("[POWER] Appui long détecté !");
+                showPowerMenu(); // Appel direct de la fonction LVGL
+                long_press_handled = true; // On bloque pour ne pas ouvrir le menu en boucle
+            }
+        }
+    } 
+    else { // state == HIGH (bouton relâché)
+        if (is_pressing) {
+            is_pressing = false;
+            
+            // 3. On a relâché AVANT les 1.5s (Appui court)
+            // L'anti-rebond de 50ms évite les faux positifs
+            if (!long_press_handled && (millis() - press_start_time > 50)) {
+                Serial.println("[POWER] Appui court détecté !");
+                if (!manager.lockScreen.isLocked()) {
+                    manager.lockScreen.lock();
+                } else {
+                    manager.lockScreen.unlock();
+                }
             }
         }
     }
+}
+
+void hardware_wake() {
+    // 1. Relancer le bus SPI pour pouvoir parler à l'écran
+    SPI1.begin(); 
+    
+    // 2. Sortir l'écran du mode Sleep (Commande ST7796S)
+    tft.startWrite();
+    tft.writecommand(0x11); // Sleep Out
+    tft.endWrite();
+    
+    delay(120); // INDISPENSABLE : l'écran a besoin de temps pour relancer ses tensions internes
+
+    // 3. Réactiver l'affichage
+    tft.startWrite();
+    tft.writecommand(0x29); // Display ON
+    tft.endWrite();
+
+    // 4. Rallumer la lumière
+    digitalWrite(LCD_BL_PIN, HIGH);
+    
+    // 5. Optionnel : Rafraîchir l'écran pour éviter un "flash" de vieux pixels
+    tft.fillScreen(TFT_BLACK); 
 }
 
 // À appeler dans loop() : check_sleep_button();
