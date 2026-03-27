@@ -57,7 +57,7 @@ extern AppManager manager;
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
-static constexpr uint32_t LV_BUF_PIXELS = 320u * 120u;
+static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 
@@ -82,52 +82,62 @@ void system_power_off() {
     system_is_shutting_down = true;
     delay(50); 
 
-    LTE::setLowPower(true);
+    // NOUVEAU : 2. COUPURE DU WIFI ET BLUETOOTH DU PICO W
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
 
+    LTE::setLowPower(true);
     watchdog_update(); 
 
-    // 2. EXTINCTION DU MODEM A7670E
+    // 3. EXTINCTION DU MODEM A7670E (Correction du bug de rallumage)
     Serial.println("[LTE] Envoi de la commande Power Down...");
-    Serial1.println("AT+CPOWD=1"); // Commande spécifique au A7670E
-    delay(1000); // Laisse le temps de se déconnecter de l'antenne
-    watchdog_update();
+    Serial1.println("AT+CPOWD=1"); 
+    
+    // On attend poliment que le modem nous dise qu'il est bien éteint (Max 5s)
+    unsigned long wait_start = millis();
+    while (millis() - wait_start < 5000) {
+        watchdog_update();
+        if (Serial1.available()) {
+            String resp = Serial1.readStringUntil('\n');
+            if (resp.indexOf("NORMAL POWER DOWN") != -1) break;
+        }
+    }
+    
+    // On ne touche PLUS au PWRKEY ici ! On le met juste en haute impédance.
 
-    // Coupure matérielle (Équivalent de rester appuyé sur le bouton OFF)
-    // Le A7670E nécessite un état BAS d'au moins 2.5 à 3 secondes pour s'éteindre.
-    digitalWrite(A7670_PWRKEY, LOW);
-    delay(3000); 
-    watchdog_update();
-    digitalWrite(A7670_PWRKEY, HIGH);
-
-    // 3. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
-    // On désactive le port Série et on met les broches en haute impédance (INPUT)
-    // pour empêcher le RP2040 d'alimenter le modem par erreur.
+    // 4. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
     Serial1.end();
     pinMode(SIM800_TX, INPUT);
     pinMode(SIM800_RX, INPUT);
-    digitalWrite(A7670_PWRKEY, LOW); // On relâche complètement la tension sur le PWRKEY
     pinMode(A7670_PWRKEY, INPUT);
 
-    // 4. COUPURE DE L'AUDIO
+    // 5. COUPURE DE L'AUDIO
     audio_pins_quiet(); 
+    // IMPORTANT : Si vous avez relié SD_MODE du MAX98357 à un pin (ex: GP20)
+    // pinMode(20, OUTPUT); digitalWrite(20, LOW); // Force le Shutdown total de l'ampli
 
-    // 5. EXTINCTION DE L'ÉCRAN
+    // 6. EXTINCTION DE L'ÉCRAN ET DU TACTILE
     digitalWrite(LCD_BL_PIN, LOW);
     tft.writecommand(0x28); // Display OFF
     tft.writecommand(0x10); // Sleep IN
+    
+    // NOUVEAU : Coupure matérielle du tactile
+    pinMode(TP_RST, OUTPUT);
+    digitalWrite(TP_RST, LOW);
     delay(100);
 
-    // 6. ARRÊT DES BUS
+    // 7. ARRÊT DES BUS
     SPI1.end();
     Wire.end();
 
     Serial.println("[POWER] CPU Zzz...");
     Serial.flush(); 
 
-    // 7. BOUCLE DE VEILLE SÉCURISÉE (Core 0)
+    // 8. BOUCLE DE VEILLE SÉCURISÉE (Core 0)
     while (true) {
         watchdog_update();
-        __wfi(); 
+        __wfi(); // Met le CPU en pause. Note: le RP2040 tirera encore ~10mA ici car les horloges (PLL) tournent encore.
 
         if (digitalRead(SLEEP_BTN_PIN) == LOW) {
             uint32_t press_time = millis();
@@ -583,6 +593,8 @@ void hardware_sleep() {
     tft.writecommand(0x10); // Sleep
     // On ne coupe pas forcément le SPI.end() ici pour éviter de perdre la config des pins
     mutex_exit(&spi_mutex);
+
+    Serial1.println("AT+CSCLK=2");
 }
 
 
@@ -650,6 +662,7 @@ void hardware_wake() {
 
     // 4. Rallumer la lumière
     digitalWrite(LCD_BL_PIN, HIGH);
+    Serial1.println("AT+CSCLK=0");
     
     // 5. Optionnel : Rafraîchir l'écran pour éviter un "flash" de vieux pixels
     tft.fillScreen(TFT_BLACK); 
