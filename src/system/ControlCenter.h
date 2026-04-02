@@ -335,7 +335,7 @@ private:
         // --- NOUVEAU : PANNEAU MEDIA ---
         panel_media = lv_obj_create(layer);
         lv_obj_set_size(panel_media, 300, 80);
-        lv_obj_set_style_bg_color(panel_media, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(panel_media, lv_color_hex(0x000000), 0);
         lv_obj_set_style_bg_opa(panel_media, LV_OPA_80, 0);
         lv_obj_set_style_radius(panel_media, 10, 0);
         lv_obj_set_style_border_width(panel_media, 0, 0);
@@ -345,20 +345,20 @@ private:
         lbl_media_title = lv_label_create(panel_media);
         lv_obj_set_width(lbl_media_title, 135); 
         lv_label_set_long_mode(lbl_media_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-        lv_obj_set_style_text_color(lbl_media_title, lv_color_hex(0x323232), 0);
+        lv_obj_set_style_text_color(lbl_media_title, lv_color_hex(0xd6d6d6), 0);
         lv_obj_set_style_text_font(lbl_media_title, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_media_title, LV_ALIGN_TOP_LEFT, 5, 10);
 
         lbl_media_artist = lv_label_create(panel_media);
         lv_obj_set_width(lbl_media_artist, 135);
         lv_label_set_long_mode(lbl_media_artist, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_color(lbl_media_artist, lv_color_hex(0x555555), 0);
+        lv_obj_set_style_text_color(lbl_media_artist, lv_color_hex(0x999999), 0);
         lv_obj_set_style_text_font(lbl_media_artist, &lv_font_montserrat_12, 0);
         lv_obj_align(lbl_media_artist, LV_ALIGN_TOP_LEFT, 5, 35);
 
-        btn_media_prev = createMediaBtn(panel_media, LV_SYMBOL_PREV, media_prev_event, 145, 0);
-        btn_media_toggle = createMediaBtn(panel_media, LV_SYMBOL_PLAY, media_toggle_event, 195, 0);
-        btn_media_next = createMediaBtn(panel_media, LV_SYMBOL_NEXT, media_next_event, 245, 0);
+        btn_media_prev = createMediaBtn(panel_media, LV_SYMBOL_PREV, media_prev_event, 135, 0);
+        btn_media_toggle = createMediaBtn(panel_media, LV_SYMBOL_PLAY, media_toggle_event, 185, 0);
+        btn_media_next = createMediaBtn(panel_media, LV_SYMBOL_NEXT, media_next_event, 235, 0);
 
 
         // 3. Panneau Notif 1

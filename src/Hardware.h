@@ -52,6 +52,28 @@ extern AppManager manager;
 #define SIM800_RX    1 
 #define A7670_PWRKEY 26 
 
+// --- Gestion du PWRKEY pour A7670 ---
+// Durée recommandée pour extinction matérielle : 1-2 secondes
+inline void a7670_power_key_press(unsigned long ms = 1500) {
+    pinMode(A7670_PWRKEY, OUTPUT);
+    digitalWrite(A7670_PWRKEY, LOW); // Active PWRKEY (niveau bas)
+    delay(ms);
+    pinMode(A7670_PWRKEY, INPUT); // Haute impédance après l'impulsion
+}
+
+// Mise en mode fonctionnalité minimale (AT+CFUN=0)
+inline void a7670_set_minimal_functionality() {
+    Serial1.println("AT+CFUN=0");
+    // Attendre la réponse OK ou délai de sécurité
+    unsigned long wait_start = millis();
+    while (millis() - wait_start < 2000) {
+        if (Serial1.available()) {
+            String resp = Serial1.readStringUntil('\n');
+            if (resp.indexOf("OK") != -1) break;
+        }
+    }
+}
+
 // --- BOUTON VEILLE (GPIO21) ---
 #define SLEEP_BTN_PIN 21
 
@@ -75,36 +97,27 @@ static inline void audio_pins_quiet() {
 // Variable globale pour prévenir le Core 1 de l'extinction
 volatile bool system_is_shutting_down = false;
 
+
 void system_power_off() {
     Serial.println("[POWER] Extinction matérielle en cours...");
-    
     // 1. Prévenir le Core 1 de tout arrêter immédiatement
     system_is_shutting_down = true;
-    delay(50); 
+    delay(50);
 
-    // NOUVEAU : 2. COUPURE DU WIFI ET BLUETOOTH DU PICO W
+    // 2. COUPURE DU WIFI ET BLUETOOTH DU PICO W
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     delay(100);
 
     LTE::setLowPower(true);
-    watchdog_update(); 
+    watchdog_update();
 
-    // 3. EXTINCTION DU MODEM A7670E (Correction du bug de rallumage)
-    Serial.println("[LTE] Envoi de la commande Power Down...");
-    Serial1.println("AT+CPOWD=1"); 
-    
-    // On attend poliment que le modem nous dise qu'il est bien éteint (Max 5s)
-    unsigned long wait_start = millis();
-    while (millis() - wait_start < 5000) {
-        watchdog_update();
-        if (Serial1.available()) {
-            String resp = Serial1.readStringUntil('\n');
-            if (resp.indexOf("NORMAL POWER DOWN") != -1) break;
-        }
-    }
-    
-    // On ne touche PLUS au PWRKEY ici ! On le met juste en haute impédance.
+    // 3. EXTINCTION DU MODEM A7670E via PWRKEY
+    Serial.println("[LTE] Extinction matérielle via PWRKEY...");
+    a7670_power_key_press(); // Impulsion PWRKEY pour extinction
+    // Optionnel : attendre la réponse du module si nécessaire
+
+    // On ne touche PLUS au PWRKEY ici !
 
     // 4. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
     Serial1.end();
@@ -116,34 +129,48 @@ void system_power_off() {
     audio_pins_quiet(); 
     // IMPORTANT : Si vous avez relié SD_MODE du MAX98357 à un pin (ex: GP20)
     // pinMode(20, OUTPUT); digitalWrite(20, LOW); // Force le Shutdown total de l'ampli
-
-    // 6. EXTINCTION DE L'ÉCRAN ET DU TACTILE
+// 6. EXTINCTION DE L'ÉCRAN
     digitalWrite(LCD_BL_PIN, LOW);
     tft.writecommand(0x28); // Display OFF
     tft.writecommand(0x10); // Sleep IN
-    
-    // NOUVEAU : Coupure matérielle du tactile
-    pinMode(TP_RST, OUTPUT);
-    digitalWrite(TP_RST, LOW);
-    delay(100);
+    delay(50);
 
-    // 7. ARRÊT DES BUS
+    // 7. VERROUILLAGE DES PINS FLOTTANTS (CRUCIAL CONTRE LES FUITES)
     SPI1.end();
     Wire.end();
+
+    // On force les pins de l'écran et du bus SPI à GND
+    pinMode(LCD_RST_PIN, OUTPUT); digitalWrite(LCD_RST_PIN, LOW);
+    pinMode(LCD_CS_PIN, OUTPUT);  digitalWrite(LCD_CS_PIN, LOW);
+    pinMode(LCD_DC_PIN, OUTPUT);  digitalWrite(LCD_DC_PIN, LOW);
+    
+    pinMode(10, OUTPUT); digitalWrite(10, LOW); // SCK
+    pinMode(11, OUTPUT); digitalWrite(11, LOW); // TX (MOSI)
+    pinMode(12, OUTPUT); digitalWrite(12, LOW); // RX (MISO)
+
+    // Extinction totale du tactile
+    pinMode(TP_RST, OUTPUT); digitalWrite(TP_RST, LOW);
+    pinMode(TP_SDA, INPUT_PULLDOWN);
+    pinMode(TP_SCL, INPUT_PULLDOWN);
 
     Serial.println("[POWER] CPU Zzz...");
     Serial.flush(); 
 
-    // 8. BOUCLE DE VEILLE SÉCURISÉE (Core 0)
+    // 8. BAISSE DE L'HORLOGE ET DODO PROFOND
+    // On passe le RP2040 de 133 MHz à 2 MHz (fait chuter la conso du processeur à ~1mA)
+    set_sys_clock_khz(20000, true);
+
     while (true) {
         watchdog_update();
-        __wfi(); // Met le CPU en pause. Note: le RP2040 tirera encore ~10mA ici car les horloges (PLL) tournent encore.
+        // L'utilisation de delay(100) est gérée par le cœur Arduino pour mettre
+        // le processeur en vraie veille, contrairement à un simple __wfi().
+        delay(10); 
 
         if (digitalRead(SLEEP_BTN_PIN) == LOW) {
             uint32_t press_time = millis();
             bool valid_press = true;
 
-            while (millis() - press_time < 1000) {
+            while (millis() - press_time < 100) {
                 watchdog_update();
                 if (digitalRead(SLEEP_BTN_PIN) == HIGH) {
                     valid_press = false; 
@@ -153,7 +180,6 @@ void system_power_off() {
             }
 
             if (valid_press) {
-                Serial.println("[POWER] Rallumage !");
                 watchdog_reboot(0, 0, 0);
                 while(true);
             }
@@ -178,6 +204,13 @@ static void btn_cancel_event_cb(lv_event_t * e) {
 }
 
 
+
+
+// --- Mise en veille : passage du A7670 en mode minimal ---
+inline void enter_sleep_mode() {
+    Serial.println("[LTE] Passage du A7670 en mode fonctionnalité minimale...");
+    a7670_set_minimal_functionality();
+}
 
 // --- CRÉATION DE L'INTERFACE ---
 
@@ -586,15 +619,19 @@ void hardware_init() {
 }
 
 // Dans Hardware.h
-
 void hardware_sleep() {
     mutex_enter_blocking(&spi_mutex);
     digitalWrite(LCD_BL_PIN, LOW);
-    tft.writecommand(0x10); // Sleep
-    // On ne coupe pas forcément le SPI.end() ici pour éviter de perdre la config des pins
+    tft.writecommand(0x10); // Sleep écran
     mutex_exit(&spi_mutex);
 
-    Serial1.println("AT+CSCLK=2");
+    // ENDORMIR LE TACTILE (FT6336U Mode Sleep)
+    Wire.beginTransmission(FT6336U_ADDR);
+    Wire.write(0xA5); // Registre Power Mode
+    Wire.write(0x03); // Valeur pour "Sleep Mode"
+    Wire.endTransmission();
+
+    // Serial1.println("AT+CSCLK=2"); // Endormir le modem LTE
 }
 
 
@@ -645,26 +682,27 @@ void check_sleep_button() {
 }
 
 void hardware_wake() {
-    // 1. Relancer le bus SPI pour pouvoir parler à l'écran
     SPI1.begin(); 
     
-    // 2. Sortir l'écran du mode Sleep (Commande ST7796S)
+    // RÉVEILLER LE TACTILE AVEC UN RESET MATÉRIEL
+    digitalWrite(TP_RST, LOW);
+    delay(10);
+    digitalWrite(TP_RST, HIGH);
+    delay(50); // Le FT6336U a besoin de temps pour redémarrer
+    
     tft.startWrite();
     tft.writecommand(0x11); // Sleep Out
     tft.endWrite();
     
-    delay(120); // INDISPENSABLE : l'écran a besoin de temps pour relancer ses tensions internes
+    delay(120); 
 
-    // 3. Réactiver l'affichage
     tft.startWrite();
     tft.writecommand(0x29); // Display ON
     tft.endWrite();
 
-    // 4. Rallumer la lumière
     digitalWrite(LCD_BL_PIN, HIGH);
-    Serial1.println("AT+CSCLK=0");
+    Serial1.println("AT+CSCLK=0"); // Réveiller le modem LTE
     
-    // 5. Optionnel : Rafraîchir l'écran pour éviter un "flash" de vieux pixels
     tft.fillScreen(TFT_BLACK); 
 }
 

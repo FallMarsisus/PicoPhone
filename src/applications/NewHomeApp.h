@@ -26,6 +26,8 @@ private:
     lv_obj_t* signal_icon = nullptr;
     lv_obj_t* operator_label = nullptr;
     lv_obj_t* quick_actions_cont;
+    lv_obj_t* color_selector_overlay = nullptr;
+    lv_obj_t* color_selector_sheet = nullptr;
 
     lv_obj_t *app_list_cont = nullptr;       
     lv_obj_t *app_page_cont = nullptr;       
@@ -36,6 +38,11 @@ private:
     bool app_list_open = false;
     lv_point_t touch_start_point;
     bool press_started_top = false;
+    bool long_press_consumed = false;
+
+    uint32_t current_bg_color = 0x408A71;
+    lv_color_t bg_anim_from;
+    lv_color_t bg_anim_to;
 
     int current_page = 0;
     static const int ITEMS_PER_PAGE = 4;
@@ -89,7 +96,142 @@ private:
         lv_obj_set_style_opa((lv_obj_t*)var, v, 0);
     }
 
+    static void anim_bg_color_cb(void* var, int32_t v) {
+        NewHomeApp* app = (NewHomeApp*)var;
+        if (!app || !app->main_bg) return;
+        lv_color_t mix = lv_color_mix(app->bg_anim_to, app->bg_anim_from, (uint8_t)v);
+        lv_obj_set_style_bg_color(app->main_bg, mix, 0);
+    }
+
     lv_coord_t drawer_hidden_ty = 435;
+
+    void closeColorSelector() {
+        if (!color_selector_overlay) return;
+        lv_obj_t* to_delete = color_selector_overlay;
+        color_selector_overlay = nullptr;
+        color_selector_sheet = nullptr;
+        lv_obj_del_async(to_delete);
+    }
+
+    void applyBackgroundColor(uint32_t new_color, bool animated) {
+        if (!main_bg) {
+            current_bg_color = new_color;
+            return;
+        }
+
+        if (current_bg_color == new_color) {
+            lv_obj_set_style_bg_color(main_bg, lv_color_hex(new_color), 0);
+            return;
+        }
+
+        if (!animated) {
+            current_bg_color = new_color;
+            lv_obj_set_style_bg_color(main_bg, lv_color_hex(new_color), 0);
+            return;
+        }
+
+        bg_anim_from = lv_color_hex(current_bg_color);
+        bg_anim_to = lv_color_hex(new_color);
+        current_bg_color = new_color;
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, this);
+        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)anim_bg_color_cb);
+        lv_anim_set_values(&a, 0, 255);
+        lv_anim_set_time(&a, 240);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+
+    static void color_selector_close_cb(lv_event_t* e) {
+        NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
+        if (app) app->closeColorSelector();
+    }
+
+    static void color_pick_cb(lv_event_t* e) {
+        NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
+        if (!app) return;
+
+        lv_obj_t* target = lv_event_get_target(e);
+        uint32_t color = (uint32_t)(uintptr_t)lv_obj_get_user_data(target);
+        app->applyBackgroundColor(color, true);
+        homeConfig::setBackgroundColor(color);
+        homeConfig::saveConfig(app->loaded_apps);
+        app->closeColorSelector();
+    }
+
+    void showColorSelector() {
+        if (!main_bg) return;
+        if (color_selector_overlay) {
+            lv_obj_move_foreground(color_selector_overlay);
+            return;
+        }
+
+        color_selector_overlay = lv_obj_create(main_bg);
+        lv_obj_set_size(color_selector_overlay, 320, 480);
+        lv_obj_set_pos(color_selector_overlay, 0, 0);
+        lv_obj_set_style_bg_color(color_selector_overlay, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(color_selector_overlay, LV_OPA_50, 0);
+        lv_obj_set_style_border_width(color_selector_overlay, 0, 0);
+        lv_obj_set_style_radius(color_selector_overlay, 0, 0);
+        lv_obj_clear_flag(color_selector_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(color_selector_overlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(color_selector_overlay, color_selector_close_cb, LV_EVENT_CLICKED, this);
+
+        color_selector_sheet = lv_obj_create(color_selector_overlay);
+        lv_obj_set_size(color_selector_sheet, 296, 240);
+        lv_obj_align(color_selector_sheet, LV_ALIGN_BOTTOM_MID, 0, -14);
+        lv_obj_set_style_bg_color(color_selector_sheet, lv_color_hex(0x202225), 0);
+        lv_obj_set_style_bg_opa(color_selector_sheet, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(color_selector_sheet, 0, 0);
+        lv_obj_set_style_radius(color_selector_sheet, 22, 0);
+        lv_obj_set_style_pad_all(color_selector_sheet, 14, 0);
+        lv_obj_set_style_pad_row(color_selector_sheet, 10, 0);
+        lv_obj_set_style_pad_column(color_selector_sheet, 10, 0);
+        lv_obj_set_layout(color_selector_sheet, LV_LAYOUT_FLEX);
+        lv_obj_set_flex_flow(color_selector_sheet, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(color_selector_sheet, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+        lv_obj_add_event_cb(color_selector_sheet, nullptr, LV_EVENT_CLICKED, nullptr);
+
+        lv_obj_t* title = lv_label_create(color_selector_sheet);
+        lv_label_set_text(title, "Couleur fond d'ecran");
+        lv_obj_set_style_text_color(title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+        lv_obj_set_width(title, 260);
+
+        static const uint32_t kPalette[] = {
+            0x408A71, 0x2E3A87, 0x6942A8, 0xB04A5A,
+            0xC7782D, 0x2B8F9E, 0x3C7A3F, 0x4C4F59
+        };
+
+        for (uint32_t col : kPalette) {
+            lv_obj_t* chip = lv_btn_create(color_selector_sheet);
+            lv_obj_set_size(chip, 58, 58);
+            lv_obj_set_style_radius(chip, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(chip, lv_color_hex(col), 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(chip, (col == current_bg_color) ? 3 : 1, 0);
+            lv_obj_set_style_border_color(chip, lv_color_white(), 0);
+            lv_obj_set_style_border_opa(chip, (col == current_bg_color) ? LV_OPA_90 : LV_OPA_30, 0);
+            lv_obj_set_user_data(chip, (void*)(uintptr_t)col);
+            lv_obj_add_event_cb(chip, color_pick_cb, LV_EVENT_CLICKED, this);
+        }
+
+        lv_obj_t* close_btn = lv_btn_create(color_selector_sheet);
+        lv_obj_set_size(close_btn, 120, 40);
+        lv_obj_set_style_radius(close_btn, 12, 0);
+        lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x3A3A3D), 0);
+        lv_obj_set_style_bg_opa(close_btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(close_btn, 0, 0);
+        lv_obj_add_event_cb(close_btn, color_selector_close_cb, LV_EVENT_CLICKED, this);
+        lv_obj_t* close_lbl = lv_label_create(close_btn);
+        lv_label_set_text(close_lbl, "Fermer");
+        lv_obj_set_style_text_color(close_lbl, lv_color_white(), 0);
+        lv_obj_center(close_lbl);
+
+        lv_obj_move_foreground(color_selector_sheet);
+    }
 
     void toggleAppList(bool open) {
         if (!app_list_cont) return;
@@ -115,8 +257,7 @@ private:
         }
 
         if (open) {
-            // CORRECTION 2: ease_out au lieu de overshoot pour ne pas monter trop haut
-            lv_anim_set_time(&a_list, 300);
+            lv_anim_set_time(&a_list, 320);
             lv_anim_set_path_cb(&a_list, lv_anim_path_ease_out);
             lv_anim_set_values(&a_list, cur_ty, 0);
             if (quick_actions_cont) {
@@ -124,8 +265,8 @@ private:
                 lv_anim_set_values(&a_qa, 255, 0); 
             }
         } else {
-            lv_anim_set_time(&a_list, 250);
-            lv_anim_set_path_cb(&a_list, lv_anim_path_ease_in);
+            lv_anim_set_time(&a_list, 260);
+            lv_anim_set_path_cb(&a_list, lv_anim_path_ease_in_out);
             lv_anim_set_values(&a_list, cur_ty, drawer_hidden_ty);
             if (quick_actions_cont) {
                 lv_anim_set_time(&a_qa, 200);
@@ -302,19 +443,19 @@ private:
         if (current_page >= total_pages - 1) lv_obj_add_state(btn_next, LV_STATE_DISABLED);
         else lv_obj_clear_state(btn_next, LV_STATE_DISABLED);
 
-        // CORRECTION 3: Vrai slide propre, toute la largeur de l'écran, sans le Fade qui saccadait.
+        // Slide horizontal plus "phone-like": un peu plus long et plus souple.
         if (direction != 0) {
             lv_anim_t a_slide;
             lv_anim_init(&a_slide);
             lv_anim_set_var(&a_slide, app_page_cont);
             lv_anim_set_exec_cb(&a_slide, (lv_anim_exec_xcb_t)anim_x_cb);
-            lv_anim_set_time(&a_slide, 220); // Vitesse adaptée pour un bel effet de glissement
-            lv_anim_set_path_cb(&a_slide, lv_anim_path_ease_out);
+            lv_anim_set_time(&a_slide, 300);
+            lv_anim_set_path_cb(&a_slide, lv_anim_path_ease_in_out);
 
             if (direction > 0) {
-                lv_anim_set_values(&a_slide, 300, 0); // Vient entièrement de l'extérieur droit
+                lv_anim_set_values(&a_slide, 320, 0);
             } else {
-                lv_anim_set_values(&a_slide, -300, 0); // Vient entièrement de l'extérieur gauche
+                lv_anim_set_values(&a_slide, -320, 0);
             }
             lv_anim_start(&a_slide);
         }
@@ -405,14 +546,23 @@ private:
         NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
         if(!app) return;
 
+        if (app->color_selector_overlay) {
+            return;
+        }
+
         lv_event_code_t code = lv_event_get_code(e);
         if (code == LV_EVENT_PRESSED) {
             lv_indev_t* indev = lv_indev_get_act();
             if (indev) {
                 lv_indev_get_point(indev, &app->touch_start_point);
                 app->press_started_top = (app->touch_start_point.y < 200);
+                app->long_press_consumed = false;
             }
+        } else if (code == LV_EVENT_LONG_PRESSED) {
+            app->long_press_consumed = true;
+            app->showColorSelector();
         } else if (code == LV_EVENT_RELEASED) {
+            if (app->long_press_consumed) return;
             lv_indev_t* indev = lv_indev_get_act();
             if (indev) {
                 lv_point_t end_point;
@@ -525,7 +675,8 @@ public:
         drawer_hidden_ty = 415;
 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE); 
-        lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x408A71), 0);
+        current_bg_color = homeConfig::getBackgroundColor();
+        applyBackgroundColor(current_bg_color, false);
 
         // bg_img = lv_img_create(main_bg);
         //lv_img_set_src(bg_img, &fondecran);
@@ -610,6 +761,9 @@ public:
             lv_obj_remove_event_cb(main_bg, screen_touch_event);
             lv_obj_clean(main_bg);
         }
+
+        color_selector_overlay = nullptr;
+        color_selector_sheet = nullptr;
 
         app_list_cont = nullptr;
         app_page_cont = nullptr;

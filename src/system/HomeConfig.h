@@ -21,6 +21,7 @@ struct HomeAppEntry {
 namespace homeConfig {
 
     static bool _fs_ok = false;
+    static uint32_t _background_color = 0x408A71;
 
     inline bool ensureFS() {
         if (!_fs_ok) {
@@ -94,6 +95,7 @@ namespace homeConfig {
         clearFolderStore();
         if (!ensureFS() || !LittleFS.exists(CONFIG_FILE)) {
             apps.assign(ALL_APPS, ALL_APPS + ALL_APPS_COUNT);
+            _background_color = 0x408A71;
             return true;
         }
         File f = LittleFS.open(CONFIG_FILE, "r");
@@ -103,9 +105,12 @@ namespace homeConfig {
         if (deserializeJson(doc, f)) {
             f.close();
             apps.assign(ALL_APPS, ALL_APPS + ALL_APPS_COUNT);
+            _background_color = 0x408A71;
             return true;
         }
         f.close();
+
+        _background_color = doc["backgroundColor"] | 0x408A71;
 
         apps.clear();
         JsonArray arr = doc["apps"].as<JsonArray>();
@@ -144,6 +149,7 @@ namespace homeConfig {
         LittleFS.mkdir("/config");
 
         JsonDocument doc;
+        doc["backgroundColor"] = _background_color;
         JsonArray arr = doc["apps"].to<JsonArray>();
         for (const auto& e : apps) {
             JsonObject obj = arr.add<JsonObject>();
@@ -241,8 +247,17 @@ namespace homeConfig {
     void resetToDefault(std::vector<HomeAppEntry>& apps) {
         clearFolderStore();
         apps.assign(ALL_APPS, ALL_APPS + ALL_APPS_COUNT);
+        _background_color = 0x408A71;
         saveConfig(apps);
         Serial.println("[HomeConfig] Reset to default");
+    }
+
+    inline uint32_t getBackgroundColor() {
+        return _background_color;
+    }
+
+    inline void setBackgroundColor(uint32_t color) {
+        _background_color = color;
     }
 }
 

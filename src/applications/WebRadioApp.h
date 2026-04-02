@@ -229,31 +229,38 @@ private:
         UI_ERROR
     };
 
-    lv_obj_t* main_bg;
-    lv_obj_t* lbl_status;
-    lv_obj_t* list_cont;
+    lv_obj_t* main_bg = nullptr;
+    lv_obj_t* lbl_status = nullptr;
+    lv_obj_t* list_cont = nullptr;
     
     // Nouveaux éléments pour la zone de lecture dynamique
-    lv_obj_t* player_cont;
-    lv_obj_t* lbl_player_title;
-    lv_obj_t* btn_main_play;
-    lv_obj_t* lbl_main_play_icon;
+    lv_obj_t* player_cont = nullptr;
+    lv_obj_t* lbl_player_title = nullptr;
+    lv_obj_t* btn_main_play = nullptr;
+    lv_obj_t* lbl_main_play_icon = nullptr;
+    lv_obj_t* slider_volume = nullptr;
+    lv_obj_t* lbl_volume_val = nullptr;
 
     std::vector<RadioEntry> radios;
 
     volatile bool play_requested = false;
     volatile bool is_playing     = false;
     volatile bool force_stop     = false;
+    volatile bool exit_requested = false;
     
     int active_radio_index = -1;
     volatile int next_radio_index = -1;
     bool player_expanded = false;
 
-    static constexpr uint32_t CONNECT_TIMEOUT_MS = 10000;
-    static constexpr uint32_t READ_TIMEOUT_MS = 5000;
+    static constexpr uint32_t CONNECT_TIMEOUT_MS = 2500;
+    static constexpr uint32_t READ_TIMEOUT_MS = 1000;
     static constexpr uint32_t STREAM_STALL_TIMEOUT_MS = 12000;
     static constexpr uint32_t RETRY_BASE_DELAY_MS = 1200;
     static constexpr uint32_t RETRY_MAX_DELAY_MS = 15000;
+    static constexpr uint32_t PREBUFFER_TARGET_BYTES = 8192;
+    static constexpr uint32_t PREBUFFER_MIN_BYTES = 2048;
+    static constexpr uint32_t PREBUFFER_TIMEOUT_MS = 1800;
+    static constexpr uint32_t RADIO_FETCH_RETRY_MS = 30000;
     
     int icyMetaInt = 0;
     String url = "";
@@ -262,6 +269,10 @@ private:
     volatile int ui_last_error = 0;
     uint32_t retry_after_ms = 0;
     uint8_t retry_count = 0;
+    volatile bool radio_list_dirty = false;
+    volatile bool radio_fetch_requested = false;
+    bool radio_fetch_done = false;
+    uint32_t radio_fetch_next_try_ms = 0;
 
     AudioOutputI2SBuffered* audio_out = nullptr;
     AudioGeneratorMP3* mp3 = nullptr;
@@ -309,7 +320,24 @@ private:
         WebRadioApp* app = (WebRadioApp*)lv_event_get_user_data(e);
         app->play_requested = false;
         app->force_stop = true;
-        AppManager::switchTo(APP_HOME);
+        app->exit_requested = true;
+    }
+
+    static void volume_slider_event(lv_event_t* e) {
+        WebRadioApp* app = (WebRadioApp*)lv_event_get_user_data(e);
+        lv_obj_t* slider = lv_event_get_target(e);
+        int val = lv_slider_get_value(slider);
+        settings::setVolume((uint8_t)val);
+
+        if (app->lbl_volume_val) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d%%", val);
+            lv_label_set_text(app->lbl_volume_val, buf);
+        }
+
+        if (app->audio_out) {
+            app->audio_out->SetGain(val / 100.0f);
+        }
     }
 
     static void radio_clicked_event(lv_event_t* e) {
@@ -342,6 +370,9 @@ private:
     }
 
     void transition_to_player(int index) {
+        if (!main_bg || !lbl_player_title || !list_cont || !player_cont) return;
+        if (index < 0 || index >= (int)radios.size()) return;
+
         // Appliquer le dégradé de couleur
         lv_obj_set_style_bg_color(main_bg, lv_color_hex(radios[index].color), 0);
         
@@ -392,6 +423,16 @@ private:
         icyMetaInt = 0;
     }
 
+    void cleanup_audio_objects() {
+        if (mp3) { delete mp3; mp3 = nullptr; }
+        if (audio_out) { delete audio_out; audio_out = nullptr; }
+        if (stream_src) { delete stream_src; stream_src = nullptr; }
+        if (plain_client) { delete plain_client; plain_client = nullptr; }
+        if (secure_client) { delete secure_client; secure_client = nullptr; }
+        if (http_client) { delete http_client; http_client = nullptr; }
+        audio_inited = false;
+    }
+
     bool init_audio() {
         if (audio_inited) return true;
 
@@ -399,6 +440,7 @@ private:
         const bool wantSwap = (I2S_OUT_WS < I2S_OUT_BCLK);
 
         if (!audio_out) audio_out = new AudioOutputI2SBuffered();
+        if (!audio_out) return false;
         audio_out->SetRate(44100);
         audio_out->SetBitsPerSample(16);
         audio_out->SetChannels(2);
@@ -406,76 +448,185 @@ private:
         audio_out->SetGain(settings::getVolume() / 100.0f);
         audio_out->SwapClocks(wantSwap);
         audio_out->SetPinout(base, base + 1, I2S_OUT_DIN);
+        if (!audio_out->begin()) return false;
 
-        if (!stream_src) stream_src = new AudioFileSourceStream(65536);
+        if (!stream_src) stream_src = new AudioFileSourceStream(32768);
+        if (!stream_src) return false;
         if (!mp3) mp3 = new AudioGeneratorMP3();
+        if (!mp3) return false;
         if (!secure_client) secure_client = new WiFiClientSecure();
+        if (!secure_client) return false;
         if (!plain_client) plain_client = new WiFiClient();
+        if (!plain_client) return false;
         if (!http_client) http_client = new HTTPClient();
+        if (!http_client) return false;
 
         audio_inited = true;
         return true;
     }
 
-    void fetch_radio_list() {
+    void load_default_radios() {
         radios.clear();
-        if (WiFi.status() != WL_CONNECTED) return;
+        radios.reserve(4);
+
+        RadioEntry r1;
+        r1.name = "FIP";
+        r1.url = "https://icecast.radiofrance.fr/fip-hifi.aac";
+        r1.color = 0x4FC3F7;
+        r1.btn = nullptr;
+        r1.lbl_icon = nullptr;
+        radios.push_back(r1);
+
+        RadioEntry r2;
+        r2.name = "France Info";
+        r2.url = "https://icecast.radiofrance.fr/franceinfo-hifi.aac";
+        r2.color = 0xFF7043;
+        r2.btn = nullptr;
+        r2.lbl_icon = nullptr;
+        radios.push_back(r2);
+
+        RadioEntry r3;
+        r3.name = "NOVA";
+        r3.url = "https://nova.fr/stream";
+        r3.color = 0x81C784;
+        r3.btn = nullptr;
+        r3.lbl_icon = nullptr;
+        radios.push_back(r3);
+    }
+
+    bool fetch_radio_list() {
+        if (WiFi.status() != WL_CONNECTED) return false;
 
         WiFiClientSecure client;
         client.setInsecure();
-        client.setTimeout(10000);
+        client.setTimeout(CONNECT_TIMEOUT_MS);
 
         HTTPClient http;
         http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+        http.setTimeout(READ_TIMEOUT_MS);
         if (!http.begin(client, "https://raw.githubusercontent.com/FallMarsisus/picophone-app-repo/refs/heads/main/radio-list.json")) {
+            return false;
+        }
+
+        int httpCode = http.GET();
+        if (httpCode != HTTP_CODE_OK) {
+            http.end();
+            return false;
+        }
+
+        DynamicJsonDocument doc(6144);
+        DeserializationError error = deserializeJson(doc, http.getStream());
+        http.end();
+        if (error) return false;
+
+        JsonArray items = doc["items"].as<JsonArray>();
+        if (items.isNull()) return false;
+
+        std::vector<RadioEntry> fetched;
+        fetched.reserve(items.size());
+        for (JsonObject item : items) {
+            RadioEntry r;
+            r.name = item["name"].as<String>();
+            r.url = item["stream_url"].as<String>();
+            if (!r.name.length() || !r.url.length()) continue;
+
+            String colorStr = item["color"].as<String>();
+            colorStr.replace("#", "");
+            r.color = strtol(colorStr.c_str(), NULL, 16);
+            r.btn = nullptr;
+            r.lbl_icon = nullptr;
+            fetched.push_back(r);
+        }
+
+        if (fetched.empty()) return false;
+        radios = std::move(fetched);
+        return true;
+    }
+
+    void rebuild_radio_list_ui() {
+        if (!list_cont) return;
+        lv_obj_clean(list_cont);
+
+        if (radios.empty()) {
+            lv_obj_t* lbl_err = lv_label_create(list_cont);
+            lv_label_set_text(lbl_err, "Aucune radio disponible");
+            lv_obj_set_style_text_color(lbl_err, lv_color_white(), 0);
             return;
         }
-        int httpCode = http.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
-            
-            DynamicJsonDocument doc(4096);
-            DeserializationError error = deserializeJson(doc, payload);
-            
-            if (!error) {
-                JsonArray items = doc["items"].as<JsonArray>();
-                for (JsonObject item : items) {
-                    RadioEntry r;
-                    r.name = item["name"].as<String>();
-                    r.url = item["stream_url"].as<String>();
-                    
-                    String colorStr = item["color"].as<String>();
-                    colorStr.replace("#", "");
-                    r.color = strtol(colorStr.c_str(), NULL, 16);
-                    
-                    radios.push_back(r);
-                }
-            }
+
+        for (int i = 0; i < (int)radios.size(); i++) {
+            radios[i].btn = nullptr;
+            radios[i].lbl_icon = nullptr;
+
+            lv_obj_t* item = lv_obj_create(list_cont);
+            lv_obj_set_size(item, 292, 54);
+            lv_obj_set_style_bg_color(item, lv_color_hex(0x1F1F21), 0);
+            lv_obj_set_style_bg_opa(item, LV_OPA_90, 0);
+            lv_obj_set_style_radius(item, 12, 0);
+            lv_obj_set_style_border_width(item, 0, 0);
+            lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(item, LV_OBJ_FLAG_CLICKABLE);
+
+            lv_obj_set_user_data(item, (void*)(uintptr_t)i);
+            lv_obj_add_event_cb(item, radio_clicked_event, LV_EVENT_CLICKED, this);
+
+            lv_obj_t* color_sq = lv_obj_create(item);
+            lv_obj_set_size(color_sq, 22, 22);
+            lv_obj_set_style_radius(color_sq, 6, 0);
+            lv_obj_set_style_bg_color(color_sq, lv_color_hex(radios[i].color), 0);
+            lv_obj_set_style_border_width(color_sq, 0, 0);
+            lv_obj_align(color_sq, LV_ALIGN_LEFT_MID, 8, 0);
+            lv_obj_clear_flag(color_sq, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t* lbl_name = lv_label_create(item);
+            lv_label_set_text(lbl_name, radios[i].name.c_str());
+            lv_obj_set_style_text_color(lbl_name, lv_color_white(), 0);
+            lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_14, 0);
+            lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 42, 0);
+
+            lv_obj_t* lbl_icon = lv_label_create(item);
+            lv_label_set_text(lbl_icon, LV_SYMBOL_PLAY);
+            lv_obj_set_style_text_color(lbl_icon, lv_color_hex(0xDDDDDD), 0);
+            lv_obj_align(lbl_icon, LV_ALIGN_RIGHT_MID, -8, 0);
+
+            radios[i].btn = item;
+            radios[i].lbl_icon = lbl_icon;
         }
-        http.end();
     }
 
 public:
     WebRadioApp() {}
-    ~WebRadioApp() {}
+    ~WebRadioApp() {
+        cleanup_audio_objects();
+    }
 
     void start(lv_obj_t* parent) override {
         main_bg = parent;
+        lbl_status = nullptr;
+        list_cont = nullptr;
+        player_cont = nullptr;
+        lbl_player_title = nullptr;
+        btn_main_play = nullptr;
+        lbl_main_play_icon = nullptr;
+        slider_volume = nullptr;
+        lbl_volume_val = nullptr;
         play_requested = false;
         is_playing = false;
         force_stop = false;
+        exit_requested = false;
         active_radio_index = -1;
         next_radio_index = -1;
         player_expanded = false;
         retry_after_ms = 0;
         retry_count = 0;
         frames_count = 0;
+        radio_list_dirty = false;
+        radio_fetch_requested = true;
+        radio_fetch_done = false;
+        radio_fetch_next_try_ms = 0;
         set_ui_state(UI_IDLE, 0);
 
-        if (!init_audio()) {
-            set_ui_state(UI_ERROR, -201);
-            return;
-        }
+        load_default_radios();
 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
         // Configuration initiale du dégradé de fond (Noir)
@@ -539,9 +690,35 @@ public:
         lv_obj_set_style_text_color(lbl_main_play_icon, lv_color_black(), 0);
         lv_obj_center(lbl_main_play_icon);
 
-        // --- LISTE DES RADIOS ---
-        fetch_radio_list();
+        slider_volume = lv_slider_create(player_cont);
+        lv_obj_set_size(slider_volume, 220, 26);
+        lv_obj_align(slider_volume, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_slider_set_range(slider_volume, 0, 100);
+        lv_slider_set_value(slider_volume, settings::getVolume(), LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(slider_volume, lv_color_hex(0x2C2C2E), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(slider_volume, LV_OPA_70, LV_PART_MAIN);
+        lv_obj_set_style_radius(slider_volume, 12, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(slider_volume, lv_color_white(), LV_PART_INDICATOR);
+        lv_obj_set_style_radius(slider_volume, 12, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(slider_volume, lv_color_white(), LV_PART_KNOB);
+        lv_obj_set_style_bg_opa(slider_volume, LV_OPA_100, LV_PART_KNOB);
+        lv_obj_set_style_pad_all(slider_volume, 4, LV_PART_KNOB);
+        lv_obj_add_event_cb(slider_volume, volume_slider_event, LV_EVENT_VALUE_CHANGED, this);
 
+        lv_obj_t* lbl_vol_icon = lv_label_create(player_cont);
+        lv_label_set_text(lbl_vol_icon, LV_SYMBOL_AUDIO);
+        lv_obj_set_style_text_color(lbl_vol_icon, lv_color_white(), 0);
+        lv_obj_align_to(lbl_vol_icon, slider_volume, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+
+        lbl_volume_val = lv_label_create(player_cont);
+        char vol_buf[16];
+        snprintf(vol_buf, sizeof(vol_buf), "%u%%", (unsigned)settings::getVolume());
+        lv_label_set_text(lbl_volume_val, vol_buf);
+        lv_obj_set_style_text_color(lbl_volume_val, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_volume_val, &lv_font_montserrat_14, 0);
+        lv_obj_align_to(lbl_volume_val, slider_volume, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+
+        // --- LISTE DES RADIOS ---
         list_cont = lv_obj_create(main_bg);
         lv_obj_set_size(list_cont, 320, 430); // Plein écran au début
         lv_obj_align(list_cont, LV_ALIGN_TOP_MID, 0, 50);
@@ -550,55 +727,16 @@ public:
         lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(list_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_all(list_cont, 10, 0);
-        lv_obj_set_style_pad_row(list_cont, 15, 0); 
-
-        if (radios.empty()) {
-            lv_obj_t* lbl_err = lv_label_create(list_cont);
-            lv_label_set_text(lbl_err, "Impossible de charger les radios");
-            lv_obj_set_style_text_color(lbl_err, lv_color_white(), 0);
-        } else {
-            for (int i = 0; i < radios.size(); i++) {
-                lv_obj_t* item = lv_obj_create(list_cont);
-                lv_obj_set_size(item, 290, 50);
-                lv_obj_set_style_bg_color(item, lv_color_hex(0x2C2C2E), 0); // Gris foncé translucide
-                lv_obj_set_style_bg_opa(item, 200, 0);
-                lv_obj_set_style_radius(item, 10, 0);
-                lv_obj_set_style_border_width(item, 0, 0);
-                lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
-                lv_obj_add_flag(item, LV_OBJ_FLAG_CLICKABLE);
-                
-                lv_obj_set_user_data(item, (void*)(uintptr_t)i);
-                lv_obj_add_event_cb(item, radio_clicked_event, LV_EVENT_CLICKED, this);
-
-                lv_obj_t* color_sq = lv_obj_create(item);
-                lv_obj_set_size(color_sq, 20, 20);
-                lv_obj_set_style_radius(color_sq, 5, 0);
-                lv_obj_set_style_bg_color(color_sq, lv_color_hex(radios[i].color), 0);
-                lv_obj_set_style_border_width(color_sq, 0, 0);
-                lv_obj_align(color_sq, LV_ALIGN_LEFT_MID, 5, 0);
-                lv_obj_clear_flag(color_sq, LV_OBJ_FLAG_SCROLLABLE);
-
-                lv_obj_t* lbl_name = lv_label_create(item);
-                lv_label_set_text(lbl_name, radios[i].name.c_str());
-                lv_obj_set_style_text_color(lbl_name, lv_color_white(), 0);
-                lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_14, 0);
-                lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 40, 0);
-
-                lv_obj_t* lbl_icon = lv_label_create(item);
-                lv_label_set_text(lbl_icon, LV_SYMBOL_PLAY);
-                lv_obj_set_style_text_color(lbl_icon, lv_color_white(), 0);
-                lv_obj_align(lbl_icon, LV_ALIGN_RIGHT_MID, -5, 0);
-
-                radios[i].btn = item;
-                radios[i].lbl_icon = lbl_icon;
-            }
-        }
+        lv_obj_set_style_pad_row(list_cont, 12, 0);
+        rebuild_radio_list_ui();
     }
 
     // --------------------------------------------------
     // UI UPDATE (Core 0)
     // --------------------------------------------------
     void update() override {
+        if (!main_bg || !lbl_status || !lbl_main_play_icon) return;
+
         static uint32_t last = 0;
         if (millis() - last < 300) return;
         last = millis();
@@ -608,6 +746,17 @@ public:
         } else if (is_playing) {
             set_ui_state((frames_count > 0) ? UI_PLAYING : UI_BUFFERING, 0);
             if (audio_out) audio_out->SetGain(settings::getVolume() / 100.0f);
+        }
+
+        if (exit_requested && !is_playing && !force_stop) {
+            exit_requested = false;
+            AppManager::switchTo(APP_HOME);
+            return;
+        }
+
+        if (radio_list_dirty) {
+            radio_list_dirty = false;
+            rebuild_radio_list_ui();
         }
 
         switch (ui_state) {
@@ -631,6 +780,7 @@ public:
 
         // MAJ des petites icônes de la liste
         for (int i = 0; i < radios.size(); i++) {
+            if (!radios[i].lbl_icon) continue;
             if (i == active_radio_index && play_requested) {
                 lv_label_set_text(radios[i].lbl_icon, (ui_state == UI_PLAYING) ? LV_SYMBOL_STOP : LV_SYMBOL_REFRESH);
             } else {
@@ -651,6 +801,11 @@ public:
             set_ui_state(UI_IDLE, 0);
 
             if (next_radio_index != -1) {
+                if (next_radio_index < 0 || next_radio_index >= (int)radios.size()) {
+                    next_radio_index = -1;
+                    active_radio_index = -1;
+                    return;
+                }
                 active_radio_index = next_radio_index;
                 url = radios[active_radio_index].url;
                 play_requested = true;
@@ -661,8 +816,28 @@ public:
             return;
         }
 
+        if (radio_fetch_requested && !radio_fetch_done && millis() >= radio_fetch_next_try_ms && !play_requested) {
+            bool ok = fetch_radio_list();
+            if (ok) {
+                radio_fetch_done = true;
+                radio_list_dirty = true;
+            } else {
+                radio_fetch_next_try_ms = millis() + RADIO_FETCH_RETRY_MS;
+            }
+        }
+
         if (play_requested && !is_playing) {
             if (millis() < retry_after_ms) return;
+
+            if (!audio_inited && !init_audio()) {
+                schedule_retry("Init audio echoue", -201);
+                return;
+            }
+
+            if (!http_client || !stream_src || !mp3 || !audio_out || !secure_client || !plain_client) {
+                schedule_retry("Audio ressources indisponibles", -202);
+                return;
+            }
 
             if (WiFi.status() != WL_CONNECTED) {
                 schedule_retry("WiFi indisponible", -100);
@@ -712,13 +887,13 @@ public:
             set_ui_state(UI_BUFFERING, 0);
             uint32_t prebuf_start = millis();
             
-            while (stream_src->available() < 16384 && (millis() - prebuf_start < 10000) && !force_stop) {
+            while (stream_src->available() < PREBUFFER_TARGET_BYTES && (millis() - prebuf_start < PREBUFFER_TIMEOUT_MS) && !force_stop) {
                 stream_src->pumpNetwork();
                 yield();
                 delay(2);
             }
 
-            if (stream_src->available() < 4096) {
+            if (stream_src->available() < PREBUFFER_MIN_BYTES) {
                 schedule_retry("Pre-buffer insuffisant", -210);
                 return;
             }
@@ -740,14 +915,12 @@ public:
 
             if (mp3->isRunning()) {
                 bool decoder_stopped = false;
-                uint32_t t_end = millis() + 100;
-
-                while (mp3->isRunning() && !force_stop && millis() < t_end) {
+                if (!force_stop) {
                     if (!mp3->loop()) {
                         decoder_stopped = true;
-                        break;
+                    } else {
+                        frames_count++;
                     }
-                    frames_count++;
                 }
 
                 stream_src->pumpNetwork();
@@ -786,17 +959,24 @@ public:
         force_stop = true;
         next_radio_index = -1;
 
-        uint32_t t = millis();
-        while (force_stop && millis() - t < 500) {
-            delay(5);
-        }
+        cleanup_http();
 
         if (mp3 && mp3->isRunning()) mp3->stop();
-        if (audio_out) { audio_out->flush(); audio_out->stop(); }
+        if (audio_out) { audio_out->stop(); }
         audio_pins_quiet();
         
         radios.clear();
         main_bg = nullptr;
+        lbl_status = nullptr;
+        list_cont = nullptr;
+        player_cont = nullptr;
+        lbl_player_title = nullptr;
+        btn_main_play = nullptr;
+        lbl_main_play_icon = nullptr;
+        slider_volume = nullptr;
+        lbl_volume_val = nullptr;
+        exit_requested = false;
+        force_stop = false;
     }
 };
 
