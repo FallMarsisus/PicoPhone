@@ -234,11 +234,11 @@ private:
         Logger::printf("[LTE] RECOVERY: %s\n", reason ? reason : "(unknown)");
         logNetworkError(NetworkErrorCode::RECOVERY_IN_PROGRESS, "4G/LTE", reason);
 
-            digitalWrite(26, HIGH);
+                digitalWrite(33, HIGH);
     delay(100);
-    digitalWrite(26, LOW); // Tirer à la masse
+            digitalWrite(33, LOW); // Tirer a la masse
     delay(1500);                   // Maintenir bas pendant au moins 1.5s
-    digitalWrite(26, HIGH);
+            digitalWrite(33, HIGH);
     delay(3000);
         s_modem_confirmed = false;
         s_line_buf = "";

@@ -23,7 +23,6 @@
 #include "applications/VelibApp.h"
 #include "applications/PhoneApp.h"
 #include "applications/SmsApp.h"
-#include "applications/NewHomeApp.h"
 #include "applications/WebRadioApp.h"
 #include "applications/PythonApp.h" 
 #include "applications/Game2048App.h"
@@ -34,7 +33,10 @@
 #include "applications/AppStoreApp.h"
 #include "applications/CryptoApp.h"
 #include "applications/NewsApp.h"
+#include "applications/NewHomeApp.h"
 #include "applications/AirQualityApp.h"
+#include "applications/BambuApp.h"
+#include "applications/ChatbotApp.h"
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
 #include "services/SmsNotifyService.h"
@@ -75,6 +77,8 @@ static void on_screen_unloaded_cb(lv_event_t * e) {
 
 
 void loadApp(AppID id) {
+    AppManager::setCurrentApp(id);
+
     while (!mutex_try_enter(&app_switch_mutex, nullptr)) {
         feed_watchdog();
         delay(10);
@@ -171,6 +175,12 @@ void loadApp(AppID id) {
         case APP_AIR_QUALITY:
             currentApp = new AirQualityApp();
             break;
+        case APP_BAMBU:
+            currentApp = new BambuApp();
+            break;
+        case APP_CHATBOT:
+            currentApp = new ChatbotApp();
+            break;
         default:
             currentApp = new NewHomeApp();
             break;
@@ -180,6 +190,33 @@ void loadApp(AppID id) {
     if (currentApp) {
         currentApp->start(new_scr);
     }
+
+    if (id != APP_HOME && id != APP_OLD_HOME) {
+        lv_obj_set_style_translate_y(new_scr, 18, 0);
+    } else {
+        lv_obj_set_style_translate_y(new_scr, 0, 0);
+    }
+
+    static auto enable_gesture_bubble_recursive = [](lv_obj_t* obj, const auto& self_ref) -> void {
+        if (!obj) return;
+        lv_obj_add_flag(obj, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        const uint32_t child_count = lv_obj_get_child_cnt(obj);
+        for (uint32_t i = 0; i < child_count; ++i) {
+            self_ref(lv_obj_get_child(obj, i), self_ref);
+        }
+    };
+
+    static auto global_gesture_cb = [](lv_event_t* e) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        if (dir == LV_DIR_BOTTOM) {
+            AppManager::openControlCenter();
+        } else if (dir == LV_DIR_TOP && manager.isControlCenterOpen()) {
+            manager.controlCenter.close();
+        }
+    };
+
+    enable_gesture_bubble_recursive(new_scr, enable_gesture_bubble_recursive);
+    lv_obj_add_event_cb(new_scr, global_gesture_cb, LV_EVENT_GESTURE, nullptr);
 
     // --- 5. Lancement de l'animation ---
     if (old_app == nullptr) {

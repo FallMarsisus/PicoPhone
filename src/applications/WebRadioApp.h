@@ -23,7 +23,8 @@ public:
     using AudioOutputI2S::AudioOutputI2S;
     bool begin() override {
         if (!i2sOn) {
-            i2s.setBuffers(32, 256);
+            // Slightly larger DMA queue to absorb network/decode jitter.
+            i2s.setBuffers(40, 320);
         }
         return AudioOutputI2S::begin();
     }
@@ -36,9 +37,14 @@ public:
         MakeSampleStereo16(ms);
         if (this->mono) {
             int32_t ttl = ms[LEFTCHANNEL] + ms[RIGHTCHANNEL];
-            ms[LEFTCHANNEL] = ms[RIGHTCHANNEL] = (ttl>>1) & 0xffff;
+            // Keep signed 16-bit value (no masking) to avoid distortion artifacts.
+            int16_t mixed = (int16_t)(ttl >> 1);
+            ms[LEFTCHANNEL] = mixed;
+            ms[RIGHTCHANNEL] = mixed;
         }
-        uint32_t s32 = ((Amplify(ms[RIGHTCHANNEL])) << 16) | (Amplify(ms[LEFTCHANNEL]) & 0xffff);
+        uint16_t left = (uint16_t)Amplify(ms[LEFTCHANNEL]);
+        uint16_t right = (uint16_t)Amplify(ms[RIGHTCHANNEL]);
+        uint32_t s32 = ((uint32_t)right << 16) | left;
         return !!i2s.write((int32_t)s32, true);
     }
 };
@@ -253,13 +259,13 @@ private:
     bool player_expanded = false;
 
     static constexpr uint32_t CONNECT_TIMEOUT_MS = 2500;
-    static constexpr uint32_t READ_TIMEOUT_MS = 1000;
+    static constexpr uint32_t READ_TIMEOUT_MS = 2500;
     static constexpr uint32_t STREAM_STALL_TIMEOUT_MS = 12000;
     static constexpr uint32_t RETRY_BASE_DELAY_MS = 1200;
     static constexpr uint32_t RETRY_MAX_DELAY_MS = 15000;
-    static constexpr uint32_t PREBUFFER_TARGET_BYTES = 8192;
-    static constexpr uint32_t PREBUFFER_MIN_BYTES = 2048;
-    static constexpr uint32_t PREBUFFER_TIMEOUT_MS = 1800;
+    static constexpr uint32_t PREBUFFER_TARGET_BYTES = 16384;
+    static constexpr uint32_t PREBUFFER_MIN_BYTES = 4096;
+    static constexpr uint32_t PREBUFFER_TIMEOUT_MS = 3000;
     static constexpr uint32_t RADIO_FETCH_RETRY_MS = 30000;
     
     int icyMetaInt = 0;
@@ -282,6 +288,8 @@ private:
     HTTPClient* http_client = nullptr;
     bool audio_inited = false;
     uint32_t frames_count = 0;
+    uint8_t decoder_fail_streak = 0;
+    uint32_t last_decoder_restart_ms = 0;
 
     const char* map_http_error(int code) {
         switch (code) {
@@ -301,7 +309,7 @@ private:
     }
 
     void schedule_retry(const char* reason, int code) {
-        cleanup_http();
+        cleanup_http(true);
         if (!play_requested) {
             retry_after_ms = 0;
             retry_count = 0;
@@ -413,14 +421,19 @@ private:
         }
     }
 
-    void cleanup_http() {
+    void cleanup_http(bool hard_stop_output = false) {
         if (mp3 && mp3->isRunning()) mp3->stop();
         if (stream_src) stream_src->close();
         if (http_client) http_client->end();
         if (secure_client) secure_client->stop();
         if (plain_client) plain_client->stop();
+        if (hard_stop_output && audio_out) {
+            audio_out->stop();
+            audio_pins_quiet();
+        }
         is_playing = false;
         icyMetaInt = 0;
+        decoder_fail_streak = 0;
     }
 
     void cleanup_audio_objects() {
@@ -436,9 +449,6 @@ private:
     bool init_audio() {
         if (audio_inited) return true;
 
-        const int base = (I2S_OUT_BCLK < I2S_OUT_WS) ? I2S_OUT_BCLK : I2S_OUT_WS;
-        const bool wantSwap = (I2S_OUT_WS < I2S_OUT_BCLK);
-
         if (!audio_out) audio_out = new AudioOutputI2SBuffered();
         if (!audio_out) return false;
         audio_out->SetRate(44100);
@@ -446,11 +456,10 @@ private:
         audio_out->SetChannels(2);
         audio_out->SetOutputModeMono(true);
         audio_out->SetGain(settings::getVolume() / 100.0f);
-        audio_out->SwapClocks(wantSwap);
-        audio_out->SetPinout(base, base + 1, I2S_OUT_DIN);
+        audio_out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
         if (!audio_out->begin()) return false;
 
-        if (!stream_src) stream_src = new AudioFileSourceStream(32768);
+        if (!stream_src) stream_src = new AudioFileSourceStream(65536);
         if (!stream_src) return false;
         if (!mp3) mp3 = new AudioGeneratorMP3();
         if (!mp3) return false;
@@ -620,6 +629,8 @@ public:
         retry_after_ms = 0;
         retry_count = 0;
         frames_count = 0;
+        decoder_fail_streak = 0;
+        last_decoder_restart_ms = 0;
         radio_list_dirty = false;
         radio_fetch_requested = true;
         radio_fetch_done = false;
@@ -794,7 +805,7 @@ public:
     // --------------------------------------------------
     void update1() override {
         if (force_stop) {
-            cleanup_http();
+            cleanup_http(true);
             force_stop = false;
             retry_after_ms = 0;
             retry_count = 0;
@@ -836,6 +847,11 @@ public:
 
             if (!http_client || !stream_src || !mp3 || !audio_out || !secure_client || !plain_client) {
                 schedule_retry("Audio ressources indisponibles", -202);
+                return;
+            }
+
+            if (!audio_out->begin()) {
+                schedule_retry("I2S begin echoue", -203);
                 return;
             }
 
@@ -905,6 +921,7 @@ public:
 
             is_playing = true;
             frames_count = 0;
+            decoder_fail_streak = 0;
             retry_after_ms = 0;
             retry_count = 0;
             set_ui_state(UI_BUFFERING, 0);
@@ -918,8 +935,10 @@ public:
                 if (!force_stop) {
                     if (!mp3->loop()) {
                         decoder_stopped = true;
+                        decoder_fail_streak = (uint8_t)std::min((int)decoder_fail_streak + 1, 10);
                     } else {
                         frames_count++;
+                        decoder_fail_streak = 0;
                     }
                 }
 
@@ -927,27 +946,32 @@ public:
 
                 if (decoder_stopped) {
                     stream_src->pumpNetwork();
-                    if (stream_src->available() >= 4096) {
+                    uint32_t now = millis();
+                    // Avoid frequent decoder restarts that can create periodic artifacts.
+                    if (decoder_fail_streak >= 2 && stream_src->available() >= 8192 && (now - last_decoder_restart_ms) > 1200) {
                         mp3->stop();
                         mp3->begin(stream_src, audio_out);
+                        last_decoder_restart_ms = now;
+                        decoder_fail_streak = 0;
                     }
                 }
             } else {
                 WiFiClient* ns = http_client->getStreamPtr();
                 if (!ns || !ns->connected()) {
-                    cleanup_http();
+                    cleanup_http(true);
                     schedule_retry("Flux perdu", -5);
                     return;
                 }
                 stream_src->pumpNetwork();
                 if (stream_src->available() >= 4096) {
                     mp3->begin(stream_src, audio_out);
+                    decoder_fail_streak = 0;
                 }
             }
 
             uint32_t last_net = stream_src->lastDataMs();
             if (last_net && (millis() - last_net) > STREAM_STALL_TIMEOUT_MS) {
-                cleanup_http();
+                cleanup_http(true);
                 schedule_retry("Flux bloque", -3);
                 return;
             }
@@ -959,7 +983,7 @@ public:
         force_stop = true;
         next_radio_index = -1;
 
-        cleanup_http();
+        cleanup_http(true);
 
         if (mp3 && mp3->isRunning()) mp3->stop();
         if (audio_out) { audio_out->stop(); }

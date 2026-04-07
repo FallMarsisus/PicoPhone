@@ -7,6 +7,7 @@
 #include <I2S.h>
 #include <AudioOutputI2S.h>
 #include <hardware/watchdog.h>
+#include "../Hardware.h"
 
 LV_FONT_DECLARE(lv_font_montserrat_14);
 
@@ -197,8 +198,8 @@ public:
                 return;
             }
 
-            i2sIn->setBCLK(2);
-            i2sIn->setDATA(4);
+            i2sIn->setBCLK(I2S_IN_BCLK);
+            i2sIn->setDATA(I2S_IN_DOUT);
             i2sIn->setBitsPerSample(32);
             i2sIn->begin(8000);
 
@@ -207,7 +208,7 @@ public:
             out->SetChannels(2);
             out->SetOutputModeMono(true);
             out->SetGain(1.0f);
-            out->SetPinout(6,7,14);
+            out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
             out->begin();
 
             dc_offset = 2048.0f;
@@ -261,8 +262,8 @@ public:
                 return;
             }
 
-            i2sIn->setBCLK(2);
-            i2sIn->setDATA(4);
+            i2sIn->setBCLK(I2S_IN_BCLK);
+            i2sIn->setDATA(I2S_IN_DOUT);
             i2sIn->setBitsPerSample(32);
             i2sIn->begin(8000); 
 
@@ -271,7 +272,7 @@ public:
             out->SetChannels(2);
             out->SetOutputModeMono(true);
             out->SetGain(1.0f); 
-            out->SetPinout(6, 7, 14); 
+            out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN); 
             out->begin();
 
             bridge_active = true;

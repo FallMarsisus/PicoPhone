@@ -23,21 +23,79 @@
 extern AppManager manager;
 
 // --- PINS ECRAN ---
-#define LCD_CS_PIN  9
-#define LCD_DC_PIN  8    // GP8
-#define LCD_RST_PIN 13
-#define LCD_BL_PIN  15
+#define SPI_PORT SPI
+#define I2C_PORT Wire
+
+#define LCD_RST_PIN  23
+#define LCD_DC_PIN   20
+#define LCD_BL_PIN   22
+#define LCD_CS_PIN   21
+#define LCD_CLK_PIN  18
+#define LCD_MOSI_PIN 19
+#define LCD_MISO_PIN 4
 
 // --- PINS TACTILE CAPACITIF (FT6336U) ---
-#define TP_SDA 16  // I2C0
-#define TP_SCL 17  // I2C0
-#define TP_INT 18
-#define TP_RST 19
+#define TP_SDA 34
+#define TP_SCL 35
+#define TP_INT 25
+#define TP_RST 24
 #define FT6336U_ADDR 0x38
 
-#define SD_CS_PIN 22 
+// --- PINS IMU / CAPTEURS ---
+#define DEV_SDA_PIN 34
+#define DEV_SCL_PIN 35
+#define DOF_INT1    14
+#define I2C_RST     38
+#define SYS_OUT_PIN 40
+#define BAT_ADC_PIN 28
 
-// Pour le MAX98357A (Sortie)
+#define SD_CS_PIN 5
+
+// --- CODEC AUDIO ES8311 ---
+#define ES8311_I2C_ADDR 0x18
+#define ES8311_RESET_REG00       0x00
+#define ES8311_CLK_MANAGER_REG01 0x01
+#define ES8311_CLK_MANAGER_REG02 0x02
+#define ES8311_CLK_MANAGER_REG03 0x03
+#define ES8311_CLK_MANAGER_REG04 0x04
+#define ES8311_CLK_MANAGER_REG05 0x05
+#define ES8311_CLK_MANAGER_REG06 0x06
+#define ES8311_CLK_MANAGER_REG07 0x07
+#define ES8311_CLK_MANAGER_REG08 0x08
+#define ES8311_SDPIN_REG09       0x09
+#define ES8311_SDPOUT_REG0A      0x0A
+#define ES8311_SYSTEM_REG0B      0x0B
+#define ES8311_SYSTEM_REG0C      0x0C
+#define ES8311_SYSTEM_REG0D      0x0D
+#define ES8311_SYSTEM_REG0E      0x0E
+#define ES8311_SYSTEM_REG0F      0x0F
+#define ES8311_SYSTEM_REG10      0x10
+#define ES8311_SYSTEM_REG11      0x11
+#define ES8311_SYSTEM_REG12      0x12
+#define ES8311_SYSTEM_REG13      0x13
+#define ES8311_SYSTEM_REG14      0x14
+#define ES8311_ADC_REG15         0x15
+#define ES8311_ADC_REG16         0x16
+#define ES8311_ADC_REG17         0x17
+#define ES8311_ADC_REG18         0x18
+#define ES8311_ADC_REG19         0x19
+#define ES8311_ADC_REG1A         0x1A
+#define ES8311_ADC_REG1B         0x1B
+#define ES8311_ADC_REG1C         0x1C
+#define ES8311_DAC_REG31         0x31
+#define ES8311_DAC_REG32         0x32
+#define ES8311_DAC_REG33         0x33
+#define ES8311_DAC_REG34         0x34
+#define ES8311_DAC_REG35         0x35
+#define ES8311_DAC_REG37         0x37
+#define ES8311_GPIO_REG44        0x44
+#define ES8311_GP_REG45          0x45
+#define ES8311_CHD1_REGFD        0xFD
+#define ES8311_CHD2_REGFE        0xFE
+#define ES8311_CHVER_REGFF       0xFF
+#define ES8311_MAX_REGISTER      0xFF
+
+// I2S sortie vers ES8311
 #define I2S_OUT_BCLK 6
 #define I2S_OUT_WS   7 
 #define I2S_OUT_DIN  14
@@ -48,9 +106,9 @@ extern AppManager manager;
 #define I2S_IN_DOUT  4
 
 // Pour le SIM800L / A7670E (UART0)
-#define SIM800_TX    0 
-#define SIM800_RX    1 
-#define A7670_PWRKEY 26 
+#define SIM800_TX    32
+#define SIM800_RX    47
+#define A7670_PWRKEY 33
 
 // --- Gestion du PWRKEY pour A7670 ---
 // Durée recommandée pour extinction matérielle : 1-2 secondes
@@ -74,17 +132,24 @@ inline void a7670_set_minimal_functionality() {
     }
 }
 
-// --- BOUTON VEILLE (GPIO21) ---
-#define SLEEP_BTN_PIN 21
+// --- BOUTON VEILLE ---
+// Evite le conflit avec LCD_CS_PIN (GP21).
+#define SLEEP_BTN_PIN 46
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
 static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
+static bool g_tft_dma_ready = false;
 
 // Mutex global
 auto_init_mutex(spi_mutex);
+
+static inline bool es8311_is_present() {
+    I2C_PORT.beginTransmission(ES8311_I2C_ADDR);
+    return I2C_PORT.endTransmission() == 0;
+}
 
 static inline void audio_pins_quiet() {
     pinMode(I2S_OUT_DIN, INPUT_PULLDOWN);
@@ -136,17 +201,17 @@ void system_power_off() {
     delay(50);
 
     // 7. VERROUILLAGE DES PINS FLOTTANTS (CRUCIAL CONTRE LES FUITES)
-    SPI1.end();
-    Wire.end();
+    SPI_PORT.end();
+    I2C_PORT.end();
 
     // On force les pins de l'écran et du bus SPI à GND
     pinMode(LCD_RST_PIN, OUTPUT); digitalWrite(LCD_RST_PIN, LOW);
     pinMode(LCD_CS_PIN, OUTPUT);  digitalWrite(LCD_CS_PIN, LOW);
     pinMode(LCD_DC_PIN, OUTPUT);  digitalWrite(LCD_DC_PIN, LOW);
     
-    pinMode(10, OUTPUT); digitalWrite(10, LOW); // SCK
-    pinMode(11, OUTPUT); digitalWrite(11, LOW); // TX (MOSI)
-    pinMode(12, OUTPUT); digitalWrite(12, LOW); // RX (MISO)
+    pinMode(LCD_CLK_PIN, OUTPUT);  digitalWrite(LCD_CLK_PIN, LOW);
+    pinMode(LCD_MOSI_PIN, OUTPUT); digitalWrite(LCD_MOSI_PIN, LOW);
+    pinMode(LCD_MISO_PIN, INPUT_PULLUP);
 
     // Extinction totale du tactile
     pinMode(TP_RST, OUTPUT); digitalWrite(TP_RST, LOW);
@@ -432,10 +497,6 @@ void run_sim_diagnostic(TFT_eSPI &disp) {
 // --- FONCTION SONORE ---
 void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     static AudioOutputI2S out;
-    const int base = (I2S_OUT_BCLK < I2S_OUT_WS) ? I2S_OUT_BCLK : I2S_OUT_WS;
-    const bool wantSwap = (I2S_OUT_WS < I2S_OUT_BCLK);
-
-    if (I2S_OUT_BCLK == I2S_OUT_WS || (abs(I2S_OUT_BCLK - I2S_OUT_WS) != 1)) return;
 
     out.SetRate(44100);
     out.SetBitsPerSample(16);
@@ -444,8 +505,7 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 1.0f) gain = 1.0f;
     out.SetGain(gain);
-    out.SwapClocks(wantSwap);
-    out.SetPinout(base, base + 1, I2S_OUT_DIN);
+    out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
     if (!out.begin()) {
         audio_pins_quiet();
         return;
@@ -483,32 +543,32 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
 
 // --- LECTURE TACTILE CAPACITIF I2C ---
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-    Wire.beginTransmission(FT6336U_ADDR);
-    Wire.write(0x02); // Registre TD_STATUS
-    if (Wire.endTransmission(false) != 0) {
+    I2C_PORT.beginTransmission(FT6336U_ADDR);
+    I2C_PORT.write(0x02); // Registre TD_STATUS
+    if (I2C_PORT.endTransmission(false) != 0) {
         data->state = LV_INDEV_STATE_REL;
         return; 
     }
 
-    Wire.requestFrom(FT6336U_ADDR, 1);
-    if (!Wire.available()) {
+    I2C_PORT.requestFrom(FT6336U_ADDR, 1);
+    if (!I2C_PORT.available()) {
         data->state = LV_INDEV_STATE_REL;
         return;
     }
     
-    uint8_t touches = Wire.read() & 0x0F;
+    uint8_t touches = I2C_PORT.read() & 0x0F;
 
     if (touches > 0) {
-        Wire.beginTransmission(FT6336U_ADDR);
-        Wire.write(0x03); 
-        Wire.endTransmission(false);
-        Wire.requestFrom(FT6336U_ADDR, 4);
+        I2C_PORT.beginTransmission(FT6336U_ADDR);
+        I2C_PORT.write(0x03); 
+        I2C_PORT.endTransmission(false);
+        I2C_PORT.requestFrom(FT6336U_ADDR, 4);
 
-        if (Wire.available() >= 4) {
-            uint8_t p1_xh = Wire.read();
-            uint8_t p1_xl = Wire.read();
-            uint8_t p1_yh = Wire.read();
-            uint8_t p1_yl = Wire.read();
+        if (I2C_PORT.available() >= 4) {
+            uint8_t p1_xh = I2C_PORT.read();
+            uint8_t p1_xl = I2C_PORT.read();
+            uint8_t p1_yh = I2C_PORT.read();
+            uint8_t p1_yl = I2C_PORT.read();
 
             uint16_t x = ((p1_xh & 0x0F) << 8) | p1_xl;
             uint16_t y = ((p1_yh & 0x0F) << 8) | p1_yl;
@@ -534,12 +594,14 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
-    
-    // 2. ENVOI DMA DIRECT ET IMMÉDIAT (SANS BOUCLE FOR !)
-    tft.pushPixelsDMA((uint16_t *)&color_p->full, len);
-    
-    // 3. ATTENTE DE FIN DE TRANSFERT (Essentiel pour éviter les glitchs visuels !)
-    tft.dmaWait();
+
+    // 2. Envoi pixel: DMA si disponible, sinon mode direct (fallback de securite).
+    if (g_tft_dma_ready) {
+        tft.pushPixelsDMA((uint16_t *)&color_p->full, len);
+        tft.dmaWait();
+    } else {
+        tft.pushPixels((uint16_t *)&color_p->full, len);
+    }
 
     tft.endWrite();
     
@@ -565,14 +627,23 @@ void hardware_init() {
     digitalWrite(TP_RST, HIGH);
     delay(50);
     
-    Wire.setSDA(TP_SDA);
-    Wire.setSCL(TP_SCL);
-    Wire.begin();
+    pinMode(I2C_RST, OUTPUT);
+    digitalWrite(I2C_RST, HIGH);
+
+    I2C_PORT.setSDA(TP_SDA);
+    I2C_PORT.setSCL(TP_SCL);
+    I2C_PORT.begin();
+
+    if (es8311_is_present()) {
+        Serial.println("[AUDIO] ES8311 detecte sur I2C (0x18)");
+    } else {
+        Serial.println("[AUDIO] ES8311 non detecte sur I2C (0x18)");
+    }
     
-    // FORCER LE ROUTAGE SPI1 DU PICO 2
-    SPI1.setRX(12);
-    SPI1.setTX(11);
-    SPI1.setSCK(10);
+    // Routage SPI0 (TFT)
+    SPI_PORT.setTX(LCD_MOSI_PIN);
+    SPI_PORT.setSCK(LCD_CLK_PIN);
+    SPI_PORT.begin();
 
     pinMode(LCD_RST_PIN, OUTPUT);
     digitalWrite(LCD_RST_PIN, LOW);
@@ -584,8 +655,9 @@ void hardware_init() {
     tft.init();
     tft.setRotation(0);
     
-    // ON RÉACTIVE LE DMA ! 🚀
-    tft.initDMA(); 
+    // Active DMA si possible, sinon on garde un fallback stable sans DMA.
+    g_tft_dma_ready = tft.initDMA();
+    Serial.printf("[TFT] DMA %s\n", g_tft_dma_ready ? "ON" : "OFF (fallback)");
     
     tft.fillScreen(TFT_BLACK);
     tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
@@ -626,10 +698,10 @@ void hardware_sleep() {
     mutex_exit(&spi_mutex);
 
     // ENDORMIR LE TACTILE (FT6336U Mode Sleep)
-    Wire.beginTransmission(FT6336U_ADDR);
-    Wire.write(0xA5); // Registre Power Mode
-    Wire.write(0x03); // Valeur pour "Sleep Mode"
-    Wire.endTransmission();
+    I2C_PORT.beginTransmission(FT6336U_ADDR);
+    I2C_PORT.write(0xA5); // Registre Power Mode
+    I2C_PORT.write(0x03); // Valeur pour "Sleep Mode"
+    I2C_PORT.endTransmission();
 
     // Serial1.println("AT+CSCLK=2"); // Endormir le modem LTE
 }
@@ -682,7 +754,7 @@ void check_sleep_button() {
 }
 
 void hardware_wake() {
-    SPI1.begin(); 
+    SPI_PORT.begin(); 
     
     // RÉVEILLER LE TACTILE AVEC UN RESET MATÉRIEL
     digitalWrite(TP_RST, LOW);

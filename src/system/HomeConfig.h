@@ -86,9 +86,10 @@ namespace homeConfig {
         {"store",     "Store",        LV_SYMBOL_DOWNLOAD,  0x1565C0, APP_STORE, ""},
         {"crypto",    "Crypto",       LV_SYMBOL_CHARGE,    0xF7931A, APP_CRYPTO, ""},
         {"news",      "Actualites",   LV_SYMBOL_LIST,      0xFF3B30, APP_NEWS, ""},
-        {"airquality","Qualite Air",  LV_SYMBOL_HOME,      0x27AE60, APP_AIR_QUALITY, ""},
+        {"bambu",     "Bambu",        LV_SYMBOL_SETTINGS,  0x00A86B, APP_BAMBU, ""},
+        {"chatbot",   "Gemini",       "AI",              0x7C4DFF, APP_CHATBOT, ""},
     };
-    const int ALL_APPS_COUNT = 19;
+    const int ALL_APPS_COUNT = 20;
 
     // Charge la config. Si pas de fichier -> toutes les apps par defaut.
     bool loadConfig(std::vector<HomeAppEntry>& apps) {
@@ -140,6 +141,66 @@ namespace homeConfig {
                 }
             }
         }
+
+        // Migration: garantir la presence des nouvelles apps systeme dans le menu principal.
+        bool weather_present = false;
+        bool bambu_present = false;
+        bool chatbot_present = false;
+        for (const auto& app : apps) {
+            if (app.id == "weather") {
+                weather_present = true;
+            }
+            if (app.id == "bambu") {
+                bambu_present = true;
+            }
+            if (app.id == "chatbot") {
+                chatbot_present = true;
+            }
+        }
+
+        for (size_t i = 0; i < apps.size();) {
+            if (apps[i].id == "airquality") {
+                if (weather_present) {
+                    apps.erase(apps.begin() + (long)i);
+                    continue;
+                }
+                apps[i].id = "weather";
+                apps[i].name = "Meteo";
+                apps[i].symbol = LV_SYMBOL_CHARGE;
+                apps[i].color = 0x4CAF50;
+                apps[i].appId = APP_WEATHER;
+                weather_present = true;
+            }
+            ++i;
+        }
+
+        if (!weather_present) {
+            for (int i = 0; i < ALL_APPS_COUNT; ++i) {
+                if (ALL_APPS[i].id == "weather") {
+                    apps.push_back(ALL_APPS[i]);
+                    break;
+                }
+            }
+        }
+
+        if (!bambu_present) {
+            for (int i = 0; i < ALL_APPS_COUNT; ++i) {
+                if (ALL_APPS[i].id == "bambu") {
+                    apps.push_back(ALL_APPS[i]);
+                    break;
+                }
+            }
+        }
+
+        if (!chatbot_present) {
+            for (int i = 0; i < ALL_APPS_COUNT; ++i) {
+                if (ALL_APPS[i].id == "chatbot") {
+                    apps.push_back(ALL_APPS[i]);
+                    break;
+                }
+            }
+        }
+
         Serial.printf("[HomeConfig] Loaded %d apps\n", (int)apps.size());
         return true;
     }

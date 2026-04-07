@@ -59,11 +59,17 @@ private:
     lv_obj_t *lbl_n2_app = nullptr;
     lv_obj_t *lbl_n2_title = nullptr;
     lv_obj_t *lbl_n2_body = nullptr;
+    lv_obj_t *handle = nullptr;
 
     bool is_open = false;
     bool ui_created = false;
+    bool animating = false;
     int last_preview_volume = -1;
     int last_preview_brightness = -1;
+    lv_coord_t sheet_offset_y = -430;
+    static constexpr lv_coord_t sheet_hidden_y = -430;
+    static constexpr lv_opa_t overlay_hidden_opa = LV_OPA_0;
+    static constexpr lv_opa_t overlay_visible_opa = LV_OPA_60;
 
     static void set_btn_state(lv_obj_t *btn, bool active, uint32_t active_color)
     {
@@ -187,6 +193,84 @@ private:
         self->close();
     }
 
+    void applySheetOffset(lv_coord_t offset)
+    {
+        sheet_offset_y = offset;
+        if (panel_top) lv_obj_set_style_translate_y(panel_top, offset, 0);
+        if (panel_media) lv_obj_set_style_translate_y(panel_media, offset, 0);
+        if (panel_notif1) lv_obj_set_style_translate_y(panel_notif1, offset, 0);
+        if (panel_notif2) lv_obj_set_style_translate_y(panel_notif2, offset, 0);
+        if (handle) lv_obj_set_style_translate_y(handle, offset, 0);
+    }
+
+    static void sheet_anim_exec(void *var, int32_t v)
+    {
+        ControlCenter *self = (ControlCenter *)var;
+        if (self) self->applySheetOffset((lv_coord_t)v);
+    }
+
+    static void overlay_anim_exec(void *var, int32_t v)
+    {
+        ControlCenter *self = (ControlCenter *)var;
+        if (!self || !self->overlay) return;
+        lv_obj_set_style_bg_opa(self->overlay, (lv_opa_t)v, 0);
+    }
+
+    void animateOverlayTo(lv_opa_t target_opa, uint16_t duration)
+    {
+        if (!overlay) return;
+
+        lv_anim_del(overlay, (lv_anim_exec_xcb_t)overlay_anim_exec);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, this);
+        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)overlay_anim_exec);
+        lv_anim_set_values(&a, lv_obj_get_style_bg_opa(overlay, 0), target_opa);
+        lv_anim_set_time(&a, duration);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+
+    static void sheet_anim_ready(lv_anim_t *a)
+    {
+        ControlCenter *self = (ControlCenter *)lv_anim_get_user_data(a);
+        if (!self) return;
+
+        self->animating = false;
+        if (self->is_open) {
+            self->animateOverlayTo(overlay_visible_opa, 120);
+        } else if (self->overlay) {
+            lv_obj_add_flag(self->overlay, LV_OBJ_FLAG_HIDDEN);
+            if (self->panel_top) lv_obj_add_flag(self->panel_top, LV_OBJ_FLAG_HIDDEN);
+            if (self->panel_media) lv_obj_add_flag(self->panel_media, LV_OBJ_FLAG_HIDDEN);
+            if (self->panel_notif1) lv_obj_add_flag(self->panel_notif1, LV_OBJ_FLAG_HIDDEN);
+            if (self->panel_notif2) lv_obj_add_flag(self->panel_notif2, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    void animateSheetTo(lv_coord_t target_y)
+    {
+        if (!ui_created) return;
+
+        animating = true;
+        lv_anim_del(panel_top, (lv_anim_exec_xcb_t)sheet_anim_exec);
+        lv_anim_del(panel_media, (lv_anim_exec_xcb_t)sheet_anim_exec);
+        lv_anim_del(panel_notif1, (lv_anim_exec_xcb_t)sheet_anim_exec);
+        lv_anim_del(panel_notif2, (lv_anim_exec_xcb_t)sheet_anim_exec);
+        lv_anim_del(handle, (lv_anim_exec_xcb_t)sheet_anim_exec);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, this);
+        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)sheet_anim_exec);
+        lv_anim_set_values(&a, sheet_offset_y, target_y);
+        lv_anim_set_time(&a, 220);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_set_user_data(&a, this);
+        lv_anim_set_ready_cb(&a, sheet_anim_ready);
+        lv_anim_start(&a);
+    }
+
     // --- CALLBACKS LECTEUR MULTIMEDIA ---
     static void media_prev_event(lv_event_t *e) { cast_service::instance().prev(); }
     static void media_next_event(lv_event_t *e) { cast_service::instance().next(); }
@@ -292,7 +376,7 @@ private:
         overlay = lv_obj_create(layer);
         lv_obj_set_size(overlay, 320, 480);
         lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(overlay, LV_OPA_60, 0);
+        lv_obj_set_style_bg_opa(overlay, overlay_hidden_opa, 0);
         lv_obj_set_style_border_width(overlay, 0, 0);
         lv_obj_set_style_radius(overlay, 0, 0);
         lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
@@ -417,6 +501,7 @@ private:
 
         // 5. Poignée en bas (Handle)
         lv_obj_t *handle = lv_obj_create(overlay);
+        this->handle = handle;
         lv_obj_set_size(handle, 36, 4);
         lv_obj_align(handle, LV_ALIGN_BOTTOM_MID, 0, -10);
         lv_obj_set_style_bg_color(handle, lv_color_hex(0xA0A0A0), 0);
@@ -439,6 +524,16 @@ public:
             return;
 
         is_open = true;
+        animating = false;
+
+        lv_obj_clear_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_opa(overlay, overlay_hidden_opa, 0);
+        lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(panel_media, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(panel_notif1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(panel_notif2, LV_OBJ_FLAG_HIDDEN);
+
+        applySheetOffset(sheet_hidden_y);
 
         // Rafraichir les sliders
         uint8_t br = settings::getBrightness();
@@ -515,6 +610,7 @@ public:
 
         lv_obj_clear_flag(overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
+        animateSheetTo(0);
     }
 
     void close()
@@ -522,11 +618,10 @@ public:
         if (!is_open)
             return;
         is_open = false;
-        lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(panel_media, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(panel_notif1, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(panel_notif2, LV_OBJ_FLAG_HIDDEN);
+
+        if (!ui_created) return;
+        animateOverlayTo(overlay_hidden_opa, 90);
+        animateSheetTo(sheet_hidden_y);
     }
 
     void toggle()

@@ -34,11 +34,22 @@ private:
     lv_obj_t *nav_dots_label = nullptr;      
     lv_obj_t *btn_prev = nullptr;
     lv_obj_t *btn_next = nullptr;
+    bool page_animating = false;
+    int page_slide_dir = 0;
     
     bool app_list_open = false;
     lv_point_t touch_start_point;
     bool press_started_top = false;
     bool long_press_consumed = false;
+    bool drawer_dragging = false;
+    lv_coord_t drawer_drag_start_offset = 0;
+    bool press_active = false;
+    bool long_press_armed = false;
+    unsigned long press_start_ms = 0;
+    static constexpr unsigned long LONG_PRESS_DELAY_MS = 850;
+    static constexpr lv_coord_t LONG_PRESS_MOVE_LIMIT = 12;
+    static constexpr lv_coord_t DRAWER_OPEN_SNAP_Y = 275;
+    static constexpr lv_coord_t DRAWER_CLOSE_SNAP_Y = 145;
 
     uint32_t current_bg_color = 0x408A71;
     lv_color_t bg_anim_from;
@@ -51,6 +62,42 @@ private:
     int current_folder_index = -1; 
 
     lv_style_transition_dsc_t btn_trans;
+
+    static String buildPythonInitials(const String& name, const String& fallbackId) {
+        String source = name.length() > 0 ? name : fallbackId;
+        source.trim();
+        if (source.length() == 0) {
+            return "?";
+        }
+
+        auto isAsciiAlphaNum = [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        };
+        auto toUpperAscii = [](char c) {
+            if (c >= 'a' && c <= 'z') return (char)(c - ('a' - 'A'));
+            return c;
+        };
+
+        String initials;
+        bool word_start = true;
+        for (int i = 0; i < source.length() && initials.length() < 2; ++i) {
+            char c = source.charAt(i);
+            if (isAsciiAlphaNum(c)) {
+                if (word_start) {
+                    initials += toUpperAscii(c);
+                    word_start = false;
+                }
+            } else {
+                word_start = true;
+            }
+        }
+
+        if (initials.length() == 0) {
+            initials = "?";
+        }
+
+        return initials;
+    }
 
     static void app_click_cb(lv_event_t* e) {
         HomeAppEntry* entry = (HomeAppEntry*)lv_event_get_user_data(e);
@@ -94,6 +141,96 @@ private:
 
     static void anim_opa_cb(void * var, int32_t v) {
         lv_obj_set_style_opa((lv_obj_t*)var, v, 0);
+    }
+
+    void applyDrawerOffset(lv_coord_t offset) {
+        if (!app_list_cont) return;
+        if (offset < 0) offset = 0;
+        if (offset > drawer_hidden_ty) offset = drawer_hidden_ty;
+
+        lv_obj_set_style_translate_y(app_list_cont, offset, 0);
+
+        if (quick_actions_cont) {
+            if (!lv_obj_has_flag(quick_actions_cont, LV_OBJ_FLAG_HIDDEN)) {
+                uint8_t opa = (uint8_t)((255L * offset) / drawer_hidden_ty);
+                lv_obj_set_style_opa(quick_actions_cont, opa, 0);
+            }
+        }
+    }
+
+    static void drawer_anim_cb(void* var, int32_t v) {
+        NewHomeApp* app = (NewHomeApp*)var;
+        if (app) app->applyDrawerOffset((lv_coord_t)v);
+    }
+
+    void animateDrawerTo(lv_coord_t target_offset) {
+        if (!app_list_cont) return;
+
+        lv_anim_del(this, (lv_anim_exec_xcb_t)drawer_anim_cb);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, this);
+        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)drawer_anim_cb);
+        lv_anim_set_values(&a, lv_obj_get_style_translate_y(app_list_cont, 0), target_offset);
+        lv_anim_set_time(&a, 220);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+
+    void pollLongPress() {
+        if (!press_active || !long_press_armed || long_press_consumed || drawer_dragging || app_list_open) {
+            return;
+        }
+
+        if (millis() - press_start_ms < LONG_PRESS_DELAY_MS) {
+            return;
+        }
+
+        lv_coord_t current_offset = 0;
+        if (app_list_cont) {
+            current_offset = lv_obj_get_style_translate_y(app_list_cont, 0);
+        }
+
+        lv_coord_t diff_y = 0;
+        if (touch_start_point.y >= 0) {
+            lv_indev_t* indev = lv_indev_get_act();
+            if (indev) {
+                lv_point_t now_point;
+                lv_indev_get_point(indev, &now_point);
+                diff_y = now_point.y - touch_start_point.y;
+            }
+        }
+
+        if (press_started_top && abs(diff_y) <= LONG_PRESS_MOVE_LIMIT && current_offset >= drawer_hidden_ty - 4) {
+            long_press_consumed = true;
+            long_press_armed = false;
+            showColorSelector();
+        }
+    }
+
+    static void page_slide_in_done_cb(lv_anim_t* a) {
+        NewHomeApp* app = (NewHomeApp*)lv_anim_get_user_data(a);
+        if (app) app->page_animating = false;
+    }
+
+    static void page_slide_out_done_cb(lv_anim_t* a) {
+        NewHomeApp* app = (NewHomeApp*)lv_anim_get_user_data(a);
+        if (!app || !app->app_page_cont) return;
+
+        int dir = (app->page_slide_dir >= 0) ? 1 : -1;
+        app->renderCurrentPage(0);
+        lv_obj_set_style_translate_x(app->app_page_cont, (dir > 0) ? 320 : -320, 0);
+
+        lv_anim_t in;
+        lv_anim_init(&in);
+        lv_anim_set_var(&in, app->app_page_cont);
+        lv_anim_set_exec_cb(&in, (lv_anim_exec_xcb_t)anim_x_cb);
+        lv_anim_set_time(&in, 240);
+        lv_anim_set_path_cb(&in, lv_anim_path_ease_out);
+        lv_anim_set_values(&in, (dir > 0) ? 320 : -320, 0);
+        lv_anim_set_user_data(&in, app);
+        lv_anim_set_ready_cb(&in, page_slide_in_done_cb);
+        lv_anim_start(&in);
     }
 
     static void anim_bg_color_cb(void* var, int32_t v) {
@@ -236,46 +373,10 @@ private:
     void toggleAppList(bool open) {
         if (!app_list_cont) return;
         app_list_open = open;
+        drawer_dragging = false;
 
-        lv_anim_del(app_list_cont, (lv_anim_exec_xcb_t)anim_y_cb);
-        if (quick_actions_cont) lv_anim_del(quick_actions_cont, (lv_anim_exec_xcb_t)anim_opa_cb);
-
-        int32_t cur_ty = lv_obj_get_style_translate_y(app_list_cont, 0);
-
-        lv_anim_t a_list;
-        lv_anim_init(&a_list);
-        lv_anim_set_var(&a_list, app_list_cont);
-        lv_anim_set_exec_cb(&a_list, (lv_anim_exec_xcb_t)anim_y_cb);
-
-        lv_anim_t a_qa;
-        lv_anim_init(&a_qa);
-        if (quick_actions_cont) {
-            lv_obj_clear_flag(quick_actions_cont, LV_OBJ_FLAG_HIDDEN);
-            lv_anim_set_var(&a_qa, quick_actions_cont);
-            lv_anim_set_exec_cb(&a_qa, (lv_anim_exec_xcb_t)anim_opa_cb);
-            lv_anim_set_path_cb(&a_qa, lv_anim_path_ease_out);
-        }
-
-        if (open) {
-            lv_anim_set_time(&a_list, 320);
-            lv_anim_set_path_cb(&a_list, lv_anim_path_ease_out);
-            lv_anim_set_values(&a_list, cur_ty, 0);
-            if (quick_actions_cont) {
-                lv_anim_set_time(&a_qa, 220);
-                lv_anim_set_values(&a_qa, 255, 0); 
-            }
-        } else {
-            lv_anim_set_time(&a_list, 260);
-            lv_anim_set_path_cb(&a_list, lv_anim_path_ease_in_out);
-            lv_anim_set_values(&a_list, cur_ty, drawer_hidden_ty);
-            if (quick_actions_cont) {
-                lv_anim_set_time(&a_qa, 200);
-                lv_anim_set_values(&a_qa, 0, 255); 
-            }
-        }
-
-        lv_anim_start(&a_list);
-        if (quick_actions_cont) lv_anim_start(&a_qa);
+        if (quick_actions_cont) lv_obj_clear_flag(quick_actions_cont, LV_OBJ_FLAG_HIDDEN);
+        animateDrawerTo(open ? 0 : drawer_hidden_ty);
     }
 
     static void close_app_list_cb(lv_event_t* e) {
@@ -337,8 +438,12 @@ private:
         lv_obj_clear_flag(icon_bg, LV_OBJ_FLAG_SCROLLABLE); 
 
         lv_obj_t* icon_lbl = lv_label_create(icon_bg);
-        lv_label_set_text(icon_lbl, entry->symbol.c_str());
+        String iconText = (entry->isFolder() || entry->pythonPath.length() == 0)
+            ? entry->symbol
+            : buildPythonInitials(entry->name, entry->id);
+        lv_label_set_text(icon_lbl, iconText.c_str());
         lv_obj_set_style_text_color(icon_lbl, lv_color_white(), 0);
+        lv_obj_set_style_text_font(icon_lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(icon_lbl);
 
         lv_obj_t* lbl = lv_label_create(btn);
@@ -388,6 +493,27 @@ private:
 
     void renderCurrentPage(int direction = 0) {
         if (!app_page_cont) return;
+
+        if (page_animating && direction != 0) return;
+
+        if (direction != 0) {
+            page_animating = true;
+            page_slide_dir = direction;
+            lv_anim_del(app_page_cont, (lv_anim_exec_xcb_t)anim_x_cb);
+            lv_obj_set_style_translate_x(app_page_cont, 0, 0);
+
+            lv_anim_t out;
+            lv_anim_init(&out);
+            lv_anim_set_var(&out, app_page_cont);
+            lv_anim_set_exec_cb(&out, (lv_anim_exec_xcb_t)anim_x_cb);
+            lv_anim_set_time(&out, 220);
+            lv_anim_set_path_cb(&out, lv_anim_path_ease_in);
+            lv_anim_set_values(&out, 0, (direction > 0) ? -320 : 320);
+            lv_anim_set_user_data(&out, this);
+            lv_anim_set_ready_cb(&out, page_slide_out_done_cb);
+            lv_anim_start(&out);
+            return;
+        }
         
         lv_anim_del(app_page_cont, (lv_anim_exec_xcb_t)anim_x_cb);
         lv_obj_set_style_translate_x(app_page_cont, 0, 0);
@@ -442,40 +568,24 @@ private:
 
         if (current_page >= total_pages - 1) lv_obj_add_state(btn_next, LV_STATE_DISABLED);
         else lv_obj_clear_state(btn_next, LV_STATE_DISABLED);
-
-        // Slide horizontal plus "phone-like": un peu plus long et plus souple.
-        if (direction != 0) {
-            lv_anim_t a_slide;
-            lv_anim_init(&a_slide);
-            lv_anim_set_var(&a_slide, app_page_cont);
-            lv_anim_set_exec_cb(&a_slide, (lv_anim_exec_xcb_t)anim_x_cb);
-            lv_anim_set_time(&a_slide, 300);
-            lv_anim_set_path_cb(&a_slide, lv_anim_path_ease_in_out);
-
-            if (direction > 0) {
-                lv_anim_set_values(&a_slide, 320, 0);
-            } else {
-                lv_anim_set_values(&a_slide, -320, 0);
-            }
-            lv_anim_start(&a_slide);
-        }
     }
 
     void createAppListUI() {
         app_list_cont = lv_obj_create(main_bg);
         lv_obj_set_size(app_list_cont, 300, 410);
-        lv_obj_set_pos(app_list_cont, 10, 65); 
+        lv_obj_set_pos(app_list_cont, 10, 73); 
         lv_obj_set_style_translate_y(app_list_cont, drawer_hidden_ty, 0); 
         lv_obj_set_style_bg_color(app_list_cont, lv_color_hex(0x222222), 0);
         lv_obj_set_style_bg_opa(app_list_cont, LV_OPA_50, 0); 
         lv_obj_set_style_border_width(app_list_cont, 0, 0);
         lv_obj_set_style_radius(app_list_cont, 20, 0); 
         lv_obj_set_scrollbar_mode(app_list_cont, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_set_scroll_dir(app_list_cont, LV_DIR_NONE);
+        lv_obj_set_scroll_dir(app_list_cont, LV_DIR_NONE);  
+        lv_obj_add_flag(app_list_cont, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t* header_btn = lv_btn_create(app_list_cont);
-        lv_obj_set_size(header_btn, 280, 40);
-        lv_obj_align(header_btn, LV_ALIGN_TOP_MID, 0, 5);
+        lv_obj_set_size(header_btn, 280, 36);
+        lv_obj_align(header_btn, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_set_style_bg_color(header_btn, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(header_btn, LV_OPA_30, 0);
         lv_obj_set_style_border_width(header_btn, 1, 0);
@@ -491,18 +601,19 @@ private:
         lv_obj_center(header_lbl);
 
         app_page_cont = lv_obj_create(app_list_cont);
-        lv_obj_set_size(app_page_cont, 280, 280);
+        lv_obj_set_size(app_page_cont, 280, 268);
         lv_obj_align(app_page_cont, LV_ALIGN_TOP_MID, 0, 45);
         lv_obj_set_style_bg_opa(app_page_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(app_page_cont, 0, 0);
+        lv_obj_set_style_pad_all(app_page_cont, 0, 0);
         lv_obj_clear_flag(app_page_cont, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_flex_flow(app_page_cont, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(app_page_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(app_page_cont, 10, 0);
+        lv_obj_set_style_pad_gap(app_page_cont, 8, 0);
 
         lv_obj_t* footer_cont = lv_obj_create(app_list_cont);
         lv_obj_set_size(footer_cont, 280, 60);
-        lv_obj_align(footer_cont, LV_ALIGN_BOTTOM_MID, 0, 8);
+        lv_obj_align(footer_cont, LV_ALIGN_BOTTOM_MID, 0, -2);
         lv_obj_set_style_bg_opa(footer_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(footer_cont, 0, 0);
         lv_obj_clear_flag(footer_cont, LV_OBJ_FLAG_SCROLLABLE);
@@ -557,21 +668,57 @@ private:
                 lv_indev_get_point(indev, &app->touch_start_point);
                 app->press_started_top = (app->touch_start_point.y < 200);
                 app->long_press_consumed = false;
+                app->press_active = true;
+                app->long_press_armed = app->press_started_top;
+                app->press_start_ms = millis();
+                app->drawer_dragging = false;
+                app->drawer_drag_start_offset = app->app_list_cont ? lv_obj_get_style_translate_y(app->app_list_cont, 0) : 0;
             }
-        } else if (code == LV_EVENT_LONG_PRESSED) {
-            app->long_press_consumed = true;
-            app->showColorSelector();
+        } else if (code == LV_EVENT_PRESSING) {
+            if (app->long_press_consumed || !app->app_list_cont) return;
+
+            lv_indev_t* indev = lv_indev_get_act();
+            if (indev) {
+                lv_point_t now_point;
+                lv_indev_get_point(indev, &now_point);
+                lv_coord_t diff_y = now_point.y - app->touch_start_point.y;
+
+                bool can_drag_drawer = app->app_list_open || app->touch_start_point.y > 240 || diff_y < -22;
+                if (can_drag_drawer) {
+                    app->drawer_dragging = true;
+                    app->long_press_armed = false;
+                    app->applyDrawerOffset(app->drawer_drag_start_offset + diff_y);
+                }
+            }
         } else if (code == LV_EVENT_RELEASED) {
+            app->press_active = false;
+            app->long_press_armed = false;
             if (app->long_press_consumed) return;
+            if (app->drawer_dragging) {
+                app->drawer_dragging = false;
+                lv_coord_t cur_ty = app->app_list_cont ? lv_obj_get_style_translate_y(app->app_list_cont, 0) : app->drawer_hidden_ty;
+                if (app->app_list_open) {
+                    if (cur_ty < DRAWER_CLOSE_SNAP_Y) {
+                        app->toggleAppList(false);
+                    } else {
+                        app->toggleAppList(true);
+                    }
+                } else if (cur_ty < DRAWER_OPEN_SNAP_Y) {
+                    app->toggleAppList(true);
+                } else {
+                    app->toggleAppList(false);
+                }
+                return;
+            }
             lv_indev_t* indev = lv_indev_get_act();
             if (indev) {
                 lv_point_t end_point;
                 lv_indev_get_point(indev, &end_point);
                 lv_coord_t diff_y = end_point.y - app->touch_start_point.y;
 
-                if (diff_y < -50 && !app->app_list_open) {
+                if (diff_y < -40 && !app->app_list_open) {
                     app->toggleAppList(true);
-                } else if (diff_y > 50) {
+                } else if (diff_y > 40) {
                     if (app->app_list_open) {
                         app->toggleAppList(false);
                     } else if (app->press_started_top) {
@@ -695,6 +842,8 @@ public:
     }
 
     void update() override {
+        pollLongPress();
+
         const unsigned long now_ms = millis();
 
         static unsigned long last_check = 0;

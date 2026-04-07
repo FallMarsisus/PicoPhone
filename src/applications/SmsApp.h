@@ -29,6 +29,7 @@ struct SmsContact {
 class SmsApp : public App {
 private:
     lv_obj_t* main_bg;
+    lv_obj_t* btn_new_conv;
     lv_obj_t* view_contacts;
     lv_obj_t* list_cont;
     lv_obj_t* view_chat;
@@ -38,6 +39,7 @@ private:
     lv_obj_t* ta_visible;
 
     bool fs_ok = false;
+    bool creating_conversation = false;
     std::vector<SmsContact> contacts;
     int current_contact_idx = -1; 
 
@@ -64,6 +66,55 @@ private:
         e = netq[netq_head];
         netq_head = (netq_head + 1) % 5;
         return true;
+    }
+
+    int find_contact_index(const String& number) {
+        for (size_t i = 0; i < contacts.size(); i++) {
+            if (contacts[i].number == number) return (int)i;
+        }
+        return -1;
+    }
+
+    void save_contacts_to_flash() {
+        if (!fs_ok) return;
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        for (const auto &c : contacts) {
+            JsonObject obj = arr.add<JsonObject>();
+            obj["id"] = c.number;
+            obj["n"] = c.name;
+            obj["p"] = c.last_msg_preview;
+        }
+        File fw = LittleFS.open("/sms_contacts.json", "w");
+        if (fw) { serializeJson(arr, fw); fw.close(); }
+    }
+
+    void open_contact_idx(int idx) {
+        if (idx < 0 || idx >= (int)contacts.size()) return;
+        current_contact_idx = idx;
+        creating_conversation = false;
+        lv_obj_add_flag(view_contacts, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(view_chat, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(header_title, contacts[idx].name.c_str());
+        lv_textarea_set_placeholder_text(ta_visible, "Message");
+        lv_obj_clear_flag(keyboard_cont, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ta_visible, LV_OBJ_FLAG_HIDDEN);
+        lv_keyboard_set_textarea(keyboard_cont, ta_visible);
+        load_history_to_ui(contacts[idx].number);
+        lv_obj_scroll_to_y(msg_list, 10000, LV_ANIM_OFF);
+    }
+
+    void begin_new_conversation() {
+        current_contact_idx = -1;
+        creating_conversation = true;
+        lv_obj_clear_flag(view_contacts, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(view_chat, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(header_title, "Nouvelle discussion");
+        lv_textarea_set_text(ta_visible, "");
+        lv_textarea_set_placeholder_text(ta_visible, "Numero ou nom");
+        lv_obj_clear_flag(keyboard_cont, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ta_visible, LV_OBJ_FLAG_HIDDEN);
+        lv_keyboard_set_textarea(keyboard_cont, ta_visible);
     }
 
     void load_contacts_from_flash() {
@@ -133,18 +184,7 @@ private:
                 break;
             }
         }
-
-        // Persist updated contacts to /sms_contacts.json
-        JsonDocument doc;
-        JsonArray arr = doc.to<JsonArray>();
-        for (const auto &c : contacts) {
-            JsonObject obj = arr.add<JsonObject>();
-            obj["id"] = c.number;
-            obj["n"] = c.name;
-            obj["p"] = c.last_msg_preview;
-        }
-        File fw = LittleFS.open("/sms_contacts.json", "w");
-        if (fw) { serializeJson(arr, fw); fw.close(); }
+        save_contacts_to_flash();
         
     }
 
@@ -159,9 +199,20 @@ private:
             lv_obj_clear_flag(app->view_contacts, LV_OBJ_FLAG_HIDDEN);
             app->refresh_contact_list_ui();
             lv_label_set_text(app->header_title, "Messages");
+        } else if (app->creating_conversation) {
+            app->creating_conversation = false;
+            lv_textarea_set_text(app->ta_visible, "");
+            lv_obj_add_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(app->header_title, "Messages");
         } else {
             AppManager::switchTo(APP_HOME);
         }
+    }
+
+    static void new_conversation_event(lv_event_t* e) {
+        SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
+        app->begin_new_conversation();
     }
 
     static void btn_reply_event(lv_event_t* e) {
@@ -184,7 +235,19 @@ private:
 
         const char* text = lv_textarea_get_text(app->ta_visible);
 
-        if (text && strlen(text) > 0 && app->current_contact_idx != -1) {
+        if (text && strlen(text) > 0 && app->creating_conversation) {
+            String number = String(text);
+            int idx = app->find_contact_index(number);
+            if (idx == -1) {
+                app->contacts.push_back({number, number, "", false});
+                idx = (int)app->contacts.size() - 1;
+            }
+            app->save_contacts_to_flash();
+            lv_obj_add_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
+            app->creating_conversation = false;
+            app->open_contact_idx(idx);
+        } else if (text && strlen(text) > 0 && app->current_contact_idx != -1) {
             const String number = app->contacts[app->current_contact_idx].number;
             
             // --- SÉCURITÉ 2 : Prévention des Buffer Overflows ---
@@ -207,6 +270,10 @@ private:
         lv_obj_add_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
         lv_textarea_set_text(app->ta_visible, "");
+        if (app->creating_conversation) {
+            app->creating_conversation = false;
+            lv_label_set_text(app->header_title, "Messages");
+        }
     }
 
     void refresh_contact_list_ui() {
@@ -233,15 +300,7 @@ private:
                 if (lv_event_get_target(e) != lv_event_get_current_target(e)) return; // ignore bubbled events from children
                 SmsApp* app = (SmsApp*)lv_event_get_user_data(e);
                 int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-                app->current_contact_idx = idx;
-                lv_obj_add_flag(app->view_contacts, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_clear_flag(app->view_chat, LV_OBJ_FLAG_HIDDEN);
-                lv_label_set_text(app->header_title, app->contacts[idx].name.c_str());
-                lv_obj_clear_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_clear_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
-                lv_keyboard_set_textarea(app->keyboard_cont, app->ta_visible);
-                app->load_history_to_ui(app->contacts[idx].number);
-                lv_obj_scroll_to_y(app->msg_list, 10000, LV_ANIM_OFF);
+                app->open_contact_idx(idx);
             }, LV_EVENT_CLICKED, this);
 
             lv_obj_t* lbl = lv_label_create(btn);
@@ -337,6 +396,16 @@ public:
         lv_obj_set_style_text_color(l_back, lv_color_hex(SMS_COL_MSG_OUT), 0); // Fleche Verte
         lv_obj_center(l_back);
 
+        btn_new_conv = lv_btn_create(header);
+        lv_obj_set_size(btn_new_conv, 40, 40);
+        lv_obj_align(btn_new_conv, LV_ALIGN_RIGHT_MID, 10, 0);
+        lv_obj_set_style_bg_opa(btn_new_conv, LV_OPA_TRANSP, 0);
+        lv_obj_add_event_cb(btn_new_conv, new_conversation_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* l_new = lv_label_create(btn_new_conv);
+        lv_label_set_text(l_new, LV_SYMBOL_PLUS);
+        lv_obj_set_style_text_color(l_new, lv_color_hex(SMS_COL_MSG_OUT), 0);
+        lv_obj_center(l_new);
+
         // VUE CONTACTS
         view_contacts = lv_obj_create(main_bg);
         lv_obj_set_size(view_contacts, 320, 430);
@@ -426,6 +495,7 @@ public:
                     add_bubble_to_ui(ev.text, true, timeBuf);
                     lv_obj_scroll_to_y(msg_list, 10000, LV_ANIM_ON);
                 }
+                save_contacts_to_flash();
             } else {
                 add_bubble_to_ui("Erreur d'envoi", true, "!!");
             }

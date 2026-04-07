@@ -207,6 +207,9 @@ private:
     bool splash_done;
     bool runtime_cleaned;
     lv_timer_t* start_script_timer;
+    lv_obj_t* splash_scr;
+    lv_obj_t* splash_status_lbl;
+    lv_obj_t* splash_detail_lbl;
 
     void cleanupPythonRuntime(const char* reason) {
         if (runtime_cleaned) {
@@ -229,6 +232,10 @@ private:
             obj_deinit(globalPikaEnv);
             globalPikaEnv = nullptr;
         }
+
+        splash_scr = nullptr;
+        splash_status_lbl = nullptr;
+        splash_detail_lbl = nullptr;
 
         runtime_cleaned = true;
     }
@@ -404,9 +411,24 @@ private:
         return true;
     }
 
+    void updateSplashStatus(const char* status, const char* detail = nullptr) {
+        if (splash_status_lbl) {
+            lv_label_set_text(splash_status_lbl, status ? status : "");
+        }
+        if (splash_detail_lbl) {
+            lv_label_set_text(splash_detail_lbl, detail ? detail : "");
+        }
+    }
+
     // Affiche un splash screen de loading
-    void showSplashScreen() {
-        lv_obj_t* scr = lv_scr_act();
+    void showSplashScreen(lv_obj_t* scr) {
+        if (!scr) {
+            scr = lv_scr_act();
+        }
+
+        splash_scr = scr;
+        splash_status_lbl = nullptr;
+        splash_detail_lbl = nullptr;
         
         lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A3E), LV_PART_MAIN);
         
@@ -420,13 +442,19 @@ private:
         lv_label_set_text(nameLbl, appName.c_str());
         lv_obj_set_style_text_color(nameLbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
         lv_obj_set_style_text_font(nameLbl, &lv_font_montserrat_18, LV_PART_MAIN);
-        lv_obj_align(nameLbl, LV_ALIGN_CENTER, 0, 30);
+        lv_obj_align(nameLbl, LV_ALIGN_CENTER, 0, 24);
         
-        lv_obj_t* loadingLbl = lv_label_create(scr);
-        lv_label_set_text(loadingLbl, "Chargement...");
-        lv_obj_set_style_text_color(loadingLbl, lv_color_hex(0x888888), LV_PART_MAIN);
-        lv_obj_set_style_text_font(loadingLbl, &lv_font_montserrat_14, LV_PART_MAIN);
-        lv_obj_align(loadingLbl, LV_ALIGN_CENTER, 0, 65);
+        splash_status_lbl = lv_label_create(scr);
+        lv_label_set_text(splash_status_lbl, "Chargement...");
+        lv_obj_set_style_text_color(splash_status_lbl, lv_color_hex(0x88D7FF), LV_PART_MAIN);
+        lv_obj_set_style_text_font(splash_status_lbl, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_align(splash_status_lbl, LV_ALIGN_CENTER, 0, 58);
+
+        splash_detail_lbl = lv_label_create(scr);
+        lv_label_set_text(splash_detail_lbl, "Lecture du manifeste");
+        lv_obj_set_style_text_color(splash_detail_lbl, lv_color_hex(0xA0A0C0), LV_PART_MAIN);
+        lv_obj_set_style_text_font(splash_detail_lbl, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_align(splash_detail_lbl, LV_ALIGN_CENTER, 0, 80);
         
         Serial.println("[PythonApp] Splash screen displayed");
     }
@@ -436,11 +464,15 @@ private:
         Serial.println("[PythonApp] Starting Python execution");
         unsigned long start_time = millis();
         
-        // Nettoyer le splash screen
-        lv_obj_clean(lv_scr_act());
+        if (!splash_scr) {
+            splash_scr = lv_scr_act();
+        }
+
+        updateSplashStatus("Chargement...", "Preparation du moteur Python");
         
         // Initialise l'environnement PikaPython une seule fois
         if (globalPikaEnv == nullptr) {
+            updateSplashStatus("Initialisation...", "Demarrage du moteur PikaPython");
             Serial.println("[PythonApp] Initializing PikaPython environment...");
             watchdog_update();
             globalPikaEnv = pikaPythonInit();
@@ -463,10 +495,15 @@ private:
             String pyoPath = appPath + "/main.pyo";
             
             // Vérifier si le bytecode existe et est à jour
+            updateSplashStatus("Verification du cache...", "Recherche du bytecode compile");
             if (isBytecodeUpToDate(pyPath, pyoPath)) {
                 // Libération immédiate de la RAM de scriptSource
                 scriptSource = ""; 
                 
+                updateSplashStatus("Lancement...", "Execution du bytecode cache");
+                if (splash_scr) {
+                    lv_obj_clean(splash_scr);
+                }
                 if (tryRunBytecode(pyoPath)) {
                     executedFromBytecode = true;
                     Serial.println("[PythonApp] Executed from cached bytecode");
@@ -475,11 +512,16 @@ private:
             
             // Si pas de bytecode à jour, compiler
             if (!executedFromBytecode) {
+                updateSplashStatus("Compilation...", "Generation du bytecode cache");
                 Serial.println("[PythonApp] Compiling to bytecode...");
                 if (compileScriptToBytecode(pyPath, pyoPath)) {
                     // CRUCIAL : La compilation a réussi, on libère le texte source (jusqu'à 24ko de RAM gagnée)
                     scriptSource = ""; 
                     
+                    updateSplashStatus("Lancement...", "Execution de l'application");
+                    if (splash_scr) {
+                        lv_obj_clean(splash_scr);
+                    }
                     if (tryRunBytecode(pyoPath)) {
                         executedFromBytecode = true;
                         Serial.println("[PythonApp] Executed from newly compiled bytecode");
@@ -491,6 +533,10 @@ private:
         // Fallback: si le bytecode n'a pas fonctionné ou pas de chemin, utiliser le source
         if (!executedFromBytecode && scriptSource.length() > 0) {
             Serial.printf("[PythonApp] Running script from source (%d bytes)...\n", scriptSource.length());
+            updateSplashStatus("Lancement...", "Execution du script source");
+            if (splash_scr) {
+                lv_obj_clean(splash_scr);
+            }
             unsigned long exec_start = millis();
             watchdog_update();
             VMParameters* result = obj_run(globalPikaEnv, (char*)scriptSource.c_str());
@@ -580,7 +626,10 @@ public:
         : scriptSource(script),
           splash_done(false),
           runtime_cleaned(false),
-          start_script_timer(nullptr) {
+                    start_script_timer(nullptr),
+                    splash_scr(nullptr),
+                    splash_status_lbl(nullptr),
+                    splash_detail_lbl(nullptr) {
         appName = "Python App";
         appPath = "";
     }
@@ -657,16 +706,23 @@ public:
     }
 
     void start(lv_obj_t* parent) override {
-        (void)parent;
+        if (!parent) {
+            parent = lv_scr_act();
+        }
         if (scriptSource.length() == 0) return;
 
         runtime_cleaned = false;
+        splash_done = false;
+        splash_scr = parent;
+        splash_status_lbl = nullptr;
+        splash_detail_lbl = nullptr;
         
         if (lastScriptPath.length() > 0) {
             readManifest(lastScriptPath);
         }
         
-        showSplashScreen();
+        showSplashScreen(parent);
+        updateSplashStatus("Chargement...", "Lecture du manifeste et preparation");
         
         start_script_timer = lv_timer_create([](lv_timer_t* t) {
             PythonApp* self = (PythonApp*)t->user_data;
