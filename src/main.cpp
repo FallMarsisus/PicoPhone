@@ -55,6 +55,9 @@ auto_init_mutex(myMutex);
 auto_init_mutex(app_switch_mutex);
 AppManager manager;
 static volatile bool g_system_ready = false;
+static volatile bool g_lte_init_pending = true;
+static volatile bool g_services_begin_pending = true;
+static constexpr bool kDisableLteTemporarily = true;
 
 // --- ANTI-FREEZE ---
 static volatile uint32_t core0_heartbeat = 0;
@@ -233,43 +236,57 @@ void loadApp(AppID id) {
 
 void setup() {
     Serial.begin(115200);
+    uint32_t serial_wait_start = millis();
+    while (!Serial && (millis() - serial_wait_start) < 2000) {
+        delay(10);
+    }
     Serial.println("[BOOT] setup start");
     mutex_enter_blocking(&myMutex);
     hardware_init();
+    boot_stage("hardware_init done", TFT_GREEN);
     Serial.println("[BOOT] hardware_init ok");
 
 
     
     // WiFi (auto-connect en arrière-plan)
     wifi_store::autoconnect_init();
+    boot_stage("wifi init done");
     Serial.println("[BOOT] wifi init ok");
     
     // Charger les paramètres et appliquer la luminosité
     settings::applyBrightness();
+    boot_stage("settings brightness done");
     Serial.println("[BOOT] settings ok");
     
     manager.init();
+    boot_stage("manager init done");
     Serial.println("[BOOT] manager init ok");
 
-    LTE::init();
-    Serial.println("[BOOT] LTE init ok");
+    // LTE init est deplace sur le core1 pour eviter de bloquer l'UI au boot.
+    Serial.println("[BOOT] LTE init deferred to core1");
+    if (kDisableLteTemporarily) {
+        __atomic_store_n(&g_lte_init_pending, false, __ATOMIC_RELEASE);
+        boot_stage("lte init temp disabled", TFT_YELLOW);
+    }
 
     background_services::manager().registerService(&telegram_service::instance());
     background_services::manager().registerService(&timer_service::instance());
     background_services::manager().registerService(&sms_service::instance());
     background_services::manager().registerService(&cast_service::instance());
-    background_services::manager().begin();
 
     loadApp(APP_HOME);
+    boot_stage("home loaded", TFT_GREEN);
     Serial.println("[BOOT] home loaded");
     
 
     // Watchdog matériel RP2040 : reboot si pas nourri pendant 8.3s
     watchdog_enable(8300, true);
+    boot_stage("watchdog enabled");
     Serial.println("[BOOT] watchdog enabled (8.3s)");
 
     __atomic_store_n(&g_system_ready, true, __ATOMIC_RELEASE);
     mutex_exit(&myMutex);
+    boot_stage("setup done", TFT_GREEN);
     Serial.println("[BOOT] setup done");
 }
 
@@ -280,6 +297,9 @@ void loop() {
         delay(1);
         return;
     }
+
+    // LVGL et ses drivers doivent etre initialises sur le meme coeur que lv_timer_handler.
+    hardware_deferred_init();
 
     // --- ANTI-FREEZE : nourrir le watchdog à chaque tour ---
     feed_watchdog();
@@ -322,6 +342,16 @@ extern volatile bool system_is_shutting_down;
 void loop1() {
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) return;
 
+    if (!kDisableLteTemporarily && __atomic_load_n(&g_lte_init_pending, __ATOMIC_ACQUIRE)) {
+        LTE::init();
+        __atomic_store_n(&g_lte_init_pending, false, __ATOMIC_RELEASE);
+    }
+
+    if (__atomic_load_n(&g_services_begin_pending, __ATOMIC_ACQUIRE)) {
+        background_services::manager().begin();
+        __atomic_store_n(&g_services_begin_pending, false, __ATOMIC_RELEASE);
+    }
+
     // --- LE CORE 1 SE FIGE ICI EN CAS D'EXTINCTION ---
     if (system_is_shutting_down) {
         while (true) {
@@ -334,7 +364,9 @@ void loop1() {
     watchdog_update();
 
     // LTE est le SEUL gestionnaire de Serial1...
-    LTE::update();
+    if (!kDisableLteTemporarily) {
+        LTE::update();
+    }
 
     core1_heartbeat = millis();
 

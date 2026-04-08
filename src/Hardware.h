@@ -7,6 +7,7 @@
 #include <SDFS.h>
 #include <hardware/gpio.h>
 #include <hardware/spi.h>
+#include <hardware/i2c.h>
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
 #include "hardware/structs/clocks.h"
@@ -22,7 +23,7 @@
 #include "AppManager.h"
 extern AppManager manager;
 
-// --- PINS ECRAN ---
+// --- PINS ECRAN (DEV_Config.h Waveshare RP2350-Touch-LCD-3.5) ---
 #define SPI_PORT SPI
 #define I2C_PORT Wire
 
@@ -34,12 +35,22 @@ extern AppManager manager;
 #define LCD_MOSI_PIN 19
 #define LCD_MISO_PIN 4
 
-// --- PINS TACTILE CAPACITIF (FT6336U) ---
+// --- PINS TACTILE CAPACITIF ET PMIC ---
 #define TP_SDA 34
 #define TP_SCL 35
-#define TP_INT 25
 #define TP_RST 24
+#define TP_INT 25
 #define FT6336U_ADDR 0x38
+#define FT6336U_REG_DEVICE_MODE   0x00
+#define FT6336U_REG_TD_STATUS     0x02
+#define FT6336U_REG_TOUCH1_X      0x03
+#define FT6336U_REG_TOUCH1_Y      0x05
+#define FT6336U_REG_CHIP_ID       0xA3
+#define FT6336U_REG_G_MODE        0xA4
+#define FT6336U_REG_POWER_MODE    0xA5
+#define FT6336U_REG_FIRMWARE_ID   0xA6
+#define FT6336U_REG_FOCALTECH_ID  0xA8
+#define FT6336U_REG_GESTURE_EN    0xD0
 
 // --- PINS IMU / CAPTEURS ---
 #define DEV_SDA_PIN 34
@@ -135,6 +146,8 @@ inline void a7670_set_minimal_functionality() {
 // --- BOUTON VEILLE ---
 // Evite le conflit avec LCD_CS_PIN (GP21).
 #define SLEEP_BTN_PIN 46
+#define TEMP_DISABLE_POWER_BUTTON 1
+#define TEMP_DISABLE_TOUCH_INIT 0
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
@@ -142,13 +155,92 @@ static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 static bool g_tft_dma_ready = false;
+static bool g_touch_present = false;
+static volatile bool g_hw_deferred_init_pending = true;
+static uint16_t g_boot_stage_y = 24;
+static bool g_boot_stage_onscreen_enabled = true;
 
 // Mutex global
 auto_init_mutex(spi_mutex);
 
+static inline void boot_stage(const char* msg, uint16_t color = TFT_WHITE) {
+    if (Serial) {
+        Serial.print("[BOOT] ");
+        Serial.println(msg);
+    }
+
+    if (g_boot_stage_onscreen_enabled) {
+        mutex_enter_blocking(&spi_mutex);
+        tft.setTextSize(1);
+        tft.setTextColor(color, TFT_BLACK);
+        tft.fillRect(8, g_boot_stage_y, 304, 10, TFT_BLACK);
+        tft.setCursor(8, g_boot_stage_y);
+        tft.print(msg);
+        mutex_exit(&spi_mutex);
+
+        g_boot_stage_y += 11;
+        if (g_boot_stage_y > 460) {
+            g_boot_stage_y = 24;
+        }
+    }
+}
+
+static inline void tft_bringup_test_pattern() {
+    tft.fillScreen(TFT_RED);
+    delay(250);
+    tft.fillScreen(TFT_GREEN);
+    delay(250);
+    tft.fillScreen(TFT_BLUE);
+    delay(250);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(8, 8);
+    tft.print("ST7796 SPI OK");
+    delay(300);
+}
+
 static inline bool es8311_is_present() {
     I2C_PORT.beginTransmission(ES8311_I2C_ADDR);
     return I2C_PORT.endTransmission() == 0;
+}
+
+static inline bool ft6336_read_bytes(uint8_t reg, uint8_t* out, size_t len);
+static inline bool ft6336_write_byte(uint8_t reg, uint8_t value);
+
+static inline bool ft6336_is_present() {
+    uint8_t chip_id = 0;
+    return ft6336_read_bytes(FT6336U_REG_CHIP_ID, &chip_id, 1) && chip_id == 0x64;
+}
+
+static inline void ft6336_i2c_hw_init() {
+    i2c_init(i2c0, 100000);
+    gpio_set_function(TP_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(TP_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(TP_SDA);
+    gpio_pull_up(TP_SCL);
+}
+
+static inline void ft6336_reset_hw() {
+    pinMode(TP_RST, OUTPUT);
+    digitalWrite(TP_RST, HIGH);
+    delay(10);
+    digitalWrite(TP_RST, LOW);
+    delay(10);
+    digitalWrite(TP_RST, HIGH);
+    delay(300);
+}
+
+static inline bool ft6336_write_byte(uint8_t reg, uint8_t value) {
+    uint8_t data[2] = {reg, value};
+    return i2c_write_blocking(i2c0, FT6336U_ADDR, data, 2, false) == 2;
+}
+
+static inline bool ft6336_read_bytes(uint8_t reg, uint8_t* out, size_t len) {
+    if (i2c_write_blocking(i2c0, FT6336U_ADDR, &reg, 1, true) != 1) {
+        return false;
+    }
+    return i2c_read_blocking(i2c0, FT6336U_ADDR, out, len, false) == (int)len;
 }
 
 static inline void audio_pins_quiet() {
@@ -543,41 +635,55 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
 
 // --- LECTURE TACTILE CAPACITIF I2C ---
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
-    I2C_PORT.beginTransmission(FT6336U_ADDR);
-    I2C_PORT.write(0x02); // Registre TD_STATUS
-    if (I2C_PORT.endTransmission(false) != 0) {
-        data->state = LV_INDEV_STATE_REL;
-        return; 
-    }
-
-    I2C_PORT.requestFrom(FT6336U_ADDR, 1);
-    if (!I2C_PORT.available()) {
+    (void)drv;
+    static uint32_t last_reprobe_ms = 0;
+    if (!g_touch_present) {
+        const uint32_t now = millis();
+        if (now - last_reprobe_ms > 1000) {
+            last_reprobe_ms = now;
+            uint8_t chip_id = 0;
+            g_touch_present = ft6336_read_bytes(FT6336U_REG_CHIP_ID, &chip_id, 1) && chip_id == 0x64;
+        }
         data->state = LV_INDEV_STATE_REL;
         return;
     }
-    
-    uint8_t touches = I2C_PORT.read() & 0x0F;
+
+    static uint8_t i2c_fail_streak = 0;
+    uint8_t regs[5] = {0};
+
+    if (!ft6336_read_bytes(FT6336U_REG_TD_STATUS, regs, sizeof(regs))) {
+        data->state = LV_INDEV_STATE_REL;
+        if (++i2c_fail_streak > 20) {
+            g_touch_present = false;
+        }
+        return; 
+    }
+
+    const uint8_t touches = regs[0] & 0x0F;
+    const uint8_t p1_xh = regs[0];
+    const uint8_t p1_xl = regs[1];
+    const uint8_t p1_yh = regs[2];
+    const uint8_t p1_yl = regs[3];
 
     if (touches > 0) {
-        I2C_PORT.beginTransmission(FT6336U_ADDR);
-        I2C_PORT.write(0x03); 
-        I2C_PORT.endTransmission(false);
-        I2C_PORT.requestFrom(FT6336U_ADDR, 4);
-
-        if (I2C_PORT.available() >= 4) {
-            uint8_t p1_xh = I2C_PORT.read();
-            uint8_t p1_xl = I2C_PORT.read();
-            uint8_t p1_yh = I2C_PORT.read();
-            uint8_t p1_yl = I2C_PORT.read();
-
-            uint16_t x = ((p1_xh & 0x0F) << 8) | p1_xl;
-            uint16_t y = ((p1_yh & 0x0F) << 8) | p1_yl;
-            
-            data->point.x = (int16_t)x;
-            data->point.y = (int16_t)y;
-            data->state = LV_INDEV_STATE_PR;
+        const uint8_t event = (p1_xh >> 6) & 0x03;
+        if (event == 0x01) {
+            data->state = LV_INDEV_STATE_REL;
+            i2c_fail_streak = 0;
             return;
         }
+
+        uint16_t x = ((p1_xh & 0x0F) << 8) | p1_xl;
+        uint16_t y = ((p1_yh & 0x0F) << 8) | p1_yl;
+
+        if (x > 319) x = 319;
+        if (y > 479) y = 479;
+
+        data->point.x = (int16_t)x;
+        data->point.y = (int16_t)y;
+        data->state = LV_INDEV_STATE_PR;
+        i2c_fail_streak = 0;
+        return;
     }
     
     data->state = LV_INDEV_STATE_REL;
@@ -585,22 +691,49 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 
 // === AFFICHAGE HAUTES PERFORMANCES (DMA + MUTEX) ===
 void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
-    uint32_t w = (area->x2 - area->x1 + 1);
-    uint32_t h = (area->y2 - area->y1 + 1);
+    // LVGL peut fournir des zones partiellement hors ecran: clip defensif obligatoire.
+    int32_t x1 = area->x1;
+    int32_t y1 = area->y1;
+    int32_t x2 = area->x2;
+    int32_t y2 = area->y2;
+
+    if (x2 < 0 || y2 < 0 || x1 > 319 || y1 > 479) {
+        lv_disp_flush_ready(disp);
+        return;
+    }
+
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 > 319) x2 = 319;
+    if (y2 > 479) y2 = 479;
+
+    uint32_t w = (uint32_t)(x2 - x1 + 1);
+    uint32_t h = (uint32_t)(y2 - y1 + 1);
     uint32_t len = w * h;
+    uint32_t src_w = (uint32_t)(area->x2 - area->x1 + 1);
+
+    if (len == 0) {
+        lv_disp_flush_ready(disp);
+        return;
+    }
 
     // 1. VERROUILLAGE SÉCURISÉ DU SPI (Pour protéger la carte SD)
     mutex_enter_blocking(&spi_mutex);
 
     tft.startWrite();
-    tft.setAddrWindow(area->x1, area->y1, w, h);
+    tft.setAddrWindow(x1, y1, w, h);
 
     // 2. Envoi pixel: DMA si disponible, sinon mode direct (fallback de securite).
-    if (g_tft_dma_ready) {
-        tft.pushPixelsDMA((uint16_t *)&color_p->full, len);
-        tft.dmaWait();
-    } else {
-        tft.pushPixels((uint16_t *)&color_p->full, len);
+    int32_t src_x_off = x1 - area->x1;
+    int32_t src_y_off = y1 - area->y1;
+
+    // En cas de clipping horizontal, les lignes ne sont plus contigues en memoire.
+    // On envoie donc ligne par ligne pour garantir la coherence des donnees.
+    for (uint32_t row = 0; row < h; ++row) {
+        uint32_t src_index = (uint32_t)(src_y_off + (int32_t)row) * src_w + (uint32_t)src_x_off;
+        lv_color_t* src_line = color_p + src_index;
+
+        tft.pushPixels((uint16_t *)&src_line->full, w);
     }
 
     tft.endWrite();
@@ -612,35 +745,10 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 }
 
 void hardware_init() {
-    Serial.begin(115200);
-    
     pinMode(LCD_BL_PIN, OUTPUT); 
-    battery::begin();
     digitalWrite(LCD_BL_PIN, HIGH);
-    
-    audio_pins_quiet();
 
-    // Initialisation du bus I2C (Tactile)
-    pinMode(TP_RST, OUTPUT);
-    digitalWrite(TP_RST, LOW);
-    delay(10);
-    digitalWrite(TP_RST, HIGH);
-    delay(50);
-    
-    pinMode(I2C_RST, OUTPUT);
-    digitalWrite(I2C_RST, HIGH);
-
-    I2C_PORT.setSDA(TP_SDA);
-    I2C_PORT.setSCL(TP_SCL);
-    I2C_PORT.begin();
-
-    if (es8311_is_present()) {
-        Serial.println("[AUDIO] ES8311 detecte sur I2C (0x18)");
-    } else {
-        Serial.println("[AUDIO] ES8311 non detecte sur I2C (0x18)");
-    }
-    
-    // Routage SPI0 (TFT)
+    // 1) Bring-up ecran en tout premier pour eviter tout blocage annexe.
     SPI_PORT.setTX(LCD_MOSI_PIN);
     SPI_PORT.setSCK(LCD_CLK_PIN);
     SPI_PORT.begin();
@@ -649,25 +757,27 @@ void hardware_init() {
     digitalWrite(LCD_RST_PIN, LOW);
     delay(20);
     digitalWrite(LCD_RST_PIN, HIGH);
-    delay(20);
-        
-    // Initialisation de l'écran TFT
+    delay(120);
+
     tft.init();
     tft.setRotation(0);
-    
-    // Active DMA si possible, sinon on garde un fallback stable sans DMA.
-    g_tft_dma_ready = tft.initDMA();
-    Serial.printf("[TFT] DMA %s\n", g_tft_dma_ready ? "ON" : "OFF (fallback)");
-    
+    tft.writecommand(0x11); // Sleep OUT
+    delay(120);
+    tft.writecommand(0x29); // Display ON
+    delay(20);
+
     tft.fillScreen(TFT_BLACK);
     tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
     tft.drawBitmap((320-61)/2, 480-45, epd_bitmap_marsisus_logo, 61, 18, TFT_WHITE);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(8, 8);
+    tft.print("Initialisation...");
+    g_boot_stage_y = 24;
+    boot_stage("display init ok");
 
-    test_sim800l(tft);
-
-
-    LTE::setLowPower(false);
-
+    g_tft_dma_ready = tft.initDMA();
+    boot_stage(g_tft_dma_ready ? "dma init ok" : "dma init off", TFT_CYAN);
 
     // Initialisation LVGL
     lv_init();
@@ -680,14 +790,88 @@ void hardware_init() {
     disp_drv.flush_cb = _disp_flush;
     disp_drv.draw_buf = &draw_buf;
     lv_disp_drv_register(&disp_drv);
-
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = _touch_read;
-    lv_indev_drv_register(&indev_drv);
+    boot_stage("lvgl display driver ok", TFT_GREEN);
+    g_boot_stage_onscreen_enabled = false;
 
     pinMode(SLEEP_BTN_PIN, INPUT_PULLUP);
+}
+
+inline void hardware_deferred_init() {
+    if (!g_hw_deferred_init_pending) {
+        return;
+    }
+
+    boot_stage("deferred hw init start", TFT_CYAN);
+
+    // Annexes deplacees hors chemin critique du boot UI.
+    battery::begin();
+    boot_stage("battery init ok");
+
+    audio_pins_quiet();
+    boot_stage("audio pins quiet ok");
+
+#if TEMP_DISABLE_TOUCH_INIT
+    g_touch_present = false;
+    boot_stage("touch init temp disabled", TFT_YELLOW);
+#else
+    boot_stage("touch init start", TFT_CYAN);
+
+    // FT6336U driver Waveshare: seul le reset tactile est nécessaire ici.
+    pinMode(TP_RST, OUTPUT);
+    digitalWrite(TP_RST, HIGH);
+    delay(10);
+    digitalWrite(TP_RST, LOW);
+    delay(10);
+    digitalWrite(TP_RST, HIGH);
+    delay(50);
+    boot_stage("touch reset ok", TFT_CYAN);
+
+    pinMode(TP_INT, INPUT_PULLUP);
+
+    boot_stage("touch i2c init start", TFT_CYAN);
+    ft6336_i2c_hw_init();
+    boot_stage("touch i2c init ok", TFT_CYAN);
+
+    boot_stage("touch probe start", TFT_CYAN);
+    ft6336_reset_hw();
+    boot_stage("touch reset sequence ok", TFT_CYAN);
+
+    g_touch_present = ft6336_is_present();
+    if (g_touch_present) {
+        uint8_t chip_id = 0;
+        uint8_t focal_id = 0;
+        boot_stage("touch read ids start", TFT_CYAN);
+        (void)ft6336_read_bytes(FT6336U_REG_CHIP_ID, &chip_id, 1);
+        (void)ft6336_read_bytes(FT6336U_REG_FOCALTECH_ID, &focal_id, 1);
+        boot_stage("touch read ids ok", TFT_CYAN);
+        boot_stage("touch config start", TFT_CYAN);
+        (void)ft6336_write_byte(FT6336U_REG_G_MODE, 0x00); // polling mode
+        (void)ft6336_write_byte(FT6336U_REG_GESTURE_EN, 0x00);
+        boot_stage("touch config ok", TFT_CYAN);
+
+        char msg[40];
+        snprintf(msg, sizeof(msg), "touch ft6336 id:%02X/%02X", chip_id, focal_id);
+        boot_stage(msg, TFT_GREEN);
+    } else {
+        boot_stage("touch not detected", TFT_YELLOW);
+    }
+
+    if (g_touch_present) {
+        static lv_indev_drv_t indev_drv;
+        lv_indev_drv_init(&indev_drv);
+        indev_drv.type = LV_INDEV_TYPE_POINTER;
+        indev_drv.read_cb = _touch_read;
+        lv_indev_drv_register(&indev_drv);
+        boot_stage("lvgl touch driver ok", TFT_GREEN);
+    }
+#endif
+
+    // Temporairement desactive pour isoler les crashes modem/LTE.
+    // LTE::setLowPower(false);
+    boot_stage("lte lowpower skipped", TFT_YELLOW);
+
+    g_hw_deferred_init_pending = false;
+    boot_stage("deferred hw init done", TFT_GREEN);
 }
 
 // Dans Hardware.h
@@ -711,6 +895,10 @@ void hardware_sleep() {
 // Pour sortir de veille : détecter touche ou tactile (TP_INT ou autre GPIO)
 
 void check_sleep_button() {
+#if TEMP_DISABLE_POWER_BUTTON
+    return;
+#endif
+
     static uint32_t press_start_time = 0;
     static bool is_pressing = false;
     static bool long_press_handled = false; // Pour savoir si le menu a déjà pop
