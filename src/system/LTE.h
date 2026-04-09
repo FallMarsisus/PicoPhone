@@ -687,10 +687,11 @@ public:
             sendAT("AT+CREG=1",       1000); // Active les notifications réseau
             sendAT("AT+CGREG=1",      1000); 
             
-            sendAT("AT+CSSLCFG=\"sslversion\",0,3", 1000); // Accepte toutes les versions TLS
-            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);   // Ne pas exiger de certificat racine
-            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000);
-            
+            sendAT("AT+CSSLCFG=\"sslversion\",0,4", 1000);       // 4 = Force TLS 1.2
+            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);         // Ignore le certificat racine
+            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000);  // <-- VITAL: Ignore l'expiration du certificat due à l'horloge
+            sendAT("AT+CSSLCFG=\"ciphersuite\",0,0xFFFF", 1000); // <-- VITAL: Autorise tous les chiffrements Cloudflare
+            sendAT("AT+CSSLCFG=\"enablesni\",0,1", 1000);        // ACTIVE LE SNI
             Logger::println("[LTE] Modem prêt ! En attente d'accroche réseau...");
         } else {
             Logger::println("[LTE] ALERTE: Modem injoignable au boot ! Lancement du Recovery...");

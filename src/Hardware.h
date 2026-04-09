@@ -15,6 +15,7 @@
 #include "hardware/watchdog.h"
 #include <AudioOutputI2S.h>
 #include <I2S.h> 
+#include <ES8311.h>
 #include <hardware/vreg.h>
 #include <Wire.h> 
 #include <XPowersLib.h>
@@ -33,6 +34,8 @@ uint8_t DEV_Module_Init(void);
 XPowersAXP2101 PMIC;
 
 #define I2C_PORT i2c0
+
+static ES8311 g_es8311(&Wire1);
 
 
 // --- PINS ECRAN (Waveshare RP2350-Touch-LCD-3.5) ---
@@ -185,52 +188,19 @@ static inline void audio_amp_enable(bool enable) {
 // ─ Initialisation du codec audio ES8311 via I2C ─
 static inline void es8311_init() {
     Serial.println("[AUDIO] Initialisation du codec ES8311...");
-    
-    // Reset du codec (REG0x00 = 0x1F puis 0x00)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_RESET_REG00, 0x1F);
-    sleep_ms(10);
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_RESET_REG00, 0x00);
-    sleep_ms(50);
-    
-    // Configuration du mode d'horloge (REG01)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG01, 0x00);  
-    sleep_ms(10);
-    
-    // Configuration MCLK (REG03, REG04, REG05, REG08)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG03, 0x10);  
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG04, 0x00);  
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG05, 0x00);  
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG08, 0x00); 
-    
-    // Configuration I2S en MODE SLAVE (REG09, REG0A)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SDPIN_REG09, 0x00);   // I2S Slave
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SDPOUT_REG0A, 0x00);  // I2S Slave
-    
-    // Configuration audio mode (REG0B, REG0C, REG0D, REG0E, REG0F)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0B, 0x00);
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0C, 0x00);
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0D, 0x0C);  // Mode slave
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0E, 0x02);  // Format 16-bit
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0F, 0x00);
-    
-    // ADC config (son qui rentre n'est pas critique ici)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_ADC_REG15, 0x00);
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_ADC_REG16, 0x24);  
-    
-    // DAC PATH ENABLE (REG31, REG32, REG33, REG34 sont les clés)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG31, 0x00);  // DAC L select
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG32, 0x00);  // DAC R select
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG33, 0xB8);  // DAC source from I2S
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG34, 0x20);  // DAC unmute & left/right enable
-    
-    // DAC GAIN & UNMUTE (REG35 = 0xB0 unmute, REG37, REG38, REG39)
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG35, 0xB0);  // UNMUTE DAC, gain 0dB
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG37, 0x88);  // HPF enable
-    // DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG38, 0x00);  // DAC DVC config
-    // DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG39, 0x00);  
-    
-    sleep_ms(20);
-    Serial.println("[AUDIO] ES8311 initialisé avec DAC actif");
+
+    bool ok = g_es8311.begin(DEV_SDA_PIN, DEV_SCL_PIN, 400000);
+    ok = ok && g_es8311.setMode(true);
+    ok = ok && g_es8311.setSampleRate(44100);
+    ok = ok && g_es8311.setBitsPerSample(16);
+    ok = ok && g_es8311.disableMicrophone();
+    ok = ok && g_es8311.setVolume(settings::getVolume());
+
+    if (ok) {
+        Serial.println("[AUDIO] ES8311 initialisé via librairie");
+    } else {
+        Serial.println("[AUDIO] Echec init ES8311 via librairie");
+    }
 }
 
 static inline void modem_uart_begin() {
