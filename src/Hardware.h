@@ -906,4 +906,29 @@ void hardware_wake() {
 // À appeler dans loop() : check_sleep_button();
 // Initialisation dans hardware_init()
 
+
+// Fonction physique de gestion du volume
+inline void hardware_set_volume(int vol) {
+    // 1. Gestion de l'amplificateur physique
+    if (vol == 0) {
+        digitalWrite(PA_CTRL_PIN, LOW); // Coupe l'ampli (Mute)
+    } else {
+        digitalWrite(PA_CTRL_PIN, HIGH); // Allume l'ampli
+    }
+
+    // 2. Gestion du volume numérique du DAC de l'ES8311 (Registre 0x32)ƒ
+    // 0x00 = Volume Max (+24dB) | 0x50 = Volume modéré | 0xFF = Mute
+    uint8_t reg_val;
+    if (vol == 0) {
+        reg_val = 0xFF;
+    } else {
+        // On map le pourcentage (1-100) vers la plage du registre ES8311
+        // Attention : Plus la valeur I2C est PETITE, plus le son est FORT
+        reg_val = map(vol, 1, 100, 0x50, 0x00); 
+    }
+    
+    // Envoi de l'ordre à la puce
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, 0x32, reg_val);
+}
+
 #endif

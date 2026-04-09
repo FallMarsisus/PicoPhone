@@ -687,10 +687,9 @@ public:
             sendAT("AT+CREG=1",       1000); // Active les notifications réseau
             sendAT("AT+CGREG=1",      1000); 
             
-            Logger::println("[LTE] Configuration du moteur SSL...");
-            sendAT("AT+CSSLCFG=\"sslversion\",0,3", 1000); // Accepter TLS 1.2
-            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);   // Ne pas exiger de certificat
-            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000); // Ignorer l'expiration locale
+            sendAT("AT+CSSLCFG=\"sslversion\",0,3", 1000); // Accepte toutes les versions TLS
+            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);   // Ne pas exiger de certificat racine
+            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000);
             
             Logger::println("[LTE] Modem prêt ! En attente d'accroche réseau...");
         } else {
@@ -792,26 +791,17 @@ public:
 
             if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1) continue;
 
+            // 1. Activer le SSL si l'URL commence par https
+            if (url.startsWith("https://")) {
+                sendAT("AT+HTTPPARA=\"SSLCFG\",0", 1000);
+            }
+
             if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
                 sendAT("AT+HTTPTERM", 500);
                 continue;
             }
 
-            if (extraHeaders.length() > 0) {
-                sendAT("AT+HTTPTERM", 500);
-                continue;
-            }
-
-            if (extraHeaders.length() > 0) {
-                String headers = extraHeaders;
-                headers.replace("\r", "");
-                headers.replace("\n", "\\r\\n");
-                if (sendAT("AT+HTTPPARA=\"USERDATA\",\"" + headers + "\"", 2000).indexOf("OK") == -1) {
-                    sendAT("AT+HTTPTERM", 500);
-                    continue;
-                }
-            }
-
+           
             Logger::println("[LTE->GSM] AT+HTTPACTION=0");
             Serial1.println("AT+HTTPACTION=0");
 

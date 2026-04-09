@@ -172,7 +172,7 @@ private:
         lv_anim_set_var(&a, this);
         lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)drawer_anim_cb);
         lv_anim_set_values(&a, lv_obj_get_style_translate_y(app_list_cont, 0), target_offset);
-        lv_anim_set_time(&a, 220);
+        lv_anim_set_time(&a, 300);  // Augmenté: plus de frames, plus fluide
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
     }
@@ -225,7 +225,7 @@ private:
         lv_anim_init(&in);
         lv_anim_set_var(&in, app->app_page_cont);
         lv_anim_set_exec_cb(&in, (lv_anim_exec_xcb_t)anim_x_cb);
-        lv_anim_set_time(&in, 240);
+        lv_anim_set_time(&in, 350);  // Augmenté: 350ms pour plus de fluidité
         lv_anim_set_path_cb(&in, lv_anim_path_ease_out);
         lv_anim_set_values(&in, (dir > 0) ? 320 : -320, 0);
         lv_anim_set_user_data(&in, app);
@@ -276,7 +276,7 @@ private:
         lv_anim_set_var(&a, this);
         lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)anim_bg_color_cb);
         lv_anim_set_values(&a, 0, 255);
-        lv_anim_set_time(&a, 240);
+        lv_anim_set_time(&a, 300);  // Augmenté: 300ms pour transition fluide
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
     }
@@ -506,7 +506,7 @@ private:
             lv_anim_init(&out);
             lv_anim_set_var(&out, app_page_cont);
             lv_anim_set_exec_cb(&out, (lv_anim_exec_xcb_t)anim_x_cb);
-            lv_anim_set_time(&out, 220);
+            lv_anim_set_time(&out, 350);  // Augmenter: 350ms pour plus de fluidité visu
             lv_anim_set_path_cb(&out, lv_anim_path_ease_in);
             lv_anim_set_values(&out, 0, (direction > 0) ? -320 : 320);
             lv_anim_set_user_data(&out, this);
