@@ -43,6 +43,10 @@ public:
     LockScreen lockScreen;
     ControlCenter controlCenter;
 
+    static constexpr lv_coord_t statusBarHeight() {
+        return status_bar_height;
+    }
+
 private:
     lv_obj_t* statusBar = nullptr;
     lv_obj_t* statusTime = nullptr;

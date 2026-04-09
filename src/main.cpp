@@ -189,15 +189,30 @@ void loadApp(AppID id) {
             break;
     }
 
-    // --- 4. Démarrage de la nouvelle App sur le NOUVEL écran ---
-    if (currentApp) {
-        currentApp->start(new_scr);
-    }
+    // --- 4. Zone de contenu: la barre de statut occupe des pixels en haut ---
+    // On crée un conteneur enfant qui démarre sous la status bar et dont la hauteur
+    // est réduite, afin d'éviter de rogner le bas de l'UI.
+    const lv_coord_t top_inset = (id != APP_HOME && id != APP_OLD_HOME) ? AppManager::statusBarHeight() : 0;
+    lv_disp_t* disp = lv_disp_get_default();
+    const lv_coord_t screen_w = disp ? lv_disp_get_hor_res(disp) : 320;
+    const lv_coord_t screen_h = disp ? lv_disp_get_ver_res(disp) : 480;
 
-    if (id != APP_HOME && id != APP_OLD_HOME) {
-        lv_obj_set_style_translate_y(new_scr, 18, 0);
-    } else {
-        lv_obj_set_style_translate_y(new_scr, 0, 0);
+    lv_obj_t* app_root = lv_obj_create(new_scr);
+    lv_obj_set_size(app_root, screen_w, (screen_h > top_inset) ? (screen_h - top_inset) : screen_h);
+    lv_obj_align(app_root, LV_ALIGN_TOP_MID, 0, top_inset);
+    // Important: certaines apps ne définissent que bg_color (sans bg_opa).
+    // Si on force un fond transparent ici, on "casse" les couleurs de fond.
+    lv_obj_set_style_bg_opa(app_root, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(app_root, lv_obj_get_style_bg_color(new_scr, 0), 0);
+    lv_obj_set_style_border_width(app_root, 0, 0);
+    lv_obj_set_style_radius(app_root, 0, 0);
+    lv_obj_set_style_pad_all(app_root, 0, 0);
+    lv_obj_clear_flag(app_root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(app_root, LV_OBJ_FLAG_CLICKABLE);
+
+    // --- 5. Démarrage de la nouvelle App dans la zone de contenu ---
+    if (currentApp) {
+        currentApp->start(app_root);
     }
 
     static auto enable_gesture_bubble_recursive = [](lv_obj_t* obj, const auto& self_ref) -> void {
