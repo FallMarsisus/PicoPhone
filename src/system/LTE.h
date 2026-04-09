@@ -687,11 +687,11 @@ public:
             sendAT("AT+CREG=1",       1000); // Active les notifications réseau
             sendAT("AT+CGREG=1",      1000); 
             
-            Logger::println("[LTE] Configuration du moteur SSL...");
-            sendAT("AT+CSSLCFG=\"sslversion\",0,3", 1000); // Accepter TLS 1.2
-            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);   // Ne pas exiger de certificat
-            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000); // Ignorer l'expiration locale
-            
+            sendAT("AT+CSSLCFG=\"sslversion\",0,4", 1000);       // 4 = Force TLS 1.2
+            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);         // Ignore le certificat racine
+            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000);  // <-- VITAL: Ignore l'expiration du certificat due à l'horloge
+            sendAT("AT+CSSLCFG=\"ciphersuite\",0,0xFFFF", 1000); // <-- VITAL: Autorise tous les chiffrements Cloudflare
+            sendAT("AT+CSSLCFG=\"enablesni\",0,1", 1000);        // ACTIVE LE SNI
             Logger::println("[LTE] Modem prêt ! En attente d'accroche réseau...");
         } else {
             Logger::println("[LTE] ALERTE: Modem injoignable au boot ! Lancement du Recovery...");
@@ -806,16 +806,7 @@ public:
                 continue;
             }
 
-            if (extraHeaders.length() > 0) {
-                String headers = extraHeaders;
-                headers.replace("\r", "");
-                headers.replace("\n", "\\r\\n");
-                if (sendAT("AT+HTTPPARA=\"USERDATA\",\"" + headers + "\"", 2000).indexOf("OK") == -1) {
-                    sendAT("AT+HTTPTERM", 500);
-                    continue;
-                }
-            }
-
+           
             Logger::println("[LTE->GSM] AT+HTTPACTION=0");
             Serial1.println("AT+HTTPACTION=0");
 

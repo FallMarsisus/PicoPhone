@@ -2,6 +2,7 @@
 extern "C" {
 #endif
 extern void i2s_play_test_tone(int freq, int duration_ms, float gain);
+extern void hardware_set_volume(int vol);  // Déclaration forward pour ControlCenter
 #ifdef __cplusplus
 }
 #endif
@@ -113,8 +114,8 @@ private:
         lv_obj_t *slider = lv_event_get_target(e);
         int val = lv_slider_get_value(slider);
 
+        hardware_set_volume(val);
         settings::setVolume((uint8_t)val);
-
 
         char buf[16];
         snprintf(buf, sizeof(buf), "%d%%", val);
@@ -125,7 +126,9 @@ private:
             self->last_preview_volume = val;
             float gain = (float)val / 100.0f;
             if (gain < 0.03f) gain = 0.03f;
-            i2s_play_test_tone(350 + val * 7, 12, gain);
+            // Petit délai pour laisser le codec se stabiliser, puis jouer un beep audio
+            delayMicroseconds(20000);  // 20ms pour stabilisation
+            i2s_play_test_tone(350 + val * 7, 30, gain);  // Augmenté: 12ms → 30ms pour être clairement audible
         }
     }
 
@@ -243,7 +246,7 @@ private:
         lv_anim_set_var(&a, this);
         lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)sheet_anim_exec);
         lv_anim_set_values(&a, sheet_offset_y, target_y);
-        lv_anim_set_time(&a, 220);
+        lv_anim_set_time(&a, 280);  // Augmenté: 280ms pour plus de fluidité
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_set_user_data(&a, this);
         lv_anim_set_ready_cb(&a, sheet_anim_ready);

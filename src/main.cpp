@@ -311,6 +311,13 @@ void loop() {
     }
 
     yield();
+    
+    // Throttling léger: laisser LVGL respirer (cible ~100 FPS = 10ms min par frame)
+    static unsigned long last_loop = 0;
+    unsigned long now = millis();
+    unsigned long elapsed = (now >= last_loop) ? (now - last_loop) : 0;
+    if (elapsed < 2) sleep_ms(2 - elapsed);  // 2ms de respiration = ~500 FPS max CPU, mais LVGL throttle à 100 FPS
+    last_loop = millis();
 }
 
 void setup1() {

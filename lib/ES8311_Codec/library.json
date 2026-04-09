@@ -1,0 +1,40 @@
+{
+  "name": "ES8311_Codec",
+  "version": "1.0.0",
+  "description": "Arduino library for ES8311 audio codec driver",
+  "keywords": "audio, codec, es8311, i2s, microphone, speaker, esp32, arduino",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZONESTAR3D/ES8311_Codec.git"
+  },
+  "authors": [
+    {
+      "name": "Hally",
+      "email": "hally@zonestar3d.com",
+      "url": "https://github.com/ZONESTAR3D"
+    }
+  ],
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/ZONESTAR3D/ES8311_Codec",
+  "dependencies": {},
+  "examples": [
+    {
+      "name": "BasicPlayback",
+      "description": "Basic initialization and volume control"
+    },
+    {
+      "name": "MicrophoneRecording",
+      "description": "Advanced microphone recording with I2S and gain control"
+    },
+    {
+      "name": "MicrophoneTest",
+      "description": "Simple microphone enable/disable and gain testing"
+    },
+    {
+      "name": "VolumeControl",
+      "description": "Advanced volume control with fading, presets, and persistence"
+    }
+  ],
+  "frameworks": "arduino",
+  "platforms": ["espressif32", "espressif8266", "*"]
+}
