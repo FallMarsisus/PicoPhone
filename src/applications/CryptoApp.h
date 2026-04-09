@@ -9,8 +9,9 @@
 #include "../system/LTE.h"
 #include "../system/NetworkErrorHandler.h"
 
-// --- CoinGecko public API (no key required) ---
-#define CRYPTO_API_URL "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=eur&include_24hr_change=true"
+// --- Binance public API (no key required, IoT friendly) ---
+// On demande spécifiquement les paires en Euro (BTCEUR, ETHEUR, SOLEUR)
+#define CRYPTO_API_URL "https://api.binance.com/api/v3/ticker/24hr?symbols=%5B%22BTCEUR%22,%22ETHEUR%22,%22SOLEUR%22%5D"
 
 LV_FONT_DECLARE(lv_font_montserrat_12);
 LV_FONT_DECLARE(lv_font_montserrat_14);
@@ -213,6 +214,7 @@ public:
     }
 
     // --- CORE 1: network fetch ---
+    // --- CORE 1: network fetch ---
     void update1() override {
         if (!refresh_requested) return;
         watchdog_update();
@@ -247,19 +249,50 @@ public:
         watchdog_update();
 
         if (payload.length() > 0) {
-            JsonDocument doc;
-            auto err = deserializeJson(doc, payload);
-            if (!err) {
-                const char* ids[] = {"bitcoin", "ethereum", "solana"};
-                for (int i = 0; i < 3; i++) {
-                    if (doc[ids[i]]["eur"].is<float>()) {
-                        newData.coins[i].price    = doc[ids[i]]["eur"].as<float>();
-                        newData.coins[i].change24h= doc[ids[i]]["eur_24h_change"].as<float>();
-                        newData.coins[i].valid    = true;
+            JsonDocument doc; // Dynamique par défaut sur ArduinoJson v7
+            DeserializationError err = deserializeJson(doc, payload);
+            
+            if (err) {
+                // Si la mémoire plante ou que le JSON est malformé, on le saura !
+                Logger::printf("[Crypto] Erreur JSON: %s\n", err.c_str());
+            } 
+            else if (doc.is<JsonArray>()) {
+                JsonArray arr = doc.as<JsonArray>();
+                for (JsonObject obj : arr) {
+                    // On récupère les valeurs sous forme de texte brut (const char*)
+                    const char* symbol = obj["symbol"];
+                    const char* price_str = obj["lastPrice"];
+                    const char* change_str = obj["priceChangePercent"];
+
+                    if (symbol && price_str && change_str) {
+                        // On force la conversion du texte vers le format Float
+                        float price = atof(price_str);
+                        float change = atof(change_str);
+                        
+                        Logger::printf("[Crypto] Lu avec succes -> %s : %.2f EUR (%.2f%%)\n", symbol, price, change);
+
+                        // On assigne les données selon le symbole reçu
+                        if (strcmp(symbol, "BTCEUR") == 0) {
+                            newData.coins[0].price = price;
+                            newData.coins[0].change24h = change;
+                            newData.coins[0].valid = true;
+                        } else if (strcmp(symbol, "ETHEUR") == 0) {
+                            newData.coins[1].price = price;
+                            newData.coins[1].change24h = change;
+                            newData.coins[1].valid = true;
+                        } else if (strcmp(symbol, "SOLEUR") == 0) {
+                            newData.coins[2].price = price;
+                            newData.coins[2].change24h = change;
+                            newData.coins[2].valid = true;
+                        }
                     }
                 }
                 newData.success = true;
+            } else {
+                Logger::println("[Crypto] Erreur: Le JSON recu n'est pas un tableau valide !");
             }
+        } else {
+            Logger::println("[Crypto] Payload vide recu du modem.");
         }
 
         unsigned long t0 = millis();

@@ -3,9 +3,6 @@
 
 #include "App.h"
 #include "AppManager.h"
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
 #include "../plugins/lv_t9_keyboard.h"
 #include <LittleFS.h>     
 #include <ArduinoJson.h>  
@@ -14,6 +11,9 @@
 #include "../system/Secrets.h"
 #include "../system/NetworkErrorHandler.h"
 #include "../system/LTE.h"
+
+// Déclaration externe du pont créé dans TelegramNotifyService
+extern void (*telegram_incoming_cb)(String chat_id, String name, String text, long ts);
 
 // --- CONFIG ---
 #define TG_CHECK_INTERVAL 3000 
@@ -35,6 +35,9 @@ struct ContactMetadata {
 };
 
 class TelegramApp : public App {
+public:
+    inline static TelegramApp* inst = nullptr;
+
 private:
     // UI
     lv_obj_t* main_bg;
@@ -48,12 +51,8 @@ private:
     lv_obj_t* ta_visible;
 
     // Backend
-    WiFiClientSecure client;
-    UniversalTelegramBot* bot;
     unsigned long last_check = 0;
-
     bool fs_ok = false;
-    bool bot_ready = false;
 
     // Throttle UI rebuilds
     bool contacts_ui_dirty = false;
@@ -124,10 +123,8 @@ private:
 
     // --- GESTION FICHIERS ROBUSTE ---
 
-    // 1. SAUVEGARDER CONTACTS
     void save_contacts_to_flash() {
         if (!fs_ok) return;
-        // Mode "w" écrase le fichier, c'est ce qu'on veut pour l'index
         File f = LittleFS.open("/contacts.json", "w");
         if (!f) return;
 
@@ -145,7 +142,6 @@ private:
         f.close();
     }
 
-    // 2. CHARGER CONTACTS
     void load_contacts_from_flash() {
         if (!fs_ok) return;
         if (!LittleFS.exists("/contacts.json")) return;
@@ -171,65 +167,50 @@ private:
         }
     }
 
-    // 3. SAUVEGARDER MESSAGE (CORRECTION DU BUG D'EFFACEMENT)
     void save_msg_to_flash(String chat_id, String text, bool is_me, long timestamp) {
         if (!fs_ok) return;
         String path = "/" + chat_id + ".json";
         JsonDocument doc;
         
-        // A. Lire l'existant
         if (LittleFS.exists(path)) {
             File f = LittleFS.open(path, "r");
             if (f) {
                 DeserializationError err = deserializeJson(doc, f);
                 f.close();
-                if (err) doc.clear(); // Si fichier corrompu, on repart à zéro
+                if (err) doc.clear(); 
             }
         }
 
-        // B. Récupérer le tableau OU le créer s'il n'existe pas
         JsonArray arr;
         if (doc.is<JsonArray>()) {
-            arr = doc.as<JsonArray>(); // CORRECTION ICI : "as" ne détruit pas
+            arr = doc.as<JsonArray>(); 
         } else {
-            arr = doc.to<JsonArray>(); // "to" détruit (crée un nouveau)
+            arr = doc.to<JsonArray>(); 
         }
 
-        // C. Ajouter le message
         JsonObject obj = arr.add<JsonObject>();
         obj["t"] = text;
         obj["m"] = is_me; 
         obj["ts"] = timestamp;
 
-        // D. Limiter l'historique
         while (arr.size() > TG_MAX_HISTORY) {
-            arr.remove(0); // Supprime le plus vieux
+            arr.remove(0); 
         }
 
-        // E. Ecrire
-        File f = LittleFS.open(path, "w"); // "w" écrase le fichier avec le nouveau JSON complet
+        File f = LittleFS.open(path, "w"); 
         if (f) {
             serializeJson(arr, f);
             f.close();
-        } else {
-            Serial.println("Erreur ecriture fichier chat");
         }
     }
 
-    // 4. CHARGER HISTORIQUE
     void load_history_to_ui(String chat_id) {
         lv_obj_clean(msg_list); 
 
-        if (!fs_ok) {
-            Serial.println("LittleFS indisponible: pas d'historique");
-            return;
-        }
+        if (!fs_ok) return;
 
         String path = "/" + chat_id + ".json";
-        if (!LittleFS.exists(path)) {
-            Serial.println("Pas d'historique pour ce chat");
-            return;
-        }
+        if (!LittleFS.exists(path)) return;
 
         File f = LittleFS.open(path, "r");
         if (!f) return;
@@ -245,7 +226,6 @@ private:
                 bool is_me = obj["m"];
                 long ts = obj["ts"];
                 
-                // Formatage Heure
                 struct tm* timeinfo;
                 time_t t = ts;
                 timeinfo = localtime(&t);
@@ -259,7 +239,6 @@ private:
     }
 
     // --- NAVIGATION ---
-
     static void go_back_event(lv_event_t* e) {
         TelegramApp* app = (TelegramApp*)lv_event_get_user_data(e);
         if (app->current_contact_idx != -1) {
@@ -270,7 +249,6 @@ private:
     }
 
     // --- LOGIQUE CLAVIER ---
-
     static void btn_reply_event(lv_event_t* e) {
         TelegramApp* app = (TelegramApp*)lv_event_get_user_data(e);
         lv_obj_clear_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
@@ -286,9 +264,7 @@ private:
         lv_obj_add_flag(app->keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
 
-        // Ne jamais faire de réseau ici (callback UI) => on queue l'envoi.
         if (text && strlen(text) > 0 && app->current_contact_idx != -1) {
-            // Capture la cible au moment du click (core0)
             const String chat_id = app->contacts[app->current_contact_idx].chat_id;
             memset(app->out_chat_id, 0, sizeof(app->out_chat_id));
             strncpy(app->out_chat_id, chat_id.c_str(), sizeof(app->out_chat_id) - 1);
@@ -298,7 +274,6 @@ private:
             __atomic_store_n(&app->out_pending, true, __ATOMIC_RELEASE);
         }
         lv_textarea_set_text(app->ta_visible, "");
-        
     }
 
     static void kb_cancel_event(lv_event_t* e) {
@@ -308,16 +283,8 @@ private:
         lv_obj_add_flag(app->ta_visible, LV_OBJ_FLAG_HIDDEN);
     }
 
-    void mark_contacts_dirty() {
-        contacts_flash_dirty = true;
-        contacts_flash_dirty_since = millis();
-        contacts_ui_dirty = true;
-        contacts_ui_dirty_since = millis();
-    }
-
     void enqueue_msg_save(const String& chat_id, const String& text, bool is_me, long ts) {
         if (!fs_ok) return;
-        // Ring buffer drop-oldest if full
         size_t next_tail = (pending_saves_tail + 1) % MAX_PENDING_SAVES;
         if (next_tail == pending_saves_head) {
             pending_saves_head = (pending_saves_head + 1) % MAX_PENDING_SAVES;
@@ -333,10 +300,8 @@ private:
     }
 
     void flush_one_flash_op() {
-        // Une seule opération par tick pour éviter les stalls
         if (!fs_ok) return;
 
-        // 1) Messages
         if (pending_saves_head != pending_saves_tail) {
             PendingMsgSave& s = pending_saves[pending_saves_head];
             save_msg_to_flash(String(s.chat_id), String(s.text), s.is_me, s.ts);
@@ -344,69 +309,13 @@ private:
             return;
         }
 
-        // 2) Contacts (debounce)
         if (contacts_flash_dirty && (millis() - contacts_flash_dirty_since) > 800) {
             save_contacts_to_flash();
             contacts_flash_dirty = false;
         }
     }
 
-    // --- RECEPTION ---
-
-    void processIncomingMessages() {
-        // IMPORTANT: une seule requête réseau par tick, pas de boucle infinie.
-        int numNew = bot->getUpdates(bot->last_message_received + 1);
-        if (numNew <= 0) return;
-
-        // Traitement CPU: yield entre messages, et aucune écriture flash directe.
-        for (int i = 0; i < numNew; i++) {
-                String chat_id = String(bot->messages[i].chat_id);
-                String text = bot->messages[i].text;
-                String name = bot->messages[i].from_name;
-                long ts = bot->messages[i].date.toInt(); 
-                if(ts == 0) { time_t now; time(&now); ts = now; }
-
-                if (name == "") name = "Inconnu";
-
-                // 1. Chercher dans l'index
-                int idx = -1;
-                for (size_t k = 0; k < contacts.size(); k++) {
-                    if (contacts[k].chat_id == chat_id) { idx = k; break; }
-                }
-
-                bool list_needs_save = false;
-
-                // 2. Nouveau Contact ?
-                if (idx == -1) {
-                    contacts.push_back({chat_id, name, text, true});
-                    idx = contacts.size() - 1;
-                    list_needs_save = true;
-                } else {
-                    contacts[idx].last_msg_preview = text;
-                    list_needs_save = true;
-                }
-
-                // 3. Sauvegardes (différées)
-                enqueue_msg_save(chat_id, text, false, ts);
-                if(list_needs_save) mark_contacts_dirty();
-
-                // 4. Update UI
-                if (current_contact_idx == idx) {
-                    char timeBuf[6];
-                    struct tm* timeinfo;
-                    time_t t = ts;
-                    timeinfo = localtime(&t);
-                    strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
-                    add_bubble_to_ui(text.c_str(), false, timeBuf);
-                } else {
-                    contacts[idx].has_new = true;
-                    mark_contacts_dirty();
-                }
-        }
-    }
-
     // --- UI HELPERS ---
-
     void refresh_contact_list_ui() {
         lv_obj_clean(list_cont);
 
@@ -424,13 +333,11 @@ private:
                 app->open_conversation(idx);
             }, LV_EVENT_CLICKED, this);
 
-            // Nom
             lv_obj_t* lbl = lv_label_create(btn);
             lv_label_set_text(lbl, contacts[i].name.c_str());
             lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
             lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 5, 5);
 
-            // Preview
             lv_obj_t* sub = lv_label_create(btn);
             lv_label_set_text(sub, contacts[i].last_msg_preview.c_str());
             lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
@@ -438,7 +345,6 @@ private:
             lv_obj_set_style_text_color(sub, lv_color_hex(0xaaaaaa), 0);
             lv_obj_align(sub, LV_ALIGN_BOTTOM_LEFT, 5, -5);
 
-            // Badge
             if (contacts[i].has_new) {
                 lv_obj_t* badge = lv_obj_create(btn);
                 lv_obj_set_size(badge, 12, 12);
@@ -490,7 +396,6 @@ private:
             lv_obj_align(bubble, LV_ALIGN_TOP_LEFT, 0, 0);
         }
 
-        // Texte
         lv_obj_t* l_text = lv_label_create(bubble);
         lv_label_set_text(l_text, text);
         lv_label_set_long_mode(l_text, LV_LABEL_LONG_WRAP);
@@ -498,7 +403,6 @@ private:
         lv_obj_set_style_text_color(l_text, lv_color_hex(TG_COL_TEXT), 0);
         lv_obj_set_style_text_font(l_text, &lv_font_montserrat_14, 0);
 
-        // Heure
         lv_obj_t* l_time = lv_label_create(bubble);
         lv_label_set_text(l_time, timeStr);
         lv_obj_set_style_text_font(l_time, &lv_font_montserrat_12, 0);
@@ -507,36 +411,36 @@ private:
     }
 
 public:
-    TelegramApp() {
-        client.setInsecure();
-        bot = new UniversalTelegramBot(TG_BOT_TOKEN, client);
+    TelegramApp() {}
+
+    // Méthode appelée par le pont depuis TelegramNotifyService
+    void pushIncoming(String chat_id, String name, String text, long ts) {
+        NetEvt ev{};
+        ev.type = EVT_INCOMING;
+        strncpy(ev.chat_id, chat_id.c_str(), sizeof(ev.chat_id)-1);
+        strncpy(ev.from_name, name.c_str(), sizeof(ev.from_name)-1);
+        strncpy(ev.text, text.c_str(), sizeof(ev.text)-1);
+        ev.ts = ts;
+        netq_push(ev);
     }
 
     void start(lv_obj_t* parent) override {
-        // --- SETUP LITTLEFS (SANS FORMAT AUTO = pas de freeze long) ---
-        fs_ok = LittleFS.begin();
-        if (!fs_ok) {
-            Serial.println("LittleFS Mount Failed (format desactive pour eviter freeze)");
-        }
-
-        // Réseau: borne les freezes (TLS/HTTP sync) à une durée maximale raisonnable.
-        client.setTimeout(1200);
-        if (bot) {
-            bot->longPoll = 0; // évite le long-poll bloquant
-        }
-        bot_ready = (bot != nullptr);
+        inst = this;
         
-        // CHARGER LES DONNEES DE LA FLASH
-        load_contacts_from_flash();
+        // Connexion du pont pour recevoir les messages en direct
+        telegram_incoming_cb = [](String c, String n, String t, long ts) {
+            if (TelegramApp::inst) TelegramApp::inst->pushIncoming(c, n, t, ts);
+        };
 
-        // Réserve pour limiter les reallocs (stutters)
+        fs_ok = LittleFS.begin();
+        
+        load_contacts_from_flash();
         if (contacts.capacity() < 20) contacts.reserve(20);
 
         main_bg = parent; 
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_bg_color(main_bg, lv_color_hex(TG_COL_BG_LIST), 0);
 
-        // Header
         lv_obj_t* header = lv_obj_create(main_bg);
         lv_obj_set_size(header, 320, 50);
         lv_obj_set_style_bg_color(header, lv_color_hex(0x232e3c), 0);
@@ -549,7 +453,6 @@ public:
         lv_obj_set_style_text_color(header_title, lv_color_white(), 0);
         lv_obj_center(header_title);
         
-
         lv_obj_t* btn_back = lv_btn_create(header);
         lv_obj_set_size(btn_back, 40, 40);
         lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, -10, 0);
@@ -560,7 +463,6 @@ public:
         lv_obj_set_style_text_color(l_back, lv_color_white(), 0);
         lv_obj_center(l_back);
 
-        // VUE CONTACTS
         view_contacts = lv_obj_create(main_bg);
         lv_obj_set_size(view_contacts, 320, 430);
         lv_obj_align(view_contacts, LV_ALIGN_TOP_MID, 0, 50);
@@ -574,7 +476,6 @@ public:
         lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_gap(list_cont, 10, 0);
 
-        // VUE CHAT
         view_chat = lv_obj_create(main_bg);
         lv_obj_set_size(view_chat, 320, 430);
         lv_obj_align(view_chat, LV_ALIGN_TOP_MID, 0, 50);
@@ -607,7 +508,6 @@ public:
         lv_label_set_text(l_rep, "Message");
         lv_obj_center(l_rep);
 
-        // CLAVIER
         ta_visible = lv_textarea_create(main_bg);
         lv_obj_set_size(ta_visible, 220, 40);
         lv_obj_align(ta_visible, LV_ALIGN_BOTTOM_MID, 0, -240);
@@ -627,13 +527,10 @@ public:
         lv_obj_add_flag(loader, LV_OBJ_FLAG_HIDDEN);
 
         refresh_contact_list_ui();
-
-        // Schedule first poll
         last_check = millis();
     }
     
     void update() override {
-        // 1) Flush flash en douceur (et surtout pas pendant la saisie)
         if (fs_ok) {
             static unsigned long last_flush_ms = 0;
             const unsigned long now = millis();
@@ -645,11 +542,9 @@ public:
             }
         }
 
-        // 1b) Consommer les events réseau (core1) avec un budget temps
         const uint32_t start_ms = millis();
         NetEvt ev{};
         while (netq_pop(ev)) {
-            // Budget: ~12ms pour garder l'UI fluide
             if ((millis() - start_ms) > 12) break;
 
             const String chat_id = String(ev.chat_id);
@@ -658,7 +553,6 @@ public:
             const long ts = ev.ts;
 
             if (ev.type == EVT_INCOMING) {
-                // Upsert contact
                 int idx = -1;
                 for (size_t k = 0; k < contacts.size(); k++) {
                     if (contacts[k].chat_id == chat_id) { idx = (int)k; break; }
@@ -671,8 +565,10 @@ public:
                     if (current_contact_idx != idx) contacts[idx].has_new = true;
                 }
 
-                enqueue_msg_save(chat_id, text, false, ts);
-                mark_contacts_dirty();
+                // Important : on signale juste à l'UI de se mettre à jour
+                // PAS DE SAUVEGARDE FLASH ICI (le service Notify l'a déjà fait !)
+                contacts_ui_dirty = true;
+                contacts_ui_dirty_since = millis();
 
                 if (current_contact_idx == idx) {
                     char timeBuf[6];
@@ -682,59 +578,64 @@ public:
                     if(t > 10000) strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
                     else strcpy(timeBuf, "??:??");
                     add_bubble_to_ui(text.c_str(), false, timeBuf);
+                    lv_obj_scroll_to_y(msg_list, 10000, LV_ANIM_ON);
                 }
             } else if (ev.type == EVT_SEND_OK) {
-                // Message envoyé: on l'affiche + persiste
                 time_t tnow; time(&tnow);
                 enqueue_msg_save(chat_id, text, true, (long)tnow);
-                // Met à jour le preview (si contact connu)
                 for (size_t k = 0; k < contacts.size(); k++) {
                     if (contacts[k].chat_id == chat_id) {
                         contacts[k].last_msg_preview = "Moi: " + text;
                         break;
                     }
                 }
-                mark_contacts_dirty();
+                contacts_flash_dirty = true;
+                contacts_ui_dirty = true;
 
                 if (current_contact_idx != -1 && contacts[current_contact_idx].chat_id == chat_id) {
                     char timeBuf[6];
                     struct tm* timeinfo = localtime(&tnow);
                     strftime(timeBuf, sizeof(timeBuf), "%H:%M", timeinfo);
                     add_bubble_to_ui(text.c_str(), true, timeBuf);
+                    lv_obj_scroll_to_y(msg_list, 10000, LV_ANIM_ON);
                 }
             } else if (ev.type == EVT_SEND_FAIL) {
                 Serial.println("Echec envoi Telegram");
             }
         }
 
-        // 2) UI refresh throttle (évite rebuild en boucle)
         if (contacts_ui_dirty && (millis() - contacts_ui_dirty_since) > 250) {
-            // Rafraîchit la liste seulement si on est sur la vue contacts
             if (current_contact_idx == -1) {
                 refresh_contact_list_ui();
             }
             contacts_ui_dirty = false;
         }
-
-        // Note: le réseau (Telegram) tourne sur update1 (core1) pour éviter les freezes UI.
     }
 
     void update1() override {
-        // Core1: uniquement réseau + push events (NE PAS toucher LVGL ici)
-        if (!bot_ready) return;
         if (!LTE::isReadyForData()) return;
 
         const unsigned long now = millis();
 
-        // 1) Envoi sortant
         if (__atomic_exchange_n(&out_pending, false, __ATOMIC_ACQ_REL)) {
-            // Copie locale
             char chat_id[32];
             char text[256];
             memcpy(chat_id, out_chat_id, sizeof(chat_id));
             memcpy(text, out_text, sizeof(text));
 
-            const bool ok = bot->sendMessage(String(chat_id), text, "");
+            String url = "https://api.telegram.org/bot" + String(TG_BOT_TOKEN) + "/sendMessage";
+            
+            JsonDocument doc;
+            doc["chat_id"] = String(chat_id);
+            doc["text"] = String(text);
+            String payload;
+            serializeJson(doc, payload);
+
+            Logger::println("[Telegram] Envoi du message...");
+            String resp = LTE::httpPostBlocking(url, payload, "application/json");
+            
+            bool ok = (resp.indexOf("\"ok\":true") != -1 || resp.indexOf("\"ok\": true") != -1);
+
             NetEvt ev{};
             ev.type = ok ? EVT_SEND_OK : EVT_SEND_FAIL;
             strncpy(ev.chat_id, chat_id, sizeof(ev.chat_id) - 1);
@@ -742,20 +643,15 @@ public:
             ev.ts = 0;
             netq_push(ev);
 
-            // Décale le polling après un envoi
             last_check = now;
             return;
         }
-
-        // 2) Poll entrant
-        if ((now - last_check) < TG_CHECK_INTERVAL) return;
-        last_check = now;
-
-        // Poll entrant desactive ici: gere par TelegramNotifyService (global background).
     }
 
     void stop() override {
-        // Flush best-effort (sans boucle)
+        inst = nullptr; // On déconnecte le pont
+        telegram_incoming_cb = nullptr;
+
         flush_one_flash_op();
         if (loader) lv_obj_add_flag(loader, LV_OBJ_FLAG_HIDDEN);
     }

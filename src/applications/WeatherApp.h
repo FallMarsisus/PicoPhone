@@ -2,12 +2,14 @@
 #define WEATHER_APP_H
 
 #include "App.h"
+#include "AppManager.h"
 #include <ArduinoJson.h>
 #include <math.h>
 #include <vector>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
 #include "../system/LTE.h"
+#include "../system/Logger.h"
 #include "../system/NetworkErrorHandler.h"
 
 #define API_KEY "8fdaebc1c5f040d39d2178f811adfeaa"
@@ -129,7 +131,7 @@ private:
         if (iconCode.startsWith("11")) return "ORAGE";
         if (iconCode.startsWith("13")) return "NEIGE";
         if (iconCode.startsWith("50")) return "BRUME";
-        return "";
+        return "INCONNU";
     }
 
     static const char* get_icon_symbol(const String& iconCode) {
@@ -335,9 +337,7 @@ private:
             }
         } else {
             NetworkErrorHandler::showIfError("Meteo", "Impossible de recuperer les donnees");
-            String error_msg = "Erreur: ";
-            error_msg += NetworkErrorHandler::getNetworkStatus();
-            lv_label_set_text(lbl_desc, error_msg.c_str());
+            lv_label_set_text(lbl_desc, "Erreur parsing JSON");
         }
     }
 
@@ -367,20 +367,26 @@ private:
         return payload.length() > 0;
     }
 
+    // --- PARSING SANS FILTRE & AVEC FALLBACK ---
     bool parse_weather_payload(const String& payload, WeatherData& out) {
-        JsonDocument filter;
-        filter["name"] = true;
-        filter["main"]["temp"] = true;
-        filter["weather"][0]["icon"] = true;
+        JsonDocument doc; 
+        DeserializationError err = deserializeJson(doc, payload);
+        if (err) {
+            Logger::printf("[Weather] Current JSON Error: %s\n", err.c_str());
+            return false;
+        }
 
-        JsonDocument doc;
-        auto err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-        if (err) return false;
-
-        out.cityName = doc["name"].as<String>();
-        out.currentTemp = doc["main"]["temp"];
-        out.currentIcon = doc["weather"][0]["icon"].as<String>();
+        out.cityName = doc["name"] | "Inconnu";
+        out.currentTemp = doc["main"]["temp"] | 0.0f;
+        
+        if (doc["weather"].is<JsonArray>() && doc["weather"].size() > 0) {
+            out.currentIcon = doc["weather"][0]["icon"] | "01d";
+        } else {
+            out.currentIcon = "01d";
+        }
+        
         out.weatherSuccess = true;
+        Logger::println("[Weather] Current Parse OK!");
         return true;
     }
 
@@ -388,12 +394,21 @@ private:
         out.forecastList.clear();
         out.hourlyList.clear();
         for (JsonObject item : items) {
-            String dt_txt = item["dt_txt"].as<String>();
+            String dt_txt = item["dt_txt"] | "";
             if (dt_txt.length() < 10) continue;
+            
             String dayKey = dt_txt.substring(0, 10);
             String hourLabel = hour_label_from_dt_txt(dt_txt);
-            float temp = item["main"]["temp"] | 0.0f;
-            String icon = item["weather"][0]["icon"].as<String>();
+            
+            float temp = 0.0f;
+            if (item["main"].is<JsonObject>()) {
+                temp = item["main"]["temp"] | 0.0f;
+            }
+            
+            String icon = "01d";
+            if (item["weather"].is<JsonArray>() && item["weather"].size() > 0) {
+                icon = item["weather"][0]["icon"] | "01d";
+            }
 
             if (out.hourlyList.size() < 8) {
                 HourlyForecastItem hourItem;
@@ -435,39 +450,42 @@ private:
     }
 
     bool parse_forecast_payload(const String& payload, WeatherData& out) {
-        JsonDocument filter;
-        filter["list"][0]["dt_txt"] = true;
-        filter["list"][0]["main"]["temp"] = true;
-        filter["list"][0]["weather"][0]["icon"] = true;
-
         JsonDocument doc;
-        auto err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-        if (err) return false;
-        if (!doc["list"].is<JsonArray>()) return false;
+        DeserializationError err = deserializeJson(doc, payload);
+        if (err) {
+            Logger::printf("[Weather] Forecast JSON Error: %s\n", err.c_str());
+            return false;
+        }
+        if (!doc["list"].is<JsonArray>()) {
+            Logger::println("[Weather] Forecast: Missing 'list' array");
+            return false;
+        }
 
         aggregate_forecast(doc["list"].as<JsonArray>(), out);
+        Logger::println("[Weather] Forecast Parse OK!");
         return true;
     }
 
     bool parse_air_payload(const String& payload, WeatherData& out) {
-        JsonDocument filter;
-        filter["list"][0]["main"]["aqi"] = true;
-        filter["list"][0]["components"]["pm2_5"] = true;
-        filter["list"][0]["components"]["pm10"] = true;
-        filter["list"][0]["components"]["o3"] = true;
-        filter["list"][0]["components"]["no2"] = true;
-
         JsonDocument doc;
-        auto err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-        if (err || !doc["list"].is<JsonArray>()) return false;
+        DeserializationError err = deserializeJson(doc, payload);
+        if (err) {
+            Logger::printf("[Weather] Air JSON Error: %s\n", err.c_str());
+            return false;
+        }
+        if (!doc["list"].is<JsonArray>() || doc["list"].size() == 0) {
+            return false;
+        }
 
         JsonObject comp = doc["list"][0]["components"];
-        out.aqi = doc["list"][0]["main"]["aqi"].as<int>();
-        out.pm25 = comp["pm2_5"].as<float>();
-        out.pm10 = comp["pm10"].as<float>();
-        out.o3 = comp["o3"].as<float>();
-        out.no2 = comp["no2"].as<float>();
+        out.aqi = doc["list"][0]["main"]["aqi"] | 0;
+        out.pm25 = comp["pm2_5"] | 0.0f;
+        out.pm10 = comp["pm10"] | 0.0f;
+        out.o3 = comp["o3"] | 0.0f;
+        out.no2 = comp["no2"] | 0.0f;
         out.airSuccess = (out.aqi >= 1 && out.aqi <= 5);
+        
+        Logger::println("[Weather] Air Parse OK!");
         return out.airSuccess;
     }
 
@@ -728,7 +746,7 @@ public:
             }
         } else {
             NetworkErrorHandler::showIfError("Meteo", "Aucune donnee disponible");
-            lv_label_set_text(lbl_desc, "Erreur reseau");
+            lv_label_set_text(lbl_desc, "Erreur reseau ou JSON");
             lv_label_set_text(lbl_status, "Erreur reseau");
         }
 
@@ -738,6 +756,7 @@ public:
     void update1() override {
         if (!refresh_requested) return;
         watchdog_update();
+
 
         if (!LTE::isReadyForData()) {
             WeatherData fail;
@@ -763,7 +782,8 @@ public:
         newData.hourlyList.reserve(8);
         newData.forecastList.reserve(5);
         String currentUrl = String("http://api.openweathermap.org/data/2.5/weather?q=") + CITY_NAME + "," + COUNTRY_CODE + "&appid=" + API_KEY + "&units=metric&lang=fr";
-        String forecastUrl = String("http://api.openweathermap.org/data/2.5/forecast?cnt=16&q=") + CITY_NAME + "," + COUNTRY_CODE + "&appid=" + API_KEY + "&units=metric&lang=fr";
+        // Correction ici: je repasse en cnt=9 pour être sûr de respecter la taille mémoire.
+        String forecastUrl = String("http://api.openweathermap.org/data/2.5/forecast?cnt=9&q=") + CITY_NAME + "," + COUNTRY_CODE + "&appid=" + API_KEY + "&units=metric&lang=fr";
         String airUrl = String("http://api.openweathermap.org/data/2.5/air_pollution?lat=") + AQ_LAT + "&lon=" + AQ_LON + "&appid=" + API_KEY;
 
         String payload;

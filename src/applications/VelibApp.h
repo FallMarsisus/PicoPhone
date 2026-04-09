@@ -43,7 +43,6 @@ private:
 
     std::vector<Station> stations;
     unsigned long last_update = 0;
-    int current_fetch_index = 0; 
     
     // Communication Ajout
     String pending_code_search = ""; 
@@ -422,61 +421,70 @@ public:
 
         // B. BACKGROUND REFRESH
         if(millis() - last_update > REFRESH_RATE) { 
-            String targetCode = "";
-            
+            String batchQuery = "";
+
             mutex_enter_blocking(&velibMutex);
-            if (!stations.empty()) {
-                if (current_fetch_index >= (int)stations.size()) current_fetch_index = 0;
-                targetCode = stations[current_fetch_index].code;
+            for (const auto& s : stations) {
+                if (s.code.length() == 0) {
+                    continue;
+                }
+                if (batchQuery.length() > 0) {
+                    batchQuery += "%20OR%20";
+                }
+                batchQuery += s.code;
             }
             mutex_exit(&velibMutex);
 
-            if(targetCode.length() > 0) {
-                String payload = netGet(String(API_BASE) + targetCode);
+            if(batchQuery.length() > 0) {
+                String payload = netGet(String(API_BASE) + batchQuery);
                 if (payload.length() > 0) {
                     JsonDocument doc;
                     DeserializationError err = deserializeJson(doc, payload);
                     if (err) {
                         Serial.printf("[VELIB] JSON invalide (%s), len=%u\n", err.c_str(), (unsigned)payload.length());
                     } else if (doc["records"].is<JsonArray>() && doc["records"].size() > 0) {
-                        bool matched = false;
-                        int mech = 0, elec = 0, park = 0;
+                        JsonArray records = doc["records"].as<JsonArray>();
+                        int updated_count = 0;
 
-                        for (JsonObject rec : doc["records"].as<JsonArray>()) {
-                            JsonObject fields = rec["fields"];
-                            String codeFromApi = fields["stationcode"].as<String>();
-                            if (codeFromApi.length() == 0) {
-                                codeFromApi = targetCode;
-                            }
-                            if (codeFromApi != targetCode) {
-                                continue;
+                        mutex_enter_blocking(&velibMutex);
+                        for (auto &station : stations) {
+                            bool matched = false;
+                            int mech = 0, elec = 0, park = 0;
+
+                            for (JsonObject rec : records) {
+                                JsonObject fields = rec["fields"];
+                                String codeFromApi = fields["stationcode"].as<String>();
+                                if (codeFromApi.length() == 0) {
+                                    continue;
+                                }
+                                if (codeFromApi != station.code) {
+                                    continue;
+                                }
+
+                                extract_counts(fields, mech, elec, park);
+                                matched = true;
+                                break;
                             }
 
-                            extract_counts(fields, mech, elec, park);
-                            matched = true;
-                            break;
+                            if (matched) {
+                                station.mech = mech;
+                                station.elec = elec;
+                                station.park = park;
+                                station.is_updated = true;
+                                updated_count++;
+                            }
                         }
+                        mutex_exit(&velibMutex);
 
-                        if (matched) {
-                            mutex_enter_blocking(&velibMutex);
-                            if (current_fetch_index < (int)stations.size() &&
-                                stations[current_fetch_index].code == targetCode) {
-                                stations[current_fetch_index].mech = mech;
-                                stations[current_fetch_index].elec = elec;
-                                stations[current_fetch_index].park = park;
-                                stations[current_fetch_index].is_updated = true;
-                            }
-                            mutex_exit(&velibMutex);
-                        } else {
-                            Serial.printf("[VELIB] Aucun match stationcode pour %s (records=%u)\n", targetCode.c_str(), (unsigned)doc["records"].size());
+                        if (updated_count == 0) {
+                            Serial.printf("[VELIB] Aucun match stationcode (records=%u)\n", (unsigned)records.size());
                         }
                     }
                 } else {
-                    Serial.printf("[VELIB] payload vide pour %s\n", targetCode.c_str());
+                    Serial.println("[VELIB] payload vide pour requete groupee");
                 }
             }
             last_update = millis();
-            current_fetch_index++;
         }
     }
 };

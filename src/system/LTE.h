@@ -47,6 +47,20 @@ private:
     static volatile bool s_modem_confirmed;
     static volatile bool s_http_busy;
 
+    static volatile bool s_foreground_waiting;
+
+    // --- LE GARDIEN AUTOMATIQUE DE PRIORITÉ ---
+    struct PriorityGuard {
+        bool active;
+        PriorityGuard(bool is_foreground) {
+            active = is_foreground;
+            if (active) s_foreground_waiting = true; // Lève le drapeau
+        }
+        ~PriorityGuard() {
+            if (active) s_foreground_waiting = false; // Baisse le drapeau à la destruction
+        }
+    };
+
     static uint8_t s_poll_fail_count;
     static uint8_t s_recovery_fail_count;
     static unsigned long s_recovery_disabled_until;
@@ -261,6 +275,7 @@ private:
         Logger::println("[LTE PDP] Echec de l'activation data.");
         return false;
     }
+    
     static bool applyTimeFromCclkResponse(const String &resp, const char *source_tag)
     {
         int q1 = resp.indexOf('"');
@@ -829,6 +844,11 @@ public:
             Logger::printf("[LTE] Ping de démarrage %d/5...\n", i + 1);
             if (sendAT("AT", 1000).indexOf("OK") != -1)
             {
+                String simcom_ati = sendAT("AT+SIMCOMATI", 1500);
+                if (simcom_ati.length() == 0)
+                {
+                    Logger::println("[LTE] AT+SIMCOMATI: pas de réponse (non bloquant)");
+                }
                 ok = true;
                 break;
             }
@@ -968,74 +988,50 @@ public:
         return true;
     }
 
-    static String httpGetBlocking(const String &url, const String &extraHeaders = "")
+static String httpGetBlocking(const String &url, const String &extraHeaders = "", bool is_foreground = true, bool is_json = true)
     {
-        if (url.startsWith("https://"))
-        {
-            sendAT("AT+HTTPSSL=1", 1000);
-        }
-        sendAT("AT+HTTPPARA=\"CID\",1", 1000);
-        const size_t MAX_HTTP = 18000;
+        PriorityGuard guard(is_foreground);
+        const size_t MAX_HTTP = 16000;
 
-        if (!s_enabled || s_airplane_mode || !s_modem_confirmed)
-        {
-            return "";
-        }
+        if (!s_enabled || s_airplane_mode || !s_modem_confirmed) return "";
 
         s_http_busy = true;
 
-        for (int attempt = 1; attempt <= 2; attempt++)
+        for (int attempt = 1; attempt <= 3; attempt++)
         {
+            Logger::printf("[LTE HTTP] GET %s (Essai %d/3)\n", url.c_str(), attempt);
 
-            Logger::printf("[LTE HTTP] GET %s (%d/2)\n", url.c_str(), attempt);
+            if (!preparePacketDataContext()) continue;
 
-            if (!preparePacketDataContext())
-                continue;
+            sendAT("AT+HTTPTERM", 500);
+            if (sendAT("AT+HTTPINIT", 2000).indexOf("OK") == -1) continue;
 
-            sendAT("AT+HTTPTERM", 1000);
-            sleep_ms(100);
-
-            if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1)
-                continue;
-
-            // 1. Activer le SSL si l'URL commence par https
-            if (url.startsWith("https://"))
-            {
-                sendAT("AT+HTTPPARA=\"SSLCFG\",0", 1000);
+            // Gestion SSL Allégée (compatible avec ton firmware)
+            if (url.startsWith("https://")) {
+                sendAT("AT+CSSLCFG=\"sslversion\",0,3", 500);      
+                sendAT("AT+CSSLCFG=\"authmode\",0,0", 500);        
+                sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 500); 
+                sendAT("AT+HTTPPARA=\"SSLCFG\",0", 1000);          
             }
 
-            if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1)
-            {
-                sendAT("AT+HTTPTERM", 500);
-                continue;
-            }
+            sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 2000);
+            sendAT("AT+HTTPPARA=\"USERDATA\",\"User-Agent: Mozilla/5.0 (PicoPhone/1.0)\"", 1000);
 
-            Logger::println("[LTE->GSM] AT+HTTPACTION=0");
             Serial1.println("AT+HTTPACTION=0");
-
+            
             unsigned long start = millis();
-            String resp = "";
             int http_code = -1;
             int data_len = 0;
-
-            // Attente de la réponse HTTPACTION
-            while (millis() - start < 20000)
-            {
+            String action_resp = "";
+            while (millis() - start < 15000) {
                 watchdog_update();
-                while (Serial1.available())
-                {
-                    resp += (char)Serial1.read();
-                }
-
-                int idx = resp.indexOf("+HTTPACTION:");
-                if (idx != -1)
-                {
-                    String part = resp.substring(idx + 12);
+                while (Serial1.available()) action_resp += (char)Serial1.read();
+                int idx = action_resp.indexOf("+HTTPACTION:");
+                if (idx != -1) {
+                    String part = action_resp.substring(idx + 12);
                     int c1 = part.indexOf(',');
                     int c2 = part.indexOf(',', c1 + 1);
-
-                    if (c1 > 0 && c2 > c1)
-                    {
+                    if (c1 > 0 && c2 > c1) {
                         http_code = part.substring(c1 + 1, c2).toInt();
                         data_len = part.substring(c2 + 1).toInt();
                         break;
@@ -1044,118 +1040,71 @@ public:
                 sleep_ms(10);
             }
 
-            Logger::printf("[LTE HTTP] HTTPACTION Code: %d, Taille: %d octets\n", http_code, data_len);
-
-            if (http_code != 200 || data_len <= 0)
-            {
-                Logger::println("[LTE HTTP] Echec de la reponse API.");
+            if (http_code != 200) {
                 sendAT("AT+HTTPTERM", 500);
                 continue;
             }
 
-            if (data_len > MAX_HTTP)
-            {
-                Logger::printf("[LTE HTTP] ATTENTION: Fichier trop grand. Troncature a %d.\n", MAX_HTTP);
-                data_len = MAX_HTTP;
-            }
-
-            sleep_ms(300); // Respiration pour le modem
-
-            while (Serial1.available())
-                Serial1.read();
-
-            // On demande toute la payload
-            Serial1.print("AT+HTTPREAD=");
-            Serial1.println(data_len);
-
+            // Lecture par morceaux (Chunks) de 1024 octets
             String body = "";
             body.reserve(data_len + 1);
             int total_read = 0;
-            unsigned long global_timeout = millis();
+            const int CHUNK_SIZE = 1024;
 
-            // ─── BOUCLE MAGIQUE : ABSORPTION DES MULTIPLES CHUNKS DU MODEM ───
-            while (total_read < data_len && millis() - global_timeout < 25000)
-            {
-                watchdog_update();
+            while (total_read < data_len) {
+                int to_read = min(CHUNK_SIZE, data_len - total_read);
+                while (Serial1.available()) Serial1.read(); // Purge UART
 
-                String header = "";
-                bool header_ok = false;
-                int chunk_expected = 0;
+                Serial1.print("AT+HTTPREAD=");
+                Serial1.println(to_read);
+
                 unsigned long t0 = millis();
-
-                // 1. Attente du prochain entête +HTTPREAD: xxx
-                while (millis() - t0 < 5000)
-                {
-                    watchdog_update();
-                    while (Serial1.available())
-                    {
-                        char c = Serial1.read();
-                        header += c;
-
-                        if (header.indexOf("ERROR") != -1)
-                            break;
-
-                        if (c == '\n' && header.indexOf("+HTTPREAD:") != -1)
-                        {
-                            int p = header.indexOf("+HTTPREAD:");
-                            int col = header.indexOf(':', p);
-                            chunk_expected = header.substring(col + 1).toInt();
-                            header_ok = true;
-                            break;
-                        }
+                bool header_found = false;
+                while (millis() - t0 < 3000) {
+                    if (Serial1.available()) {
+                        String h = Serial1.readStringUntil('\n');
+                        if (h.indexOf("+HTTPREAD:") != -1) { header_found = true; break; }
                     }
-                    if (header_ok || header.indexOf("ERROR") != -1)
-                        break;
-                    delayMicroseconds(500); // Ultra rapide
                 }
 
-                if (!header_ok || chunk_expected <= 0)
-                {
-                    Logger::println("[LTE HTTP] Fin inattendue des chunks.");
-                    break;
-                }
-
-                // 2. Lecture Ultra-Rapide des données de ce chunk
-                int chunk_read = 0;
-                unsigned long t1 = millis();
-
-                while (chunk_read < chunk_expected && millis() - t1 < 5000)
-                {
-                    watchdog_update();
-                    if (Serial1.available())
-                    {
-                        while (Serial1.available() && chunk_read < chunk_expected)
-                        {
+                if (header_found) {
+                    int chunk_received = 0;
+                    unsigned long t1 = millis();
+                    while (chunk_received < to_read && millis() - t1 < 3000) {
+                        if (Serial1.available()) {
                             body += (char)Serial1.read();
-                            chunk_read++;
-                            total_read++;
+                            chunk_received++;
+                        } else {
+                            delayMicroseconds(150); // Sécurité buffer
                         }
-                        t1 = millis(); // On reset le timeout tant qu'on reçoit des octets
                     }
-                    else
-                    {
-                        delayMicroseconds(200); // Pause microscopique pour laisser l'UART se remplir sans buffer overrun
-                    }
+                    total_read += chunk_received;
                 }
-
-                if (chunk_read != chunk_expected)
-                {
-                    Logger::printf("[LTE HTTP] Erreur : chunk partiel (%d / %d)\n", chunk_read, chunk_expected);
-                    break;
-                }
+                sleep_ms(20); 
             }
-
-            Logger::printf("[LTE HTTP] Lecture totale terminee (%d / %d octets)\n", total_read, data_len);
-
-            // Nettoyage final (attraper le "OK" de fin)
-            sleep_ms(100);
-            while (Serial1.available())
-                Serial1.read();
-
             sendAT("AT+HTTPTERM", 500);
 
-            if (body.length() > 0)
-            {
+            // 🧠 LOGIQUE DE NETTOYAGE INTELLIGENTE
+            if (is_json) {
+                int first_bracket = body.indexOf('{');
+                int first_square = body.indexOf('[');
+                int start_idx = -1;
+                
+                if (first_bracket != -1 && (first_square == -1 || (first_bracket < first_square && first_bracket != -1))) 
+                    start_idx = first_bracket;
+                else if (first_square != -1) 
+                    start_idx = first_square;
+
+                int last_idx = max((int)body.lastIndexOf('}'), (int)body.lastIndexOf(']'));
+
+                if (start_idx != -1 && last_idx != -1 && last_idx > start_idx) {
+                    s_http_busy = false;
+                    return body.substring(start_idx, last_idx + 1);
+                }
+                // Si on a demandé du JSON mais qu'on n'a pas trouvé de balises, on retente
+                Logger::println("[LTE HTTP] JSON attendu mais non detecte, retry...");
+            } else {
+                // Pas de nettoyage : on renvoie tout ce qu'on a reçu (TXT, HTML, CSV...)
                 s_http_busy = false;
                 return body;
             }
@@ -1164,20 +1113,15 @@ public:
         s_http_busy = false;
         return "";
     }
-
     static String httpPostBlocking(const String &url,
-                                   const String &body,
+                                   const String &body_payload,
                                    const String &contentType = "application/json",
-                                   const String &extraHeaders = "")
+                                   const String &extraHeaders = "",
+                                bool is_foreground = true)
     {
-
-        if (url.startsWith("https://"))
-        {
-            sendAT("AT+HTTPSSL=1", 1000);
-        }
-        sendAT("AT+HTTPPARA=\"CID\",1", 1000);
-
         const size_t MAX_HTTP = 16000;
+
+        PriorityGuard guard(is_foreground);
 
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed)
         {
@@ -1199,13 +1143,15 @@ public:
             if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1)
                 continue;
 
-            if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1)
+            if (url.startsWith("https://"))
             {
-                sendAT("AT+HTTPTERM", 500);
-                continue;
+                sendAT("AT+CSSLCFG=\"sslversion\",0,3", 500);      
+                sendAT("AT+CSSLCFG=\"authmode\",0,0", 500);        
+                sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 500); 
+                sendAT("AT+HTTPPARA=\"SSLCFG\",0", 1000);
             }
 
-            if (extraHeaders.length() > 0)
+            if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1)
             {
                 sendAT("AT+HTTPTERM", 500);
                 continue;
@@ -1231,8 +1177,12 @@ public:
                     continue;
                 }
             }
+            else
+            {
+                sendAT("AT+HTTPPARA=\"USERDATA\",\"User-Agent: Mozilla/5.0 (PicoPhone/1.0)\"", 2000);
+            }
 
-            int body_len = body.length();
+            int body_len = body_payload.length();
             Logger::printf("[LTE HTTP] POST payload: %d octets\n", body_len);
             Serial1.println(String("AT+HTTPDATA=") + body_len + ",10000");
 
@@ -1256,7 +1206,7 @@ public:
                 continue;
             }
 
-            Serial1.print(body);
+            Serial1.print(body_payload);
 
             String data_ok = "";
             unsigned long data_ok_start = millis();
@@ -1323,21 +1273,23 @@ public:
                 data_len = MAX_HTTP;
             }
 
-            sleep_ms(300);
-            while (Serial1.available())
-                Serial1.read();
+            sleep_ms(100);
 
-            Serial1.print("AT+HTTPREAD=");
-            Serial1.println(data_len);
-
+            // ─── NOUVELLE BOUCLE DE LECTURE EXPLICITE PAR CHUNKS ───
             String out = "";
             out.reserve(data_len + 1);
             int total_read = 0;
-            unsigned long global_timeout = millis();
+            const int CHUNK_SIZE = 1024;
 
-            while (total_read < data_len && millis() - global_timeout < 25000)
+            while (total_read < data_len)
             {
-                watchdog_update();
+                int to_read = data_len - total_read;
+                if (to_read > CHUNK_SIZE) to_read = CHUNK_SIZE;
+
+                while (Serial1.available()) Serial1.read();
+
+                Serial1.print("AT+HTTPREAD=");
+                Serial1.println(to_read);
 
                 String header = "";
                 bool header_ok = false;
@@ -1380,25 +1332,28 @@ public:
                 while (chunk_read < chunk_expected && millis() - t1 < 5000)
                 {
                     watchdog_update();
-                    if (Serial1.available())
+                    while (Serial1.available() && chunk_read < chunk_expected)
                     {
-                        while (Serial1.available() && chunk_read < chunk_expected)
-                        {
-                            out += (char)Serial1.read();
-                            chunk_read++;
-                            total_read++;
-                        }
-                        t1 = millis();
+                        out += (char)Serial1.read();
+                        chunk_read++;
                     }
-                    else
-                    {
-                        delayMicroseconds(200);
-                    }
+                    if (!Serial1.available()) delayMicroseconds(200);
                 }
 
-                if (chunk_read != chunk_expected)
+                total_read += chunk_read;
+
+                unsigned long t2 = millis();
+                String tail = "";
+                while (millis() - t2 < 2000)
                 {
-                    break;
+                    watchdog_update();
+                    while (Serial1.available())
+                    {
+                        char c = Serial1.read();
+                        tail += c;
+                    }
+                    if (tail.indexOf("OK\r\n") != -1 || tail.indexOf("ERROR") != -1) break;
+                    delayMicroseconds(200);
                 }
             }
 
@@ -1414,6 +1369,7 @@ public:
         s_http_busy = false;
         return "";
     }
+    
     static void update()
     {
         if (s_http_busy)
@@ -1765,6 +1721,7 @@ String LTE::operator_name = "Init...";
 volatile int LTE::s_pending_enable = -1;
 volatile int LTE::s_pending_airplane = -1;
 volatile bool LTE::s_http_busy = false;
+volatile bool LTE::s_foreground_waiting = false; 
 volatile bool LTE::s_modem_confirmed = false;
 uint8_t LTE::s_poll_fail_count = 0;
 uint8_t LTE::s_recovery_fail_count = 0;

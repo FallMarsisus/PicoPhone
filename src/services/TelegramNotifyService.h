@@ -2,57 +2,59 @@
 #define SERVICES_TELEGRAM_NOTIFY_SERVICE_H
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include "../system/BackgroundServices.h"
+#include "../system/LTE.h"
 #include "../system/NotificationCenter.h"
 #include "../system/Secrets.h"
 
+inline void (*telegram_incoming_cb)(String chat_id, String name, String text, long ts) = nullptr;
+
 class TelegramNotifyService : public IBackgroundService {
 private:
-    WiFiClientSecure client;
-    UniversalTelegramBot* bot = nullptr;
     unsigned long last_check = 0;
-    static constexpr unsigned long POLL_MS = 3500;
+    long last_update_id = 0; 
+    static constexpr unsigned long POLL_MS = 20000; // Vérification toutes les 10 secondes
     bool fs_ok = false;
 
-    struct ContactItem {
-        String id;
-        String name;
-        String preview;
+    // --- FILE D'ATTENTE (Boîte aux lettres Core 1 -> Core 0) ---
+    struct TgMsg {
+        char chat_id[32];
+        char from_name[32];
+        char text[128]; // Limité à 128 caractères pour économiser la RAM
+        long ts;
     };
+    static constexpr uint8_t TG_Q_SIZE = 5;
+    volatile uint8_t tg_q_head = 0;
+    volatile uint8_t tg_q_tail = 0;
+    TgMsg tg_q[TG_Q_SIZE]{};
 
-    bool load_contact_by_id(const String& chat_id, ContactItem& out, int* idx_out = nullptr) {
-        if (!fs_ok) return false;
-        if (!LittleFS.exists("/contacts.json")) return false;
-
-        File f = LittleFS.open("/contacts.json", "r");
-        if (!f) return false;
-
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, f);
-        f.close();
-        if (err || !doc.is<JsonArray>()) return false;
-
-        JsonArray arr = doc.as<JsonArray>();
-        int idx = 0;
-        for (JsonObject obj : arr) {
-            String id = obj["id"] | "";
-            if (id == chat_id) {
-                out.id = id;
-                out.name = obj["n"] | "";
-                out.preview = obj["p"] | "";
-                if (idx_out) *idx_out = idx;
-                return true;
-            }
-            idx++;
-        }
-        return false;
+    bool push_q(const String& cid, const String& name, const String& txt, long t) {
+        uint8_t tail = __atomic_load_n(&tg_q_tail, __ATOMIC_RELAXED);
+        uint8_t next = (tail + 1) % TG_Q_SIZE;
+        if (next == __atomic_load_n(&tg_q_head, __ATOMIC_ACQUIRE)) return false; // Queue pleine
+        
+        strncpy(tg_q[tail].chat_id, cid.c_str(), 31); tg_q[tail].chat_id[31] = '\0';
+        strncpy(tg_q[tail].from_name, name.c_str(), 31); tg_q[tail].from_name[31] = '\0';
+        strncpy(tg_q[tail].text, txt.c_str(), 127); tg_q[tail].text[127] = '\0';
+        tg_q[tail].ts = t;
+        
+        __atomic_store_n(&tg_q_tail, next, __ATOMIC_RELEASE);
+        return true;
     }
 
+    bool pop_q(TgMsg& out) {
+        uint8_t head = __atomic_load_n(&tg_q_head, __ATOMIC_RELAXED);
+        uint8_t tail = __atomic_load_n(&tg_q_tail, __ATOMIC_ACQUIRE);
+        if (head == tail) return false; // Queue vide
+        
+        out = tg_q[head];
+        __atomic_store_n(&tg_q_head, (head + 1) % TG_Q_SIZE, __ATOMIC_RELEASE);
+        return true;
+    }
+
+    // --- GESTION FICHIERS (CORE 0 UNIQUEMENT) ---
     void upsert_contact(const String& chat_id, const String& name, const String& preview) {
         if (!fs_ok) return;
 
@@ -132,45 +134,88 @@ public:
 
     void begin() override {
         fs_ok = LittleFS.begin();
-        client.setInsecure();
-        client.setTimeout(1200);
-        if (!bot) {
-            bot = new UniversalTelegramBot(TG_BOT_TOKEN, client);
-            bot->longPoll = 0;
-        }
         last_check = millis();
     }
 
+    // --- CORE 0 : TRAITEMENT DE LA BOÎTE AUX LETTRES ---
+    void update() override {
+        TgMsg m;
+        // S'il y a de nouveaux messages téléchargés par le Core 1
+        while (pop_q(m)) {
+            String chat_id(m.chat_id);
+            String from_name(m.from_name);
+            String text(m.text);
+
+            // On écrit sur LittleFS en toute sécurité depuis le Core 0
+            upsert_contact(chat_id, from_name, text);
+            append_message(chat_id, text, m.ts);
+
+            // On prévient l'application Telegram si elle est ouverte
+            if (telegram_incoming_cb) {
+                telegram_incoming_cb(chat_id, from_name, text, m.ts);
+            }
+
+            // On lance la notification visuelle en haut de l'écran
+            char body[96];
+            strncpy(body, text.c_str(), sizeof(body) - 1);
+            body[sizeof(body) - 1] = '\0';
+            notifications::push(String(String(LV_SYMBOL_GPS) + " Telegram").c_str(), from_name.c_str(), body);
+        }
+    }
+
+    // --- CORE 1 : RÉSEAU ET TÉLÉCHARGEMENT ---
     void update1() override {
-        if (!bot) return;
-        if (WiFi.status() != WL_CONNECTED) return;
+        if (!LTE::isReadyForData()) return;
+
+
 
         const unsigned long now = millis();
         if ((now - last_check) < POLL_MS) return;
         last_check = now;
 
-        int num = bot->getUpdates(bot->last_message_received + 1);
-        if (num <= 0) return;
+        String url = "https://api.telegram.org/bot" + String(TG_BOT_TOKEN) + "/getUpdates?offset=" + String(last_update_id + 1) + "&limit=5";
+        String resp = LTE::httpGetBlocking(url, "", false);
 
-        for (int i = 0; i < num; i++) {
-            String chat_id = String(bot->messages[i].chat_id);
-            String from_name = String(bot->messages[i].from_name);
-            String text = String(bot->messages[i].text);
-            long ts = bot->messages[i].date.toInt();
-            if (ts == 0) {
-                time_t tnow;
-                time(&tnow);
-                ts = (long)tnow;
+        if (resp.length() > 0) {
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, resp);
+            
+            if (!err && doc.containsKey("ok") && doc["ok"].as<bool>()) {
+                JsonArray arr = doc["result"].as<JsonArray>();
+                
+                for (JsonObject update : arr) {
+                    long current_id = update["update_id"].as<long>();
+                    if (current_id > last_update_id) {
+                        last_update_id = current_id;
+                    }
+
+                    if (update.containsKey("message")) {
+                        JsonObject msg = update["message"];
+                        
+                        // SÉCURITÉ : On ignore les messages qui n'ont pas de texte (photos, stickers)
+                        if (!msg.containsKey("text")) continue;
+
+                        // SÉCURITÉ : On force le parsing de l'ID 64 bits en String pure
+                        String chat_id = msg["chat"]["id"].as<String>();
+                        String text = msg["text"].as<String>();
+                        
+                        String from_name = "Inconnu";
+                        if (msg.containsKey("from") && msg["from"].containsKey("first_name")) {
+                            from_name = msg["from"]["first_name"].as<String>();
+                        }
+                        
+                        long ts = 0;
+                        if (msg.containsKey("date")) {
+                            ts = msg["date"].as<long>();
+                        } else {
+                            time_t tnow; time(&tnow); ts = (long)tnow;
+                        }
+
+                        // On glisse le message sécurisé dans la boîte aux lettres pour le Core 0
+                        push_q(chat_id, from_name, text, ts);
+                    }
+                }
             }
-            if (from_name.length() == 0) from_name = "Telegram";
-
-            upsert_contact(chat_id, from_name, text);
-            append_message(chat_id, text, ts);
-
-            char body[96];
-            strncpy(body, text.c_str(), sizeof(body) - 1);
-            body[sizeof(body) - 1] = '\0';
-            notifications::push(String(String(LV_SYMBOL_GPS) + " Telegram").c_str(), from_name.c_str(), body);
         }
     }
 };
