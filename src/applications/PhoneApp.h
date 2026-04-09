@@ -209,6 +209,7 @@ public:
             out->SetOutputModeMono(true);
             out->SetGain(1.0f);
             out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+            audio_amp_enable(true);
             out->begin();
 
             dc_offset = 2048.0f;
@@ -221,6 +222,7 @@ public:
             if (out)   out->stop();
             analogWrite(27, 0);
             pinMode(27, INPUT);
+            audio_pins_quiet();
             bridge_active = false;
         }
 
@@ -273,6 +275,7 @@ public:
             out->SetOutputModeMono(true);
             out->SetGain(1.0f); 
             out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN); 
+            audio_amp_enable(true);
             out->begin();
 
             bridge_active = true;
@@ -282,6 +285,7 @@ public:
             if (out)   { out->stop(); delete out; out = nullptr; }
             analogWrite(27, 0); 
             pinMode(27, INPUT);
+            audio_pins_quiet();
             bridge_active = false;
         }
 

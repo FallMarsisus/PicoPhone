@@ -451,6 +451,7 @@ private:
 
         if (!audio_out) audio_out = new AudioOutputI2SBuffered();
         if (!audio_out) return false;
+        audio_amp_enable(true);
         audio_out->SetRate(44100);
         audio_out->SetBitsPerSample(16);
         audio_out->SetChannels(2);

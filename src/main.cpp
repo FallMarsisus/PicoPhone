@@ -57,7 +57,7 @@ AppManager manager;
 static volatile bool g_system_ready = false;
 static volatile bool g_lte_init_pending = true;
 static volatile bool g_services_begin_pending = true;
-static constexpr bool kDisableLteTemporarily = true;
+static constexpr bool kDisableLteTemporarily = false;
 
 // --- ANTI-FREEZE ---
 static volatile uint32_t core0_heartbeat = 0;
@@ -277,6 +277,9 @@ void setup() {
     loadApp(APP_HOME);
     boot_stage("home loaded", TFT_GREEN);
     Serial.println("[BOOT] home loaded");
+
+    hardware_deferred_init();
+    Serial.println("[BOOT] deferred hw init done");
     
 
     // Watchdog matériel RP2040 : reboot si pas nourri pendant 8.3s
@@ -297,9 +300,6 @@ void loop() {
         delay(1);
         return;
     }
-
-    // LVGL et ses drivers doivent etre initialises sur le meme coeur que lv_timer_handler.
-    hardware_deferred_init();
 
     // --- ANTI-FREEZE : nourrir le watchdog à chaque tour ---
     feed_watchdog();

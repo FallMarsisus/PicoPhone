@@ -782,7 +782,7 @@ public:
         newData.hourlyList.reserve(8);
         newData.forecastList.reserve(5);
         String currentUrl = String("http://api.openweathermap.org/data/2.5/weather?q=") + CITY_NAME + "," + COUNTRY_CODE + "&appid=" + API_KEY + "&units=metric&lang=fr";
-        String forecastUrl = String("http://api.openweathermap.org/data/2.5/forecast?q=") + CITY_NAME + "," + COUNTRY_CODE + "&appid=" + API_KEY + "&units=metric&lang=fr";
+        String forecastUrl = String("http://api.openweathermap.org/data/2.5/forecast?cnt=8&q=") + CITY_NAME + "," + COUNTRY_CODE + "&appid=" + API_KEY + "&units=metric&lang=fr";
         String airUrl = String("http://api.openweathermap.org/data/2.5/air_pollution?lat=") + AQ_LAT + "&lon=" + AQ_LON + "&appid=" + API_KEY;
 
         String payload;

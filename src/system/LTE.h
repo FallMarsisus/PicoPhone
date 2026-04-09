@@ -7,6 +7,9 @@
 #include "Settings.h"
 #include "Logger.h"
 
+// RP2350 GPIO: modem power key
+#define A7670_PWRKEY 2
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  LTE – Gestionnaire EXCLUSIF du modem GSM/LTE (A7670E / SIM7670E)
 //  + Gestion robuste des erreurs réseau avec notifications
@@ -43,6 +46,8 @@ private:
     static volatile bool s_http_busy;
 
     static uint8_t       s_poll_fail_count;
+    static uint8_t       s_recovery_fail_count;
+    static unsigned long s_recovery_disabled_until;
 
     // ── Gestion des erreurs réseau ──
     static NetworkErrorCode s_last_error;
@@ -111,6 +116,11 @@ private:
 
     // ── Helper bloquant SÉCURISÉ : envoie une commande AT (Core 1) ──────────
     static String sendAT(const String& cmd, unsigned long timeout_ms = 1500) {
+        // 🔥 PURGE STRICTE AVANT COMMANDE
+        unsigned long purge_start = millis();
+        while (millis() - purge_start < 50) {
+            while (Serial1.available()) Serial1.read();
+        }
         while (Serial1.available()) {
             char c = Serial1.read();
             if (c == '\n') {
@@ -160,7 +170,9 @@ private:
                     current_line += c;
                 }
             }
-            if (resp.indexOf("OK\r\n") != -1 || resp.indexOf("ERROR\r\n") != -1) break;
+            if (resp.endsWith("OK\r\n") || resp.endsWith("ERROR\r\n")) {
+                break;
+            }
             delay(10);
         }
         
@@ -173,6 +185,37 @@ private:
         return resp;
     }
 
+    static String resolveApnForOperator(const String& op) {
+        if (op.indexOf("Orange") != -1 || op.indexOf("Sosh") != -1) return "orange";
+        if (op.indexOf("SFR") != -1 || op.indexOf("RED") != -1) return "sl2sfr";
+        if (op.indexOf("Bouygues") != -1 || op.indexOf("B&You") != -1) return "mmsbouygtel.com";
+        if (op.indexOf("Free") != -1) return "free";
+        return "internet";
+    }
+
+    static bool preparePacketDataContext() {
+        if (!s_modem_confirmed) return false;
+
+        // VERIFICATION RAPIDE : Si on a déjà une IP, on ne refait pas toute la connexion !
+        String paddr = sendAT("AT+CGPADDR=1", 1000);
+        if (paddr.indexOf("0.0.0.0") == -1 && paddr.indexOf("ERROR") == -1 && paddr.indexOf("+CGPADDR: 1,") != -1) {
+            Logger::println("[LTE PDP] Contexte data déjà actif, on continue sans reconnexion.");
+            return true;
+        }
+
+        Logger::println("[LTE PDP] Activation du contexte data (Auto-APN)...");
+        sendAT("AT+CGATT=1", 4000);
+        sendAT("AT+CGACT=1,1", 5000);
+        
+        paddr = sendAT("AT+CGPADDR=1", 3000);
+        if (paddr.indexOf("0.0.0.0") == -1 && paddr.indexOf("ERROR") == -1 && paddr.indexOf("+CGPADDR: 1,") != -1) {
+            Logger::println("[LTE PDP] Contexte data actif avec succès ! IP reçue.");
+            return true;
+        }
+
+        Logger::println("[LTE PDP] Echec de l'activation data.");
+        return false;
+    }
     static bool applyTimeFromCclkResponse(const String& resp, const char* source_tag) {
         int q1 = resp.indexOf('"');
         int q2 = resp.lastIndexOf('"');
@@ -228,106 +271,99 @@ private:
 
     static void recoverModemIfNeeded(const char* reason) {
         unsigned long now = millis();
-        // On évite les recovery en boucle
+        
+        // Si trop de crash consécutifs, on désactive le modem pendant 5 min
+        if (s_recovery_fail_count >= 5) {
+            if (now < s_recovery_disabled_until) {
+                Logger::printf("[LTE CRASH] Modem désactivé (trop de crash). Réessai en %lu ms\n", 
+                    s_recovery_disabled_until - now);
+                s_enabled = false;
+                return;
+            }
+            s_recovery_fail_count = 0;
+            s_enabled = true;
+            Logger::println("[LTE CRASH] Modem réactivé après repos");
+        }
+        
+        // On évite les recovery en boucle rapide (30s minimum)
         if (now - s_last_recover_ms < 30000UL && s_last_recover_ms != 0) return; 
         
-        Logger::printf("[LTE] RECOVERY: %s\n", reason ? reason : "(unknown)");
+        Logger::printf("[LTE] RECOVERY: %s (attempt %d/5)\n", reason ? reason : "(unknown)", s_recovery_fail_count + 1);
         logNetworkError(NetworkErrorCode::RECOVERY_IN_PROGRESS, "4G/LTE", reason);
 
-                digitalWrite(33, HIGH);
-    delay(100);
-            digitalWrite(33, LOW); // Tirer a la masse
-    delay(1500);                   // Maintenir bas pendant au moins 1.5s
-            digitalWrite(33, HIGH);
-    delay(3000);
+        unsigned long recovery_start = millis();
+        const unsigned long RECOVERY_TIMEOUT = 60000UL; // 60 sec max
+
         s_modem_confirmed = false;
         s_line_buf = "";
         s_cmd_resp = "";
         state = 0;
 
-        // --- ÉTAPE 1 : SORTIR DU MODE DONNÉES (SÉQUENCE HAYES) ---
-        Logger::println("[LTE] Tentative de sortie du mode données (+++)...");
-        delay(1200); // 1. Silence absolu de >1s obligatoire
-        while (Serial1.available()) Serial1.read();
+        // ─── HARD POWER CYCLE VIA PWRKEY ───
+        Logger::println("[LTE] RECOVERY: Hard power-cycle du modem via PWRKEY...");
+        pinMode(A7670_PWRKEY, OUTPUT);
+        digitalWrite(A7670_PWRKEY, LOW);
+        delay(100);
+        digitalWrite(A7670_PWRKEY, HIGH);  
+        Logger::println("[LTE] PWRKEY pullé à HIGH... attente 2000ms");
         
-        Serial1.print("+++"); // 2. Envoi de l'échappement (SANS retour à la ligne !)
+        // Boucle non-bloquante pour le Watchdog (20 x 100ms = 2 secondes)
+        for(int d = 0; d < 20; d++) { delay(100); watchdog_update(); }
         
-        delay(1200); // 3. Silence absolu de >1s obligatoire
-        while (Serial1.available()) Serial1.read();
-
-        // --- ÉTAPE 2 : REPRISE DE CONTACT ET REBOOT MODEM ---
+        digitalWrite(A7670_PWRKEY, LOW);   
+        Logger::println("[LTE] PWRKEY relâché (LOW)");
+        
+        // Boucle non-bloquante pour le Watchdog (30 x 100ms = 3 secondes)
+        for(int d = 0; d < 30; d++) { delay(100); watchdog_update(); }
+        
+        // ─── ATTENDRE LE CONTACT INITIAL ───
+        Logger::println("[LTE] Attente du réveil du modem...");
         bool contact = false;
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 10 && (millis() - recovery_start < RECOVERY_TIMEOUT); i++) {
+            watchdog_update();
+            while (Serial1.available()) Serial1.read();
             Serial1.print('\r'); delay(50);
             Serial1.println("AT");
-            delay(300);
-            String resp = "";
-            while (Serial1.available()) resp += (char)Serial1.read();
-            if (resp.indexOf("OK") != -1) {
-                contact = true;
-                break;
-            }
-            watchdog_update();
-        }
-
-        if (contact) {
-            Logger::println("[LTE] Contact rétabli ! Envoi de AT+CRESET pour forcer le redémarrage du modem...");
-            Serial1.println("AT+CRESET");
             
-            // Le modem s'éteint et se rallume. On lui laisse 15 secondes pour le faire.
-            Logger::println("[LTE] Attente du reboot matériel de la puce (15s)...");
-            for (int i = 0; i < 150; i++) {
+            String resp = "";
+            unsigned long t0 = millis();
+            while (millis() - t0 < 500 && (millis() - recovery_start < RECOVERY_TIMEOUT)) {
+                watchdog_update();
+                while (Serial1.available()) resp += (char)Serial1.read();
+                if (resp.indexOf("OK") != -1) {
+                    contact = true;
+                    break;
+                }
+                delay(20);
+            }
+            if (contact) break;
+            
+            for (int w = 0; w < 8; w++) {
                 watchdog_update();
                 delay(100);
             }
-        } else {
-            Logger::println("[LTE] Le modem est sourd aux '+++'. Tentative de resynchronisation brutale...");
         }
 
-        // --- ÉTAPE 3 : ATTENTE DU RÉVEIL DÉFINITIF ---
-        int retry = 1;
-        const int MAX_WAKE_RETRIES = 20; // ~60s max (20 × 3s)
-        while (retry <= MAX_WAKE_RETRIES) {
-            watchdog_update();
-            Serial1.print('\r'); delay(50);
-            Serial1.println("AT");
-            delay(500);
-            
-            String r = "";
-            while(Serial1.available()) r += (char)Serial1.read();
-            if (r.indexOf("OK") != -1) break; // Il est en vie !
-
-            Logger::printf("[LTE] Attente du réveil du modem... (Tentative %d/%d)\n", retry, MAX_WAKE_RETRIES);
-            for(int i=0; i<30; i++) { watchdog_update(); delay(100); } // Pause de 3s
-            retry++;
-        }
-
-        if (retry > MAX_WAKE_RETRIES) {
-            Logger::println("[LTE] RECOVERY: modem toujours injoignable après 60s, abandon.");
+        if (!contact) {
+            s_recovery_fail_count++;
+            s_recovery_disabled_until = now + 5 * 60 * 1000UL;
+            Logger::printf("[LTE CRASH] Modem injoignable après power-cycle. Crash count=%d\n", 
+                s_recovery_fail_count);
             s_last_recover_ms = millis();
             return;
         }
 
-        // --- ÉTAPE 4 : RECONFIGURATION À ZÉRO ---
-        Logger::println("[LTE] Modem en ligne et purgé ! Reconfiguration en cours...");
+        // ─── RECONFIG SIMPLE ───
+        Logger::println("[LTE] Contact rétabli! Reconfiguration...");
         s_modem_confirmed = true;
         sendAT("ATE0", 800);
         sendAT("AT+CMEE=2", 800);
-        sendAT("AT+CMGF=1", 800);
-        sendAT("AT+CNMI=2,2,0,0,0", 800);
-        sendAT("AT+CGEREP=0,0", 800);
-        sendAT("AT+CTZU=1", 800);
-        sendAT("AT+COPS=3,0", 800);
-        sendAT("AT+CREG=1", 800);
-        sendAT("AT+CGREG=1", 800);
-        sendAT("AT+CGATT=1", 2500);
+        sendAT("AT+CFUN=1", 1000);
         
-        Logger::println("[LTE] RECOVERY terminée avec succès. Téléphone 100% opérationnel.");
-        clearNetworkError();
-
+        Logger::println("[LTE] RECOVERY OK");
+        s_recovery_fail_count = 0;
         s_last_recover_ms = millis();
         last_check = millis();
-        next_time_sync_try = millis() + 60000UL;
     }
 
     static String decodeOperator(const String& num) {
@@ -554,6 +590,35 @@ private:
     }
 
 public:
+
+    // ─── Séquence standard d'allumage SIMCom A7670E ───
+    static void powerOnA7670E() {
+        Logger::println("[LTE] Séquence d'allumage A7670E (Logique INVERSÉE)...");
+        
+        // Configure le pin PWRKEY en sortie
+        pinMode(A7670_PWRKEY, OUTPUT);
+        
+        // Étape 1: Assurer que PWRKEY est relâché (LOW avec transistor)
+        digitalWrite(A7670_PWRKEY, LOW);
+        delay(100);
+        Logger::println("[LTE] PWRKEY initié à LOW (Relâché)");
+        
+        // Étape 2: Tirer PWRKEY à HIGH pour simuler l'appui
+        digitalWrite(A7670_PWRKEY, HIGH);
+        Logger::println("[LTE] PWRKEY tiré à HIGH (Appui en cours)...");
+        delay(1500); // 1.5s est recommandé pour le A7670E
+        
+        // Étape 3: Relâcher PWRKEY (retour à LOW)
+        digitalWrite(A7670_PWRKEY, LOW);
+        Logger::println("[LTE] PWRKEY relâché (LOW)");
+        
+        // Étape 4: Délai de sécurité pour laisser le modem démarrer
+        Logger::println("[LTE] Attente du démarrage du modem (4000ms)...");
+        delay(4000); // Un peu plus long pour s'assurer que la carte SIM est lue
+        
+        Logger::println("[LTE] Séquence d'allumage terminée");
+    }
+
     static void init() {
         s_enabled          = true;
         s_airplane_mode    = false;
@@ -579,8 +644,13 @@ public:
         s_cmti_q_head      = 0;
         s_cmti_q_tail      = 0;
 
-        Logger::begin(); 
+        if (!Logger::isOk()) {
+            Logger::begin();
+        }
         Logger::println("[LTE] Initialisation au démarrage...");
+
+        // Séquence d'allumage du modem A7670E
+        powerOnA7670E();
 
         // 1. Purge et électrochoc de réveil de l'UART
         while (Serial1.available()) Serial1.read();
@@ -592,35 +662,39 @@ public:
         bool ok = false;
         for (int i = 0; i < 5; i++) {
             Logger::printf("[LTE] Ping de démarrage %d/5...\n", i+1);
-            String r = sendAT("AT", 1000);
-            if (r.indexOf("OK") != -1) {
+            if (sendAT("AT", 1000).indexOf("OK") != -1) {
                 ok = true;
                 break;
             }
             delay(500);
         }
 
-        // 3. Aiguillage
+        // 3. Aiguillage : Configuration LÉGÈRE pour laisser la radio s'accrocher
         if (ok) {
-            Logger::println("[LTE] Modem détecté ! Configuration initiale...");
+            Logger::println("[LTE] Modem détecté ! Configuration de base...");
             s_modem_confirmed = true;
-            sendAT("ATE0",        1000); 
-            sendAT("AT+CMEE=2",   1000); 
-            sendAT("AT+COPS=3,0", 1000); 
-            sendAT("AT+CTZU=1",   1000); 
+            
+            sendAT("ATE0",        1000); // Désactive l'écho
+            sendAT("AT+CMEE=2",   1000); // Erreurs textuelles explicites
+            sendAT("AT+CFUN=1",   2000); // Force l'allumage de la puce Radio
+            sendAT("AT+COPS=0",   2000); // Force la recherche réseau AUTOMATIQUE
+            sendAT("AT+COPS=3,0", 1000); // Format du nom de l'opérateur en texte
+            sendAT("AT+CTZU=1",   1000); // Mise à jour auto de l'heure
             sendAT("AT+CSCS=\"GSM\"", 1000); 
-            sendAT("AT+CMGF=1",       1000); 
+            sendAT("AT+CMGF=1",       1000); // Mode SMS en texte
             sendAT("AT+CNMI=2,2,0,0,0", 1000); 
             sendAT("AT+CGEREP=0,0",   1000); 
-            sendAT("AT+CREG=1",       1000); 
+            sendAT("AT+CREG=1",       1000); // Active les notifications réseau
             sendAT("AT+CGREG=1",      1000); 
-            sendAT("AT+CGATT=1",      2000); 
-            Logger::println("[LTE] Modem prêt !");
+            
+            // On a supprimé AT+CGATT=1 et preparePacketDataContext() ici.
+            // On le laisse chercher le réseau tranquillement en arrière-plan.
+            
+            Logger::println("[LTE] Modem prêt ! En attente d'accroche réseau...");
         } else {
             Logger::println("[LTE] ALERTE: Modem injoignable au boot ! Lancement du Recovery...");
             logNetworkError(NetworkErrorCode::MODEM_NOT_RESPONDING, "4G/LTE", "Modem injoignable au boot");
-            // Pas de rp2040.reboot() ici ! On laisse le code s'occuper du modem.
-            s_last_recover_ms = 0; // Force l'exécution immédiate
+            s_last_recover_ms = 0; 
             recoverModemIfNeeded("Echec de synchronisation au démarrage");
         }
     }
@@ -696,175 +770,156 @@ public:
         return true;
     }
 
-    static String httpGetBlocking(const String& url, unsigned long timeout_ms = 20000) {
-        if (!s_enabled || s_airplane_mode) {
-            Logger::println("[LTE HTTP] Annulé : Mode avion ou désactivé");
-            return "";
-        }
-        
-        s_http_busy = true;
+    static String httpGetBlocking(const String& url) {
+    const size_t MAX_HTTP = 12000;
 
-        // Boucle de tentatives : on essaie 2 fois maximum (1 tentative normale + 1 retry en cas de crash)
-        for (int attempt = 1; attempt <= 2; attempt++) {
-            s_line_buf  = ""; 
-            s_cmd_resp  = ""; 
-            state = 0;
-
-            Logger::printf("[LTE HTTP] GET %s (Tentative %d/2)\n", url.c_str(), attempt);
-
-            // 1. Nettoyage de sécurité
-            sendAT("AT+HTTPTERM", 1000); 
-            delay(300);
-
-            // 2. Initialisation HTTP
-            String init_resp = sendAT("AT+HTTPINIT", 3000);
-            if (init_resp.indexOf("ERROR") != -1 || init_resp == "") { 
-                Logger::println("[LTE HTTP] ERR/TIMEOUT: HTTPINIT a échoué. Modem crashé ?");
-                logNetworkError(NetworkErrorCode::MODEM_CRASH, "HTTPClient", "Échec HTTPINIT");
-                recoverModemIfNeeded("HTTPINIT timeout/crash");
-                continue; // On passe directement au retry
-            }
-
-            // 3. Configuration de l'URL
-            String url_resp = sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000);
-            if (url_resp.indexOf("ERROR") != -1 || url_resp == "") { 
-                Logger::println("[LTE HTTP] ERR/TIMEOUT: URL rejetée.");
-                logNetworkError(NetworkErrorCode::HTTP_NETWORK_ERROR, "HTTPClient", "URL rejetée");
-                sendAT("AT+HTTPTERM", 500); 
-                recoverModemIfNeeded("HTTPPARA timeout/crash");
-                continue; // On passe au retry
-            }
-
-            // 4. Lancement de la requête HTTP
-            while (Serial1.available()) Serial1.read(); 
-            Serial1.print('\r'); 
-            delay(20);
-            while (Serial1.available()) Serial1.read(); 
-            
-            Logger::println("[LTE->GSM] AT+HTTPACTION=0");
-            Serial1.println("AT+HTTPACTION=0");
-
-            unsigned long start = millis();
-            String action_resp  = "";
-            int http_code = -1, data_len = 0;
-            bool action_timeout = true;
-            
-            // 5. Attente de la réponse
-            while (millis() - start < timeout_ms) {
-                watchdog_update();
-                while (Serial1.available()) {
-                    action_resp += (char)Serial1.read();
-                }
-                
-                int idx = action_resp.indexOf("+HTTPACTION:");
-                if (idx != -1) {
-                    action_timeout = false; // On a eu une réponse, ce n'est pas un crash total
-                    String part = action_resp.substring(idx + 12);
-                    int c1 = part.indexOf(',');
-                    int c2 = part.indexOf(',', c1 + 1);
-                    if (c1 > 0 && c2 > c1) {
-                        http_code = part.substring(c1+1, c2).toInt();
-                        data_len  = part.substring(c2+1).toInt();
-                    }
-                    break;
-                }
-                
-                if (action_resp.indexOf("ERROR\r\n") != -1) {
-                    action_timeout = false;
-                    break;
-                }
-                delay(50);
-            }
-
-            // --- GESTION DU CRASH LORS DU HTTPACTION ---
-            if (action_timeout) {
-                Logger::println("[LTE HTTP] TIMEOUT total sur HTTPACTION ! Le modem a crashé.");
-                logNetworkError(NetworkErrorCode::HTTP_TIMEOUT, "HTTPClient", "HTTPACTION timeout");
-                recoverModemIfNeeded("HTTPACTION timeout (Pic de courant 4G)");
-                continue; // Retry
-            }
-
-            Logger::printf("[LTE HTTP] Résultat HTTP_CODE: %d | TAILLE: %d octets\n", http_code, data_len);
-
-            if (http_code != 200 || data_len <= 0) {
-                Logger::println("[LTE HTTP] ECHEC: Erreur réseau ou code HTTP invalide");
-                logNetworkError(NetworkErrorCode::HTTP_NETWORK_ERROR, "HTTPClient", 
-                    String("Code HTTP: " + String(http_code)).c_str());
-                sendAT("AT+HTTPTERM", 500); 
-                // Si le code est -1, ça veut dire que l'action a échoué lamentablement côté réseau
-                if (http_code == -1) recoverModemIfNeeded("HTTPACTION network error");
-                continue; // Retry
-            }
-
-            // 6. Lecture du contenu téléchargé
-            int read_len = min(data_len, 4096); 
-            while (Serial1.available()) Serial1.read();
-            
-            Serial1.print('\r'); 
-            delay(20); 
-            Serial1.println("AT+HTTPREAD=0," + String(read_len));
-            
-            String r = "";
-            unsigned long hr_start = millis();
-            bool read_timeout = true;
-            
-            while (millis() - hr_start < 15000) {
-                watchdog_update();
-                while (Serial1.available()) {
-                    r += (char)Serial1.read();
-                }
-                int hr_pos = r.indexOf("+HTTPREAD:");
-                if (hr_pos != -1) {
-                    int nl = r.indexOf('\n', hr_pos);
-                    if (nl != -1 && (int)r.length() >= nl + 1 + read_len) {
-                        read_timeout = false;
-                        break;
-                    }
-                }
-                if (r.indexOf("ERROR") != -1) {
-                    read_timeout = false;
-                    break;
-                }
-                delay(10);
-            }
-            
-            sendAT("AT+HTTPTERM", 500);
-            last_check = millis();
-            
-            // --- GESTION DU CRASH LORS DE LA LECTURE ---
-            if (read_timeout) {
-                Logger::println("[LTE HTTP] TIMEOUT sur HTTPREAD ! Le modem a crashé.");
-                logNetworkError(NetworkErrorCode::HTTP_TIMEOUT, "HTTPClient", "HTTPREAD timeout");
-                recoverModemIfNeeded("HTTPREAD timeout");
-                continue; // Retry
-            }
-
-            // Si on arrive ici, c'est que la requête a réussi ! On sort de la boucle avec succès.
-            s_http_busy = false;
-
-            // 8. Découpage du résultat
-            int body_start = r.indexOf("+HTTPREAD:");
-            if (body_start != -1) {
-                body_start = r.indexOf('\n', body_start) + 1;
-                while (body_start < (int)r.length() && r[body_start] == '\r') body_start++;
-                int body_end = (int)r.length();
-                while (body_end > body_start && (r[body_end-1] == '\r' || r[body_end-1] == '\n')) body_end--;
-                if (body_start < body_end) {
-                    return r.substring(body_start, body_end);
-                }
-            }
-            return r; // Renvoie tout si on ne trouve pas les marqueurs
-        }
-
-        // Si la boucle se termine sans "return", c'est que les 2 tentatives ont échoué.
-        s_http_busy = false;
-        Logger::println("[LTE HTTP] Echec définitif après les retentatives.");
+    if (!s_enabled || s_airplane_mode || !s_modem_confirmed) {
         return "";
     }
 
+    s_http_busy = true;
+
+    for (int attempt = 1; attempt <= 2; attempt++) {
+
+        Logger::printf("[LTE HTTP] GET %s (%d/2)\n", url.c_str(), attempt);
+
+        if (!preparePacketDataContext()) continue;
+
+        sendAT("AT+HTTPTERM", 1000);
+        delay(100);
+
+        if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1) continue;
+
+        if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
+            sendAT("AT+HTTPTERM", 500);
+            continue;
+        }
+
+        Serial1.println("AT+HTTPACTION=0");
+
+        unsigned long start = millis();
+        String resp;
+        resp.reserve(128);
+
+        int http_code = -1;
+        int data_len = 0;
+
+        while (millis() - start < 20000) {
+            watchdog_update();
+
+            while (Serial1.available()) {
+                char c = Serial1.read();
+                resp += c;
+            }
+
+            int idx = resp.indexOf("+HTTPACTION:");
+            if (idx != -1) {
+                String part = resp.substring(idx + 12);
+                int c1 = part.indexOf(',');
+                int c2 = part.indexOf(',', c1 + 1);
+
+                if (c1 > 0 && c2 > c1) {
+                    http_code = part.substring(c1+1, c2).toInt();
+                    data_len  = part.substring(c2+1).toInt();
+                }
+                break;
+            }
+
+            delay(10);
+        }
+
+        if (http_code != 200 || data_len <= 0) {
+            sendAT("AT+HTTPTERM", 500);
+            continue;
+        }
+
+        if (data_len > MAX_HTTP) {
+            Logger::println("[LTE HTTP] TRUNCATED");
+            data_len = MAX_HTTP;
+        }
+
+        String body;
+        body.reserve(data_len + 1);
+
+        int total = 0;
+
+        while (total < data_len) {
+            watchdog_update();
+
+            int chunk = min(512, data_len - total);
+
+            while (Serial1.available()) Serial1.read();
+
+            Serial1.print("AT+HTTPREAD=");
+            Serial1.println(chunk);
+
+            unsigned long t0 = millis();
+            bool header_ok = false;
+            int expected = 0;
+            String header;
+            header.reserve(64);
+
+            while (millis() - t0 < 3000) {
+                watchdog_update();
+
+                while (Serial1.available()) {
+                    char c = Serial1.read();
+                    header += c;
+
+                    int p = header.indexOf("+HTTPREAD:");
+                    if (p != -1) {
+                        int nl = header.indexOf('\n', p);
+                        if (nl != -1) {
+                            int col = header.indexOf(':', p);
+                            expected = header.substring(col + 1).toInt();
+                            header_ok = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (header_ok) break;
+            }
+
+            if (!header_ok || expected <= 0) break;
+
+            int read_bytes = 0;
+            t0 = millis();
+
+            while (read_bytes < expected && millis() - t0 < 5000) {
+                watchdog_update();
+
+                while (Serial1.available() && read_bytes < expected) {
+                    char c = Serial1.read();
+
+                    if (body.length() < MAX_HTTP) {
+                        body.concat(c);
+                        total++;
+                    }
+
+                    read_bytes++;
+                }
+            }
+
+            if (read_bytes != expected) break;
+        }
+
+        sendAT("AT+HTTPTERM", 500);
+
+        if (body.length() > 0) {
+            s_http_busy = false;
+            return body;
+        }
+    }
+
+    s_http_busy = false;
+    return "";
+}
+    
     static void update() {
         if (s_http_busy) {
-            while (Serial1.available()) Serial1.read();
+            // CRUCIAL : Ne SURTOUT PAS toucher à Serial1 ici ! 
+            // Le Cœur 1 est en train de s'en servir pour télécharger.
             return;
         }
 
@@ -1110,6 +1165,8 @@ volatile int  LTE::s_pending_airplane = -1;
 volatile bool LTE::s_http_busy        = false;
 volatile bool LTE::s_modem_confirmed  = false;
 uint8_t       LTE::s_poll_fail_count  = 0;
+uint8_t       LTE::s_recovery_fail_count     = 0;
+unsigned long LTE::s_recovery_disabled_until = 0;
 
 // Variables d'erreur réseau
 NetworkErrorCode LTE::s_last_error           = NetworkErrorCode::NO_ERROR;

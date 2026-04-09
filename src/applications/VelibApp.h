@@ -263,7 +263,7 @@ private:
             String result = (code == 200) ? http.getString() : "";
             http.end();
             return result;
-        } else if (LTE::isEnabled() && !LTE::isAirplaneMode()) {
+        } else if (LTE::isReadyForData()) {
             return LTE::httpGetBlocking(url);
         }
         return "";
@@ -417,7 +417,7 @@ public:
     // --- CORE 1 : RESEAU ---
     void update1() override {
         bool net_ok = (WiFi.status() == WL_CONNECTED) ||
-                      (LTE::isEnabled() && !LTE::isAirplaneMode());
+                      LTE::isReadyForData();
         if (!net_ok) return;
 
        // A. RECHERCHE
@@ -446,22 +446,44 @@ public:
                 String payload = netGet(String(API_BASE) + targetCode);
                 if (payload.length() > 0) {
                     JsonDocument doc;
-                    deserializeJson(doc, payload);
-                    if (doc["records"].is<JsonArray>() && doc["records"].size() > 0) {
-                        JsonObject fields = doc["records"][0]["fields"];
+                    DeserializationError err = deserializeJson(doc, payload);
+                    if (err) {
+                        Serial.printf("[VELIB] JSON invalide (%s), len=%u\n", err.c_str(), (unsigned)payload.length());
+                    } else if (doc["records"].is<JsonArray>() && doc["records"].size() > 0) {
+                        bool matched = false;
                         int mech = 0, elec = 0, park = 0;
-                        extract_counts(fields, mech, elec, park);
-                        
-                        mutex_enter_blocking(&velibMutex);
-                        if (current_fetch_index < (int)stations.size() &&
-                            stations[current_fetch_index].code == targetCode) {
-                            stations[current_fetch_index].mech = mech;
-                            stations[current_fetch_index].elec = elec;
-                            stations[current_fetch_index].park = park;
-                            stations[current_fetch_index].is_updated = true;
+
+                        for (JsonObject rec : doc["records"].as<JsonArray>()) {
+                            JsonObject fields = rec["fields"];
+                            String codeFromApi = fields["stationcode"].as<String>();
+                            if (codeFromApi.length() == 0) {
+                                codeFromApi = targetCode;
+                            }
+                            if (codeFromApi != targetCode) {
+                                continue;
+                            }
+
+                            extract_counts(fields, mech, elec, park);
+                            matched = true;
+                            break;
                         }
-                        mutex_exit(&velibMutex);
+
+                        if (matched) {
+                            mutex_enter_blocking(&velibMutex);
+                            if (current_fetch_index < (int)stations.size() &&
+                                stations[current_fetch_index].code == targetCode) {
+                                stations[current_fetch_index].mech = mech;
+                                stations[current_fetch_index].elec = elec;
+                                stations[current_fetch_index].park = park;
+                                stations[current_fetch_index].is_updated = true;
+                            }
+                            mutex_exit(&velibMutex);
+                        } else {
+                            Serial.printf("[VELIB] Aucun match stationcode pour %s (records=%u)\n", targetCode.c_str(), (unsigned)doc["records"].size());
+                        }
                     }
+                } else {
+                    Serial.printf("[VELIB] payload vide pour %s\n", targetCode.c_str());
                 }
             }
             last_update = millis();

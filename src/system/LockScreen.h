@@ -358,7 +358,7 @@ void unlock() {
     showMainScreen();
     
     // Enfin la SIM (qui peut prendre du temps à répondre)
-    LTE::setLowPower(false); 
+    // LTE::setLowPower(false); 
     
     is_locked = false;
     lv_disp_trig_activity(NULL);

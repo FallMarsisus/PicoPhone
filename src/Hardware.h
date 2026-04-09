@@ -17,16 +17,25 @@
 #include <I2S.h> 
 #include <hardware/vreg.h>
 #include <Wire.h> 
+#include <XPowersLib.h>
+#include "drivers/FT6336U.h"
 #include "assets/startuplogo.c"
 #include "system/Battery.h"
-// Ajout pour accès à manager
+#include "system/Logger.h"
 #include "AppManager.h"
+
 extern AppManager manager;
+void DEV_I2C_Write_Byte(uint8_t addr, uint8_t reg, uint8_t Value);
+void DEV_KEY_Config(uint16_t Pin);
+uint8_t DEV_Module_Init(void);
 
-// --- PINS ECRAN (DEV_Config.h Waveshare RP2350-Touch-LCD-3.5) ---
-#define SPI_PORT SPI
-#define I2C_PORT Wire
+// Création de l'objet pour le PMIC AXP2101
+XPowersAXP2101 PMIC;
 
+#define I2C_PORT i2c0
+
+
+// --- PINS ECRAN (Waveshare RP2350-Touch-LCD-3.5) ---
 #define LCD_RST_PIN  23
 #define LCD_DC_PIN   20
 #define LCD_BL_PIN   22
@@ -36,27 +45,15 @@ extern AppManager manager;
 #define LCD_MISO_PIN 4
 
 // --- PINS TACTILE CAPACITIF ET PMIC ---
-#define TP_SDA 34
-#define TP_SCL 35
-#define TP_RST 24
-#define TP_INT 25
-#define FT6336U_ADDR 0x38
-#define FT6336U_REG_DEVICE_MODE   0x00
-#define FT6336U_REG_TD_STATUS     0x02
-#define FT6336U_REG_TOUCH1_X      0x03
-#define FT6336U_REG_TOUCH1_Y      0x05
-#define FT6336U_REG_CHIP_ID       0xA3
-#define FT6336U_REG_G_MODE        0xA4
-#define FT6336U_REG_POWER_MODE    0xA5
-#define FT6336U_REG_FIRMWARE_ID   0xA6
-#define FT6336U_REG_FOCALTECH_ID  0xA8
-#define FT6336U_REG_GESTURE_EN    0xD0
 
 // --- PINS IMU / CAPTEURS ---
-#define DEV_SDA_PIN 34
-#define DEV_SCL_PIN 35
-#define DOF_INT1    14
-#define I2C_RST     38
+
+#define DEV_SDA_PIN   34
+#define DEV_SCL_PIN   35
+#define DOF_INT1      14
+
+#define Touch_RST_PIN 24
+#define Touch_INT_PIN 25
 #define SYS_OUT_PIN 40
 #define BAT_ADC_PIN 28
 
@@ -106,56 +103,39 @@ extern AppManager manager;
 #define ES8311_CHVER_REGFF       0xFF
 #define ES8311_MAX_REGISTER      0xFF
 
-// I2S sortie vers ES8311
-#define I2S_OUT_BCLK 6
-#define I2S_OUT_WS   7 
-#define I2S_OUT_DIN  14
+// I2S / ES8311
+#define I2S_DSDIN    12  // MCU -> ES8311 DIN
+#define I2S_ASDOUT   13  // ES8311 DOUT -> MCU
+#define I2S_MCLK     14
+#define I2S_LRCK     15
+#define I2S_SCLK     16
+#define PA_CTRL_PIN  17
 
-// Pour le INMP441 (Entrée)
-#define I2S_IN_BCLK  2
-#define I2S_IN_WS    3
-#define I2S_IN_DOUT  4
+#define I2S_OUT_BCLK I2S_SCLK
+#define I2S_OUT_WS   I2S_LRCK
+#define I2S_OUT_DIN  I2S_DSDIN
+
+#define I2S_IN_BCLK  I2S_SCLK
+#define I2S_IN_WS    I2S_LRCK
+#define I2S_IN_DOUT  I2S_ASDOUT
 
 // Pour le SIM800L / A7670E (UART0)
-#define SIM800_TX    32
-#define SIM800_RX    47
-#define A7670_PWRKEY 33
-
-// --- Gestion du PWRKEY pour A7670 ---
-// Durée recommandée pour extinction matérielle : 1-2 secondes
-inline void a7670_power_key_press(unsigned long ms = 1500) {
-    pinMode(A7670_PWRKEY, OUTPUT);
-    digitalWrite(A7670_PWRKEY, LOW); // Active PWRKEY (niveau bas)
-    delay(ms);
-    pinMode(A7670_PWRKEY, INPUT); // Haute impédance après l'impulsion
-}
-
-// Mise en mode fonctionnalité minimale (AT+CFUN=0)
-inline void a7670_set_minimal_functionality() {
-    Serial1.println("AT+CFUN=0");
-    // Attendre la réponse OK ou délai de sécurité
-    unsigned long wait_start = millis();
-    while (millis() - wait_start < 2000) {
-        if (Serial1.available()) {
-            String resp = Serial1.readStringUntil('\n');
-            if (resp.indexOf("OK") != -1) break;
-        }
-    }
-}
+#define SIM800_TX    1
+#define SIM800_RX    0
+#define A7670_PWRKEY 2
 
 // --- BOUTON VEILLE ---
-// Evite le conflit avec LCD_CS_PIN (GP21).
-#define SLEEP_BTN_PIN 46
-#define TEMP_DISABLE_POWER_BUTTON 1
-#define TEMP_DISABLE_TOUCH_INIT 0
+// Bouton physique sur GP47.
+#define SLEEP_BTN_PIN 47
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
-static constexpr uint32_t LV_BUF_PIXELS = 320u * 100u;
+static constexpr uint32_t LV_BUF_PIXELS = 320u * 140u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 static bool g_tft_dma_ready = false;
 static bool g_touch_present = false;
+static volatile bool g_touch_irq_pending = false;
 static volatile bool g_hw_deferred_init_pending = true;
 static uint16_t g_boot_stage_y = 24;
 static bool g_boot_stage_onscreen_enabled = true;
@@ -185,71 +165,131 @@ static inline void boot_stage(const char* msg, uint16_t color = TFT_WHITE) {
     }
 }
 
-static inline void tft_bringup_test_pattern() {
-    tft.fillScreen(TFT_RED);
-    delay(250);
-    tft.fillScreen(TFT_GREEN);
-    delay(250);
-    tft.fillScreen(TFT_BLUE);
-    delay(250);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(8, 8);
-    tft.print("ST7796 SPI OK");
-    delay(300);
-}
-
-static inline bool es8311_is_present() {
-    I2C_PORT.beginTransmission(ES8311_I2C_ADDR);
-    return I2C_PORT.endTransmission() == 0;
-}
-
-static inline bool ft6336_read_bytes(uint8_t reg, uint8_t* out, size_t len);
-static inline bool ft6336_write_byte(uint8_t reg, uint8_t value);
-
-static inline bool ft6336_is_present() {
-    uint8_t chip_id = 0;
-    return ft6336_read_bytes(FT6336U_REG_CHIP_ID, &chip_id, 1) && chip_id == 0x64;
-}
-
-static inline void ft6336_i2c_hw_init() {
-    i2c_init(i2c0, 100000);
-    gpio_set_function(TP_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(TP_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(TP_SDA);
-    gpio_pull_up(TP_SCL);
-}
-
-static inline void ft6336_reset_hw() {
-    pinMode(TP_RST, OUTPUT);
-    digitalWrite(TP_RST, HIGH);
-    delay(10);
-    digitalWrite(TP_RST, LOW);
-    delay(10);
-    digitalWrite(TP_RST, HIGH);
-    delay(300);
-}
-
-static inline bool ft6336_write_byte(uint8_t reg, uint8_t value) {
-    uint8_t data[2] = {reg, value};
-    return i2c_write_blocking(i2c0, FT6336U_ADDR, data, 2, false) == 2;
-}
-
-static inline bool ft6336_read_bytes(uint8_t reg, uint8_t* out, size_t len) {
-    if (i2c_write_blocking(i2c0, FT6336U_ADDR, &reg, 1, true) != 1) {
-        return false;
-    }
-    return i2c_read_blocking(i2c0, FT6336U_ADDR, out, len, false) == (int)len;
-}
-
 static inline void audio_pins_quiet() {
+    pinMode(PA_CTRL_PIN, OUTPUT);
+    digitalWrite(PA_CTRL_PIN, LOW);
+
     pinMode(I2S_OUT_DIN, INPUT_PULLDOWN);
     pinMode(I2S_OUT_BCLK, INPUT_PULLDOWN);
     pinMode(I2S_OUT_WS, INPUT_PULLDOWN);
     pinMode(I2S_IN_DOUT, INPUT_PULLDOWN);
     pinMode(I2S_IN_BCLK, INPUT_PULLDOWN);
     pinMode(I2S_IN_WS, INPUT_PULLDOWN);
+}
+
+static inline void audio_amp_enable(bool enable) {
+    pinMode(PA_CTRL_PIN, OUTPUT);
+    digitalWrite(PA_CTRL_PIN, enable ? HIGH : LOW);
+}
+
+// ─ Initialisation du codec audio ES8311 via I2C ─
+static inline void es8311_init() {
+    Serial.println("[AUDIO] Initialisation du codec ES8311...");
+    
+    // Reset du codec (REG0x00 = 0x1F puis 0x00)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_RESET_REG00, 0x1F);
+    delay(10);
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_RESET_REG00, 0x00);
+    delay(50);
+    
+    // Configuration du mode d'horloge (REG01)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG01, 0x00);  
+    delay(10);
+    
+    // Configuration MCLK (REG03, REG04, REG05, REG08)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG03, 0x10);  
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG04, 0x00);  
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG05, 0x00);  
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG08, 0x00); 
+    
+    // Configuration I2S en MODE SLAVE (REG09, REG0A)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SDPIN_REG09, 0x00);   // I2S Slave
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SDPOUT_REG0A, 0x00);  // I2S Slave
+    
+    // Configuration audio mode (REG0B, REG0C, REG0D, REG0E, REG0F)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0B, 0x00);
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0C, 0x00);
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0D, 0x0C);  // Mode slave
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0E, 0x02);  // Format 16-bit
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_SYSTEM_REG0F, 0x00);
+    
+    // ADC config (son qui rentre n'est pas critique ici)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_ADC_REG15, 0x00);
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_ADC_REG16, 0x24);  
+    
+    // DAC PATH ENABLE (REG31, REG32, REG33, REG34 sont les clés)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG31, 0x00);  // DAC L select
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG32, 0x00);  // DAC R select
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG33, 0xB8);  // DAC source from I2S
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG34, 0x20);  // DAC unmute & left/right enable
+    
+    // DAC GAIN & UNMUTE (REG35 = 0xB0 unmute, REG37, REG38, REG39)
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG35, 0xB0);  // UNMUTE DAC, gain 0dB
+    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG37, 0x88);  // HPF enable
+    // DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG38, 0x00);  // DAC DVC config
+    // DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG39, 0x00);  
+    
+    delay(20);
+    Serial.println("[AUDIO] ES8311 initialisé avec DAC actif");
+}
+
+static inline void modem_uart_begin() {
+    Serial1.setTX(SIM800_RX);
+    Serial1.setRX(SIM800_TX);
+    Serial1.begin(115200);
+}
+
+static bool modem_boot_probe(uint8_t retries = 3) {
+    modem_uart_begin();
+    while (Serial1.available()) {
+        Serial1.read();
+    }
+
+    for (uint8_t i = 0; i < retries; ++i) {
+        Logger::printf("[LTE] Boot probe AT %u/%u\n", (unsigned)(i + 1), (unsigned)retries);
+        Serial1.print('\r');
+        delay(40);
+        Serial1.println("AT");
+
+        uint32_t start = millis();
+        String resp;
+        String line;
+        while (millis() - start < 500) {
+            while (Serial1.available()) {
+                char c = (char)Serial1.read();
+                resp += c;
+                if (c == '\n') {
+                    line.trim();
+                    if (line.length() > 0) {
+                        Logger::printf("[GSM->LTE] %s\n", line.c_str());
+                        if (line.indexOf("OK") != -1) {
+                            Logger::println("[LTE] Modem repond AT au boot");
+                            return true;
+                        }
+                    }
+                    line = "";
+                } else if (c != '\r') {
+                    line += c;
+                }
+            }
+            delay(10);
+        }
+
+        if (resp.length() > 0) {
+            String log = resp;
+            log.replace("\r\n", " | ");
+            log.trim();
+            Logger::printf("[GSM->LTE] %s\n", log.c_str());
+        }
+        delay(120);
+    }
+
+    Logger::println("[LTE] Aucun OK sur AT au boot");
+    return false;
+}
+
+static void touch_int_callback() {
+    g_touch_irq_pending = true;
 }
 // Variable globale pour prévenir le Core 1 de l'extinction
 volatile bool system_is_shutting_down = false;
@@ -266,15 +306,14 @@ void system_power_off() {
     WiFi.mode(WIFI_OFF);
     delay(100);
 
-    LTE::setLowPower(true);
+    // LTE::setLowPower(true);
     watchdog_update();
 
     // 3. EXTINCTION DU MODEM A7670E via PWRKEY
     Serial.println("[LTE] Extinction matérielle via PWRKEY...");
-    a7670_power_key_press(); // Impulsion PWRKEY pour extinction
-    // Optionnel : attendre la réponse du module si nécessaire
-
-    // On ne touche PLUS au PWRKEY ici !
+    pinMode(A7670_PWRKEY, OUTPUT);
+    digitalWrite(A7670_PWRKEY, HIGH);  // Pin inversé: HIGH pour éteindre
+    delay(1500);
 
     // 4. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
     Serial1.end();
@@ -286,15 +325,16 @@ void system_power_off() {
     audio_pins_quiet(); 
     // IMPORTANT : Si vous avez relié SD_MODE du MAX98357 à un pin (ex: GP20)
     // pinMode(20, OUTPUT); digitalWrite(20, LOW); // Force le Shutdown total de l'ampli
-// 6. EXTINCTION DE L'ÉCRAN
+
+    // 6. EXTINCTION DE L'ÉCRAN
     digitalWrite(LCD_BL_PIN, LOW);
     tft.writecommand(0x28); // Display OFF
     tft.writecommand(0x10); // Sleep IN
     delay(50);
 
     // 7. VERROUILLAGE DES PINS FLOTTANTS (CRUCIAL CONTRE LES FUITES)
-    SPI_PORT.end();
-    I2C_PORT.end();
+    SPI.end();
+    Wire.end();
 
     // On force les pins de l'écran et du bus SPI à GND
     pinMode(LCD_RST_PIN, OUTPUT); digitalWrite(LCD_RST_PIN, LOW);
@@ -306,9 +346,9 @@ void system_power_off() {
     pinMode(LCD_MISO_PIN, INPUT_PULLUP);
 
     // Extinction totale du tactile
-    pinMode(TP_RST, OUTPUT); digitalWrite(TP_RST, LOW);
-    pinMode(TP_SDA, INPUT_PULLDOWN);
-    pinMode(TP_SCL, INPUT_PULLDOWN);
+    pinMode(Touch_RST_PIN, OUTPUT); digitalWrite(Touch_RST_PIN, LOW);
+    pinMode(DEV_SDA_PIN, INPUT_PULLDOWN);
+    pinMode(DEV_SCL_PIN, INPUT_PULLDOWN);
 
     Serial.println("[POWER] CPU Zzz...");
     Serial.flush(); 
@@ -362,12 +402,6 @@ static void btn_cancel_event_cb(lv_event_t * e) {
 
 
 
-
-// --- Mise en veille : passage du A7670 en mode minimal ---
-inline void enter_sleep_mode() {
-    Serial.println("[LTE] Passage du A7670 en mode fonctionnalité minimale...");
-    a7670_set_minimal_functionality();
-}
 
 // --- CRÉATION DE L'INTERFACE ---
 
@@ -443,152 +477,11 @@ void showPowerMenu() {
     lv_anim_start(&a);
 }
 
-// --- TEST AUDIO (Micro -> Haut-parleur) ---
-void test_audio_loopback(TFT_eSPI &disp, int dummy_duration = 0) {
-    const int SAMPLE_RATE = 16000;
-    const int SECONDS = 2; 
-    const int NUM_SAMPLES = SAMPLE_RATE * SECONDS;
-    
-    int16_t *audio_buffer = (int16_t*)malloc(NUM_SAMPLES * sizeof(int16_t));
-    if (!audio_buffer) {
-        disp.println("Erreur: Pas assez de RAM !");
-        Serial.println("Erreur RAM pour l'audio");
-        return;
-    }
-
-    disp.fillScreen(TFT_BLACK);
-    disp.setCursor(0, 0);
-    disp.setTextColor(TFT_RED, TFT_BLACK);
-    disp.println("ENREGISTREMENT !");
-    disp.println("Parlez maintenant...");
-    Serial.println("ENREGISTREMENT (2 sec)...");
-
-    I2S i2sIn(INPUT);
-    i2sIn.setBCLK(I2S_IN_BCLK); 
-    i2sIn.setDATA(I2S_IN_DOUT);
-    i2sIn.setBitsPerSample(32); 
-    i2sIn.begin(SAMPLE_RATE);
-
-    int32_t l32 = 0, r32 = 0;
-    int16_t filtered_sample = 0;
-
-    for (int i = 0; i < NUM_SAMPLES; i++) {
-        while (!i2sIn.read32(&l32, &r32)) { yield(); }
-        int16_t raw = (int16_t)(l32 >> 16); 
-        int32_t boosted = (int32_t)raw * 6; 
-        if (boosted > 32760) boosted = 32760;
-        if (boosted < -32760) boosted = -32760;
-        raw = (int16_t)boosted;
-        filtered_sample = (raw * 3 + filtered_sample) / 4;
-        audio_buffer[i] = filtered_sample;
-    }
-    i2sIn.end(); 
-
-    disp.setTextColor(TFT_GREEN, TFT_BLACK);
-    disp.println("\nLECTURE...");
-    Serial.println("LECTURE...");
-
-    static AudioOutputI2S out;
-    out.SetRate(SAMPLE_RATE);
-    out.SetBitsPerSample(16);
-    out.SetChannels(2);
-    out.SetOutputModeMono(true);
-    out.SetGain(0.4f); 
-    out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
-    out.begin();
-
-    int16_t sample[2];
-    for (int i = 0; i < NUM_SAMPLES; i++) {
-        sample[0] = audio_buffer[i];
-        sample[1] = audio_buffer[i];
-        while (!out.ConsumeSample(sample)) { yield(); }
-    }
-
-    out.stop();
-    free(audio_buffer); 
-    audio_pins_quiet();
-    
-    disp.println("\nTest termine !");
-    Serial.println("Test termine !");
-}
-
-// --- TEST MODEM A7670E ---
-void test_sim800l(TFT_eSPI &disp) {
-    Serial.println("--- DEMARRAGE A7670E ---");
-
-    Serial1.setTX(SIM800_TX);
-    Serial1.setRX(SIM800_RX);
-    pinMode(A7670_PWRKEY, OUTPUT);
-    digitalWrite(A7670_PWRKEY, HIGH); 
-
-    Serial1.begin(115200);
-    while (Serial1.available()) Serial1.read();
-    Serial1.println("AT");
-    delay(600);
-    String probe = "";
-    while (Serial1.available()) probe += (char)Serial1.read();
-    bool already_on  = (probe.indexOf("OK") != -1);
-    bool need_baud   = already_on; 
-
-    if (!already_on) {
-        Serial1.begin(9600);
-        while (Serial1.available()) Serial1.read();
-        Serial1.println("AT");
-        delay(600);
-        probe = "";
-        while (Serial1.available()) probe += (char)Serial1.read();
-        if (probe.indexOf("OK") != -1) {
-            already_on = true;
-            need_baud  = false; 
-            Serial.println("> Modem déjà actif à 9600 baud");
-        } else {
-            Serial1.begin(115200); 
-        }
-    } else {
-        Serial.println("> Modem déjà actif à 115200 baud");
-    }
-
-    if (!already_on) {
-        Serial.println("> Allumage via PWRKEY...");
-        digitalWrite(A7670_PWRKEY, LOW);
-        delay(1500);
-        digitalWrite(A7670_PWRKEY, HIGH);
-        Serial.println("> Attente boot modem (5s)...");
-        delay(5000); 
-        need_baud = true; 
-    }
-
-    if (need_baud) {
-        Serial1.begin(115200);
-        Serial1.println("AT+IPR=9600");
-        delay(400);
-        Serial1.println("AT&W");
-        delay(400);
-        Serial1.begin(9600);
-        delay(300);
-    }
-    Serial.println("> Envoi: AT");
-}
-
-void run_sim_diagnostic(TFT_eSPI &disp) {
-    Serial.println("--- DIAGNOSTIC A7670E ---");
-    String cmds[] = {"AT+CPIN?", "AT+CSQ", "AT+CREG?", "AT+COPS?", "AT+CPSI?"};
-    for(int i=0; i<5; i++) {
-        Serial.print("\n> "); Serial.println(cmds[i]);
-        Serial1.println(cmds[i]);
-        uint32_t t = millis();
-        while(millis() - t < 2000) {
-            while(Serial1.available()) {
-                char c = Serial1.read();
-                if(c != '\r') Serial.print(c); 
-            }
-        }
-    }
-}
-
 // --- FONCTION SONORE ---
 void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     static AudioOutputI2S out;
+
+    audio_amp_enable(true);
 
     out.SetRate(44100);
     out.SetBitsPerSample(16);
@@ -636,57 +529,39 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
 // --- LECTURE TACTILE CAPACITIF I2C ---
 void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     (void)drv;
-    static uint32_t last_reprobe_ms = 0;
     if (!g_touch_present) {
-        const uint32_t now = millis();
-        if (now - last_reprobe_ms > 1000) {
-            last_reprobe_ms = now;
-            uint8_t chip_id = 0;
-            g_touch_present = ft6336_read_bytes(FT6336U_REG_CHIP_ID, &chip_id, 1) && chip_id == 0x64;
-        }
         data->state = LV_INDEV_STATE_REL;
         return;
     }
 
-    static uint8_t i2c_fail_streak = 0;
-    uint8_t regs[5] = {0};
-
-    if (!ft6336_read_bytes(FT6336U_REG_TD_STATUS, regs, sizeof(regs))) {
-        data->state = LV_INDEV_STATE_REL;
-        if (++i2c_fail_streak > 20) {
-            g_touch_present = false;
-        }
-        return; 
-    }
-
-    const uint8_t touches = regs[0] & 0x0F;
-    const uint8_t p1_xh = regs[0];
-    const uint8_t p1_xl = regs[1];
-    const uint8_t p1_yh = regs[2];
-    const uint8_t p1_yl = regs[3];
-
-    if (touches > 0) {
-        const uint8_t event = (p1_xh >> 6) & 0x03;
-        if (event == 0x01) {
+    // Fallback polling: certaines cartes RP2350B ne remontent pas toujours
+    // l'IRQ tactile via attachInterrupt, donc on sonde periodiquement.
+    static uint32_t last_poll_ms = 0;
+    const uint32_t now = millis();
+    if (!g_touch_irq_pending) {
+        if (now - last_poll_ms < 12) {
             data->state = LV_INDEV_STATE_REL;
-            i2c_fail_streak = 0;
             return;
         }
+    }
+    g_touch_irq_pending = false;
+    last_poll_ms = now;
 
-        uint16_t x = ((p1_xh & 0x0F) << 8) | p1_xl;
-        uint16_t y = ((p1_yh & 0x0F) << 8) | p1_yl;
-
-        if (x > 319) x = 319;
-        if (y > 479) y = 479;
-
-        data->point.x = (int16_t)x;
-        data->point.y = (int16_t)y;
-        data->state = LV_INDEV_STATE_PR;
-        i2c_fail_streak = 0;
+    if (FT6336U_ReadState(FT6336U_FINGER_NUMBER) == 0) {
+        data->state = LV_INDEV_STATE_REL;
         return;
     }
-    
-    data->state = LV_INDEV_STATE_REL;
+
+    FT6336U_Get_Point();
+
+    uint16_t x = FT6336U.touch1_x;
+    uint16_t y = FT6336U.touch1_y;
+    if (x > 319) x = 319;
+    if (y > 479) y = 479;
+
+    data->point.x = (int16_t)x;
+    data->point.y = (int16_t)y;
+    data->state = LV_INDEV_STATE_PR;
 }
 
 // === AFFICHAGE HAUTES PERFORMANCES (DMA + MUTEX) ===
@@ -729,11 +604,17 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 
     // En cas de clipping horizontal, les lignes ne sont plus contigues en memoire.
     // On envoie donc ligne par ligne pour garantir la coherence des donnees.
-    for (uint32_t row = 0; row < h; ++row) {
-        uint32_t src_index = (uint32_t)(src_y_off + (int32_t)row) * src_w + (uint32_t)src_x_off;
-        lv_color_t* src_line = color_p + src_index;
+    if (src_x_off == 0 && src_w == w) {
+        uint32_t src_index = (uint32_t)src_y_off * src_w;
+        lv_color_t* src = color_p + src_index;
+        tft.pushPixels((uint16_t *)&src->full, len);
+    } else {
+        for (uint32_t row = 0; row < h; ++row) {
+            uint32_t src_index = (uint32_t)(src_y_off + (int32_t)row) * src_w + (uint32_t)src_x_off;
+            lv_color_t* src_line = color_p + src_index;
 
-        tft.pushPixels((uint16_t *)&src_line->full, w);
+            tft.pushPixels((uint16_t *)&src_line->full, w);
+        }
     }
 
     tft.endWrite();
@@ -745,13 +626,33 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 }
 
 void hardware_init() {
+
+    
     pinMode(LCD_BL_PIN, OUTPUT); 
     digitalWrite(LCD_BL_PIN, HIGH);
 
+    Logger::begin();
+
+    audio_amp_enable(true);
+
     // 1) Bring-up ecran en tout premier pour eviter tout blocage annexe.
-    SPI_PORT.setTX(LCD_MOSI_PIN);
-    SPI_PORT.setSCK(LCD_CLK_PIN);
-    SPI_PORT.begin();
+    SPI.setTX(LCD_MOSI_PIN);
+    SPI.setSCK(LCD_CLK_PIN);
+    SPI.begin();
+
+    Wire1.setSDA(DEV_SDA_PIN);
+    Wire1.setSCL(DEV_SCL_PIN);
+    Wire1.setClock(400 * 1000);
+    Wire1.begin();
+
+    if (!PMIC.init(Wire1, DEV_SDA_PIN, DEV_SCL_PIN)) {
+        Serial.println("Erreur: Impossible de trouver le AXP2101 !");
+        while (1);
+    }
+
+    PMIC.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
+    PMIC.clearIrqStatus();
+    pinMode(SYS_OUT_PIN, INPUT_PULLUP);
 
     pinMode(LCD_RST_PIN, OUTPUT);
     digitalWrite(LCD_RST_PIN, LOW);
@@ -809,6 +710,16 @@ inline void hardware_deferred_init() {
 
     audio_pins_quiet();
     boot_stage("audio pins quiet ok");
+    
+    es8311_init();
+    boot_stage("audio codec init ok");
+    
+    audio_amp_enable(true);
+    boot_stage("audio amp enabled");
+
+    boot_stage("sim probe start", TFT_CYAN);
+    const bool sim_ok = modem_boot_probe(4);
+    boot_stage(sim_ok ? "sim at ok" : "sim no response", sim_ok ? TFT_GREEN : TFT_YELLOW);
 
 #if TEMP_DISABLE_TOUCH_INIT
     g_touch_present = false;
@@ -816,42 +727,39 @@ inline void hardware_deferred_init() {
 #else
     boot_stage("touch init start", TFT_CYAN);
 
-    // FT6336U driver Waveshare: seul le reset tactile est nécessaire ici.
-    pinMode(TP_RST, OUTPUT);
-    digitalWrite(TP_RST, HIGH);
+    // FT6336U driver Waveshare.
+    pinMode(Touch_RST_PIN, OUTPUT);
+    digitalWrite(Touch_RST_PIN, HIGH);
     delay(10);
-    digitalWrite(TP_RST, LOW);
+    digitalWrite(Touch_RST_PIN, LOW);
     delay(10);
-    digitalWrite(TP_RST, HIGH);
+    digitalWrite(Touch_RST_PIN, HIGH);
     delay(50);
     boot_stage("touch reset ok", TFT_CYAN);
 
-    pinMode(TP_INT, INPUT_PULLUP);
-
-    boot_stage("touch i2c init start", TFT_CYAN);
-    ft6336_i2c_hw_init();
-    boot_stage("touch i2c init ok", TFT_CYAN);
+    boot_stage("touch module init start", TFT_CYAN);
+    
+    SPI.endTransaction();
+    boot_stage("touch module init ok", TFT_CYAN);
 
     boot_stage("touch probe start", TFT_CYAN);
-    ft6336_reset_hw();
-    boot_stage("touch reset sequence ok", TFT_CYAN);
+    FT6336U_Init(FT6336U_Gesture_Mode);
+    DEV_KEY_Config(Touch_INT_PIN);
+    attachInterrupt(Touch_INT_PIN, touch_int_callback, RISING);
+    const uint16_t chip_id = FT6336U_ReadID();
+    g_touch_present = (chip_id == 0x64 || chip_id == 0x98);
+    if (Serial) {
+        if (g_touch_present) {
+            Serial.print("[TOUCH] Chip ID lu : 0x");
+            Serial.println(chip_id, HEX);
+        } else {
+            Serial.print("[TOUCH] Chip ID invalide : 0x");
+            Serial.println(chip_id, HEX);
+        }
+    }
 
-    g_touch_present = ft6336_is_present();
     if (g_touch_present) {
-        uint8_t chip_id = 0;
-        uint8_t focal_id = 0;
-        boot_stage("touch read ids start", TFT_CYAN);
-        (void)ft6336_read_bytes(FT6336U_REG_CHIP_ID, &chip_id, 1);
-        (void)ft6336_read_bytes(FT6336U_REG_FOCALTECH_ID, &focal_id, 1);
-        boot_stage("touch read ids ok", TFT_CYAN);
-        boot_stage("touch config start", TFT_CYAN);
-        (void)ft6336_write_byte(FT6336U_REG_G_MODE, 0x00); // polling mode
-        (void)ft6336_write_byte(FT6336U_REG_GESTURE_EN, 0x00);
-        boot_stage("touch config ok", TFT_CYAN);
-
-        char msg[40];
-        snprintf(msg, sizeof(msg), "touch ft6336 id:%02X/%02X", chip_id, focal_id);
-        boot_stage(msg, TFT_GREEN);
+        boot_stage("touch driver ready", TFT_GREEN);
     } else {
         boot_stage("touch not detected", TFT_YELLOW);
     }
@@ -866,9 +774,8 @@ inline void hardware_deferred_init() {
     }
 #endif
 
-    // Temporairement desactive pour isoler les crashes modem/LTE.
     // LTE::setLowPower(false);
-    boot_stage("lte lowpower skipped", TFT_YELLOW);
+    boot_stage("lte config on", TFT_GREEN);
 
     g_hw_deferred_init_pending = false;
     boot_stage("deferred hw init done", TFT_GREEN);
@@ -882,14 +789,10 @@ void hardware_sleep() {
     mutex_exit(&spi_mutex);
 
     // ENDORMIR LE TACTILE (FT6336U Mode Sleep)
-    I2C_PORT.beginTransmission(FT6336U_ADDR);
-    I2C_PORT.write(0xA5); // Registre Power Mode
-    I2C_PORT.write(0x03); // Valeur pour "Sleep Mode"
-    I2C_PORT.endTransmission();
-
-    // Serial1.println("AT+CSCLK=2"); // Endormir le modem LTE
+    if (g_touch_present) {
+        DEV_I2C_Write_Byte(FT6336U_I2C_ADDR, FT6336U_ADDR_POWER_MODE, 0x03);
+    }
 }
-
 
 // Appelle hardware_sleep() pour mettre en veille, hardware_wake() pour réveiller.
 // Pour sortir de veille : détecter touche ou tactile (TP_INT ou autre GPIO)
@@ -898,6 +801,33 @@ void check_sleep_button() {
 #if TEMP_DISABLE_POWER_BUTTON
     return;
 #endif
+
+    static uint32_t pmic_poll_ms = 0;
+    const uint32_t now = millis();
+    const bool pmic_irq_active = (digitalRead(SYS_OUT_PIN) == LOW);
+    if (pmic_irq_active && (now - pmic_poll_ms >= 20)) {
+        pmic_poll_ms = now;
+        PMIC.getIrqStatus();
+    }
+
+    // Priorite au bouton PMIC (K3 / PWRON) si les IRQ PEK sont remontees.
+    if (PMIC.isPekeyLongPressIrq()) {
+        Serial.println("Bouton K3 (PWRON) maintenu !");
+        PMIC.clearIrqStatus();
+        showPowerMenu();
+        return;
+    }
+
+    if (PMIC.isPekeyShortPressIrq()) {
+        Serial.println("Bouton K3 (PWRON) pressé brièvement !");
+        PMIC.clearIrqStatus();
+        if (!manager.lockScreen.isLocked()) {
+            manager.lockScreen.lock();
+        } else {
+            manager.lockScreen.unlock();
+        }
+        return;
+    }
 
     static uint32_t press_start_time = 0;
     static bool is_pressing = false;
@@ -942,12 +872,12 @@ void check_sleep_button() {
 }
 
 void hardware_wake() {
-    SPI_PORT.begin(); 
+    SPI.begin(); 
     
     // RÉVEILLER LE TACTILE AVEC UN RESET MATÉRIEL
-    digitalWrite(TP_RST, LOW);
+    digitalWrite(Touch_RST_PIN, LOW);
     delay(10);
-    digitalWrite(TP_RST, HIGH);
+    digitalWrite(Touch_RST_PIN, HIGH);
     delay(50); // Le FT6336U a besoin de temps pour redémarrer
     
     tft.startWrite();
