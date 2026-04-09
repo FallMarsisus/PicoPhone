@@ -345,13 +345,13 @@ private:
 
     static void bootloader_event(lv_event_t* e) {
         // Redémarrage en mode bootloader
-        delay(100); // Délai pour éviter les rebonds
+        sleep_ms(100); // Délai pour éviter les rebonds
         rp2040.rebootToBootloader();
     }
     
     // --- Reboot System ---
     static void reboot_event(lv_event_t* e) {
-        delay(100);
+        sleep_ms(100);
         rp2040.reboot();
     }
     

@@ -126,7 +126,7 @@ public:
         if (history_count < 2) history_count++;
 
         i2s_play_test_tone(1200, 30, settings::getVolume()/100.0f);
-        delay(20);
+        sleep_ms(20);
         i2s_play_test_tone(1200, 30, settings::getVolume()/100.0f);
     }
 

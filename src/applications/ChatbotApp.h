@@ -436,7 +436,7 @@ public:
                 // -11 est un échec TLS intermittent sur RP2040/RP2350: on retente une fois.
                 if (httpCode == -11 && attempt + 1 < kMaxAttempts) {
                     http.end();
-                    delay(120);
+                    sleep_ms(120);
                     yield();
                     continue;
                 }

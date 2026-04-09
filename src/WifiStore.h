@@ -241,7 +241,7 @@ static void autoconnect_tick() {
         }
 
         WiFi.disconnect();
-        delay(10);
+        sleep_ms(10);
         WiFi.begin(e.ssid, e.pass);
         g_ac_connecting = true;
         g_ac_since = now;

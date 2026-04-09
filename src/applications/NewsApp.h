@@ -218,7 +218,7 @@ public:
                     mutex_exit(&newsMutex);
                     break;
                 }
-                delay(1);
+                sleep_ms(1);
             }
             refresh_requested = false;
             return;
@@ -240,7 +240,7 @@ public:
                     mutex_exit(&newsMutex);
                     break;
                 }
-                delay(1);
+                sleep_ms(1);
             }
             refresh_requested = false;
             return;
@@ -299,7 +299,7 @@ public:
                 mutex_exit(&newsMutex);
                 break;
             }
-            delay(1);
+            sleep_ms(1);
         }
         refresh_requested = false;
     }

@@ -907,7 +907,7 @@ public:
             while (stream_src->available() < PREBUFFER_TARGET_BYTES && (millis() - prebuf_start < PREBUFFER_TIMEOUT_MS) && !force_stop) {
                 stream_src->pumpNetwork();
                 yield();
-                delay(2);
+                sleep_ms(2);
             }
 
             if (stream_src->available() < PREBUFFER_MIN_BYTES) {

@@ -302,7 +302,7 @@ private:
         WiFi.scanDelete();
         if (WiFi.getMode() != WIFI_STA) {
             WiFi.mode(WIFI_STA);
-            delay(20); 
+            sleep_ms(20); 
         }
 
         lv_obj_clean(list);

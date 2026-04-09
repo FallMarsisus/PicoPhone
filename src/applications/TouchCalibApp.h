@@ -39,7 +39,7 @@ public:
             lv_label_set_text_fmt(label_raw, "RAW X: %d\nRAW Y: %d\nZ: %d", x, y, z);
         }
         
-        delay(20);
+        sleep_ms(20);
     }
 };
 

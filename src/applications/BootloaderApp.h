@@ -23,7 +23,7 @@ private:
     }
 
     void onBtnClick() {
-        delay(100); // petit délai pour éviter les rebonds
+        sleep_ms(100); // petit délai pour éviter les rebonds
         rp2040.rebootToBootloader();
     }
 

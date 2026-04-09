@@ -236,7 +236,7 @@ public:
                     mutex_exit(&cryptoMutex);
                     break;
                 }
-                delay(1);
+                sleep_ms(1);
             }
             refresh_requested = false;
             return;
@@ -295,7 +295,7 @@ public:
                 mutex_exit(&cryptoMutex);
                 break;
             }
-            delay(1);
+            sleep_ms(1);
         }
         refresh_requested = false;
     }

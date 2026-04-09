@@ -176,11 +176,11 @@ void DEV_SET_PWM(uint8_t Value)
 }
 
 /**
- * delay x ms
+ * sleep_ms x ms
  **/
 void DEV_Delay_ms(uint32_t xms)
 {
-    delay(xms);
+    sleep_ms(xms);
 }
 
 void DEV_Delay_us(uint32_t xus)

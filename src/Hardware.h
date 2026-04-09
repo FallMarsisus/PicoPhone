@@ -188,13 +188,13 @@ static inline void es8311_init() {
     
     // Reset du codec (REG0x00 = 0x1F puis 0x00)
     DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_RESET_REG00, 0x1F);
-    delay(10);
+    sleep_ms(10);
     DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_RESET_REG00, 0x00);
-    delay(50);
+    sleep_ms(50);
     
     // Configuration du mode d'horloge (REG01)
     DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG01, 0x00);  
-    delay(10);
+    sleep_ms(10);
     
     // Configuration MCLK (REG03, REG04, REG05, REG08)
     DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_CLK_MANAGER_REG03, 0x10);  
@@ -229,7 +229,7 @@ static inline void es8311_init() {
     // DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG38, 0x00);  // DAC DVC config
     // DEV_I2C_Write_Byte(ES8311_I2C_ADDR, ES8311_DAC_REG39, 0x00);  
     
-    delay(20);
+    sleep_ms(20);
     Serial.println("[AUDIO] ES8311 initialisé avec DAC actif");
 }
 
@@ -248,7 +248,7 @@ static bool modem_boot_probe(uint8_t retries = 3) {
     for (uint8_t i = 0; i < retries; ++i) {
         Logger::printf("[LTE] Boot probe AT %u/%u\n", (unsigned)(i + 1), (unsigned)retries);
         Serial1.print('\r');
-        delay(40);
+        sleep_ms(40);
         Serial1.println("AT");
 
         uint32_t start = millis();
@@ -272,7 +272,7 @@ static bool modem_boot_probe(uint8_t retries = 3) {
                     line += c;
                 }
             }
-            delay(10);
+            sleep_ms(10);
         }
 
         if (resp.length() > 0) {
@@ -281,7 +281,7 @@ static bool modem_boot_probe(uint8_t retries = 3) {
             log.trim();
             Logger::printf("[GSM->LTE] %s\n", log.c_str());
         }
-        delay(120);
+        sleep_ms(120);
     }
 
     Logger::println("[LTE] Aucun OK sur AT au boot");
@@ -299,12 +299,12 @@ void system_power_off() {
     Serial.println("[POWER] Extinction matérielle en cours...");
     // 1. Prévenir le Core 1 de tout arrêter immédiatement
     system_is_shutting_down = true;
-    delay(50);
+    sleep_ms(50);
 
     // 2. COUPURE DU WIFI ET BLUETOOTH DU PICO W
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    delay(100);
+    sleep_ms(100);
 
     // LTE::setLowPower(true);
     watchdog_update();
@@ -313,7 +313,7 @@ void system_power_off() {
     Serial.println("[LTE] Extinction matérielle via PWRKEY...");
     pinMode(A7670_PWRKEY, OUTPUT);
     digitalWrite(A7670_PWRKEY, HIGH);  // Pin inversé: HIGH pour éteindre
-    delay(1500);
+    sleep_ms(1500);
 
     // 4. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
     Serial1.end();
@@ -330,7 +330,7 @@ void system_power_off() {
     digitalWrite(LCD_BL_PIN, LOW);
     tft.writecommand(0x28); // Display OFF
     tft.writecommand(0x10); // Sleep IN
-    delay(50);
+    sleep_ms(50);
 
     // 7. VERROUILLAGE DES PINS FLOTTANTS (CRUCIAL CONTRE LES FUITES)
     SPI.end();
@@ -359,9 +359,9 @@ void system_power_off() {
 
     while (true) {
         watchdog_update();
-        // L'utilisation de delay(100) est gérée par le cœur Arduino pour mettre
+        // L'utilisation de sleep_ms(100) est gérée par le cœur Arduino pour mettre
         // le processeur en vraie veille, contrairement à un simple __wfi().
-        delay(10); 
+        sleep_ms(10); 
 
         if (digitalRead(SLEEP_BTN_PIN) == LOW) {
             uint32_t press_time = millis();
@@ -373,7 +373,7 @@ void system_power_off() {
                     valid_press = false; 
                     break; 
                 }
-                delay(10);
+                sleep_ms(10);
             }
 
             if (valid_press) {
@@ -656,16 +656,16 @@ void hardware_init() {
 
     pinMode(LCD_RST_PIN, OUTPUT);
     digitalWrite(LCD_RST_PIN, LOW);
-    delay(20);
+    sleep_ms(20);
     digitalWrite(LCD_RST_PIN, HIGH);
-    delay(120);
+    sleep_ms(120);
 
     tft.init();
     tft.setRotation(0);
     tft.writecommand(0x11); // Sleep OUT
-    delay(120);
+    sleep_ms(120);
     tft.writecommand(0x29); // Display ON
-    delay(20);
+    sleep_ms(20);
 
     tft.fillScreen(TFT_BLACK);
     tft.drawBitmap(0, (480 - 140)/2, epd_bitmap_Startup_Logo, 320, 140, TFT_WHITE);
@@ -730,11 +730,11 @@ inline void hardware_deferred_init() {
     // FT6336U driver Waveshare.
     pinMode(Touch_RST_PIN, OUTPUT);
     digitalWrite(Touch_RST_PIN, HIGH);
-    delay(10);
+    sleep_ms(10);
     digitalWrite(Touch_RST_PIN, LOW);
-    delay(10);
+    sleep_ms(10);
     digitalWrite(Touch_RST_PIN, HIGH);
-    delay(50);
+    sleep_ms(50);
     boot_stage("touch reset ok", TFT_CYAN);
 
     boot_stage("touch module init start", TFT_CYAN);
@@ -876,15 +876,15 @@ void hardware_wake() {
     
     // RÉVEILLER LE TACTILE AVEC UN RESET MATÉRIEL
     digitalWrite(Touch_RST_PIN, LOW);
-    delay(10);
+    sleep_ms(10);
     digitalWrite(Touch_RST_PIN, HIGH);
-    delay(50); // Le FT6336U a besoin de temps pour redémarrer
+    sleep_ms(50); // Le FT6336U a besoin de temps pour redémarrer
     
     tft.startWrite();
     tft.writecommand(0x11); // Sleep Out
     tft.endWrite();
     
-    delay(120); 
+    sleep_ms(120); 
 
     tft.startWrite();
     tft.writecommand(0x29); // Display ON

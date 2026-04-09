@@ -84,7 +84,7 @@ void loadApp(AppID id) {
 
     while (!mutex_try_enter(&app_switch_mutex, nullptr)) {
         feed_watchdog();
-        delay(10);
+        sleep_ms(10);
     }
 
     // --- 1. Récupération de l'écran et de l'app actuels ---
@@ -238,7 +238,7 @@ void setup() {
     Serial.begin(115200);
     uint32_t serial_wait_start = millis();
     while (!Serial && (millis() - serial_wait_start) < 2000) {
-        delay(10);
+        sleep_ms(10);
     }
     Serial.println("[BOOT] setup start");
     mutex_enter_blocking(&myMutex);
@@ -297,7 +297,7 @@ void loop() {
     check_sleep_button();
     
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) {
-        delay(1);
+        sleep_ms(1);
         return;
     }
 
@@ -332,7 +332,7 @@ void loop() {
 
 void setup1() {
     while (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) {
-        delay(1);
+        sleep_ms(1);
     }
 }
 
@@ -376,10 +376,10 @@ void loop1() {
 
     background_services::manager().update1();
 
-    if (mutex_try_enter(&app_switch_mutex, nullptr) == true) {
-        if (currentApp) currentApp->update1();
-        mutex_exit(&app_switch_mutex);
-    }
+    // Retirez le mutex autour de update1()
+if (currentApp) {
+    currentApp->update1();
+}
 
     watchdog_update();
 
