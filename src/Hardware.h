@@ -190,10 +190,47 @@ static inline void es8311_init() {
     Serial.println("[AUDIO] Initialisation du codec ES8311...");
 
     bool ok = g_es8311.begin(DEV_SDA_PIN, DEV_SCL_PIN, 400000);
-    ok = ok && g_es8311.setMode(true);
-    ok = ok && g_es8311.setSampleRate(44100);
-    ok = ok && g_es8311.setBitsPerSample(16);
-    ok = ok && g_es8311.disableMicrophone();
+    if (!ok) {
+        Serial.println("[AUDIO] Echec init I2C ES8311 via librairie");
+        return;
+    }
+
+    // Configuration valide sur cette carte: on passe par l'API de la librairie
+    // mais avec la sequence de registres connue comme stable.
+    ok = ok && g_es8311.writeRegister(0x00, 0x1F); // Reset
+    sleep_ms(10);
+    ok = ok && g_es8311.writeRegister(0x00, 0x00); // Release reset
+    sleep_ms(50);
+
+    ok = ok && g_es8311.writeRegister(0x01, 0x00);
+    sleep_ms(10);
+
+    ok = ok && g_es8311.writeRegister(0x03, 0x10);
+    ok = ok && g_es8311.writeRegister(0x04, 0x00);
+    ok = ok && g_es8311.writeRegister(0x05, 0x00);
+    ok = ok && g_es8311.writeRegister(0x08, 0x00);
+
+    ok = ok && g_es8311.writeRegister(0x09, 0x00); // I2S slave
+    ok = ok && g_es8311.writeRegister(0x0A, 0x00); // I2S slave
+
+    ok = ok && g_es8311.writeRegister(0x0B, 0x00);
+    ok = ok && g_es8311.writeRegister(0x0C, 0x00);
+    ok = ok && g_es8311.writeRegister(0x0D, 0x0C); // Slave mode
+    ok = ok && g_es8311.writeRegister(0x0E, 0x02); // 16-bit format
+    ok = ok && g_es8311.writeRegister(0x0F, 0x00);
+
+    ok = ok && g_es8311.writeRegister(0x15, 0x00);
+    ok = ok && g_es8311.writeRegister(0x16, 0x24);
+
+    ok = ok && g_es8311.writeRegister(0x31, 0x00);
+    ok = ok && g_es8311.writeRegister(0x32, 0x00);
+    ok = ok && g_es8311.writeRegister(0x33, 0xB8);
+    ok = ok && g_es8311.writeRegister(0x34, 0x20);
+
+    ok = ok && g_es8311.writeRegister(0x35, 0xB0);
+    ok = ok && g_es8311.writeRegister(0x37, 0x88);
+
+    // Le volume utilisateur reste pilote par la librairie.
     ok = ok && g_es8311.setVolume(settings::getVolume());
 
     if (ok) {
