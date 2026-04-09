@@ -3,8 +3,6 @@
 
 #include "App.h"
 #include <vector>
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <pico/mutex.h>
@@ -253,17 +251,9 @@ private:
         }
     }
     
-    // Helper : GET via WiFi ou fallback 4G
+    // Helper : GET via LTE
     static String netGet(const String& url) {
-        if (WiFi.status() == WL_CONNECTED) {
-            HTTPClient http;
-            http.setTimeout(8000);
-            http.begin(url);
-            int code = http.GET();
-            String result = (code == 200) ? http.getString() : "";
-            http.end();
-            return result;
-        } else if (LTE::isReadyForData()) {
+        if (LTE::isReadyForData()) {
             return LTE::httpGetBlocking(url);
         }
         return "";
@@ -416,8 +406,7 @@ public:
 
     // --- CORE 1 : RESEAU ---
     void update1() override {
-        bool net_ok = (WiFi.status() == WL_CONNECTED) ||
-                      LTE::isReadyForData();
+        bool net_ok = LTE::isReadyForData();
         if (!net_ok) return;
 
        // A. RECHERCHE

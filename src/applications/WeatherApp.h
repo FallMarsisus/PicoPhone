@@ -2,8 +2,6 @@
 #define WEATHER_APP_H
 
 #include "App.h"
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <math.h>
 #include <vector>
@@ -363,23 +361,8 @@ private:
         }
     }
 
-    bool http_get_payload(const String& url, String& payload, bool use_wifi) {
+    bool http_get_payload(const String& url, String& payload) {
         payload = "";
-        if (use_wifi) {
-            HTTPClient http;
-            http.setTimeout(8000);
-            if (!http.begin(url)) {
-                return false;
-            }
-            int code = http.GET();
-            watchdog_update();
-            if (code == 200) {
-                payload = http.getString();
-            }
-            http.end();
-            return payload.length() > 0;
-        }
-
         payload = LTE::httpGetBlocking(url);
         return payload.length() > 0;
     }
@@ -756,9 +739,7 @@ public:
         if (!refresh_requested) return;
         watchdog_update();
 
-        bool use_wifi = (WiFi.status() == WL_CONNECTED);
-        bool use_lte = (!use_wifi && LTE::isReadyForData());
-        if (!use_wifi && !use_lte) {
+        if (!LTE::isReadyForData()) {
             WeatherData fail;
             fail.weatherSuccess = false;
             fail.airSuccess = false;
@@ -786,17 +767,17 @@ public:
         String airUrl = String("http://api.openweathermap.org/data/2.5/air_pollution?lat=") + AQ_LAT + "&lon=" + AQ_LON + "&appid=" + API_KEY;
 
         String payload;
-        if (http_get_payload(currentUrl, payload, use_wifi)) {
+        if (http_get_payload(currentUrl, payload)) {
             parse_weather_payload(payload, newData);
         }
 
         payload = "";
-        if (http_get_payload(forecastUrl, payload, use_wifi)) {
+        if (http_get_payload(forecastUrl, payload)) {
             parse_forecast_payload(payload, newData);
         }
 
         payload = "";
-        if (http_get_payload(airUrl, payload, use_wifi)) {
+        if (http_get_payload(airUrl, payload)) {
             parse_air_payload(payload, newData);
         }
 

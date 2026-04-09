@@ -2,15 +2,13 @@
 #define CHATBOT_APP_H
 
 #include "App.h"
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <ArduinoJson.h> 
 #include <lvgl.h>
 #include <vector>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
 #include "../system/NetworkErrorHandler.h"
+#include "../system/LTE.h"
 #include "../AppManager.h"
 
 // --- CONFIGURATION GEMINI ---
@@ -353,11 +351,10 @@ public:
         if (!sharedData.requestPending) return;
         watchdog_update(); // Garde le système en vie
 
-        if (WiFi.status() != WL_CONNECTED) {
-            // Pas de WiFi
+        if (!LTE::isReadyForData()) {
             mutex_enter_blocking(&chatMutex);
             sharedData.success = false;
-            sharedData.lastResponse = "WiFi indisponible";
+            sharedData.lastResponse = "LTE indisponible";
             sharedData.responseReady = true;
             sharedData.requestPending = false;
             mutex_exit(&chatMutex);
@@ -384,34 +381,17 @@ public:
         serializeJson(doc, requestBody);
 
         String url = String("https://generativelanguage.googleapis.com/v1beta/models/") + GEMINI_MODEL + ":generateContent?key=" + GEMINI_API_KEY;
-        // 2. Requête HTTP POST (Client Sécurisé) avec retry court sur TLS instable (HTTP -11).
+        // 2. Requête HTTP POST via modem LTE (HTTP AT) avec retry court.
         static constexpr int kMaxAttempts = 2;
         String apiResponse = "";
         bool success = false;
         String errorResponse = "";
 
         for (int attempt = 0; attempt < kMaxAttempts && !success; attempt++) {
-            WiFiClientSecure client;
-            client.setInsecure();
-            client.setTimeout(6000);
-
-            HTTPClient http;
-            http.setReuse(false);
-            http.setTimeout(REQUEST_TIMEOUT_MS);
-
-            if (!http.begin(client, url)) {
-                errorResponse = "Impossible d'initialiser la requete HTTP";
-                continue;
-            }
-
-            http.addHeader("Content-Type", "application/json");
-            http.addHeader("Connection", "close");
-
-            int httpCode = http.POST(requestBody);
+            String payload = LTE::httpPostBlocking(url, requestBody, "application/json", "Connection: close");
             watchdog_update();
 
-            if (httpCode == 200) {
-                String payload = http.getString();
+            if (payload.length() > 0) {
                 JsonDocument responseDoc;
                 DeserializationError err = deserializeJson(responseDoc, payload);
 
@@ -422,27 +402,13 @@ public:
                     errorResponse = String("Reponse JSON invalide: ") + err.c_str();
                 }
             } else {
-                String payload = http.getString();
-                errorResponse = String("HTTP ") + String(httpCode);
-                if (payload.length() > 0) {
-                    if (payload.length() > 160) {
-                        payload = payload.substring(0, 160);
-                        payload += "...";
-                    }
-                    errorResponse += ": ";
-                    errorResponse += payload;
-                }
-
-                // -11 est un échec TLS intermittent sur RP2040/RP2350: on retente une fois.
-                if (httpCode == -11 && attempt + 1 < kMaxAttempts) {
-                    http.end();
+                errorResponse = "HTTP LTE: reponse vide";
+                if (attempt + 1 < kMaxAttempts) {
                     sleep_ms(120);
                     yield();
                     continue;
                 }
             }
-
-            http.end();
         }
 
         // 3. Renvoi des données au Core 0

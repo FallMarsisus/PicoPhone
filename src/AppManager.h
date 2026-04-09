@@ -63,9 +63,6 @@ private:
         if (LTE::isAirplaneMode()) {
             return "Avion";
         }
-        if (WiFi.status() == WL_CONNECTED) {
-            return "WiFi";
-        }
         if (LTE::isEnabled()) {
             int signal = LTE::getSignal();
             if (signal > 0) {

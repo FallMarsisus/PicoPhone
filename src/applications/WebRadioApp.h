@@ -14,6 +14,7 @@
 #include <vector>
 #include <ArduinoJson.h>
 #include "../system/Settings.h"
+#include "../system/LTE.h"
 
 // ======================================================
 // I2S avec DMA : 32 petits buffers de 256 words
@@ -505,28 +506,15 @@ private:
     }
 
     bool fetch_radio_list() {
-        if (WiFi.status() != WL_CONNECTED) return false;
+        if (!LTE::isReadyForData()) return false;
 
-        WiFiClientSecure client;
-        client.setInsecure();
-        client.setTimeout(CONNECT_TIMEOUT_MS);
-
-        HTTPClient http;
-        http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-        http.setTimeout(READ_TIMEOUT_MS);
-        if (!http.begin(client, "https://raw.githubusercontent.com/FallMarsisus/picophone-app-repo/refs/heads/main/radio-list.json")) {
-            return false;
-        }
-
-        int httpCode = http.GET();
-        if (httpCode != HTTP_CODE_OK) {
-            http.end();
+        String payload = LTE::httpGetBlocking("https://raw.githubusercontent.com/FallMarsisus/picophone-app-repo/refs/heads/main/radio-list.json");
+        if (payload.length() == 0) {
             return false;
         }
 
         DynamicJsonDocument doc(6144);
-        DeserializationError error = deserializeJson(doc, http.getStream());
-        http.end();
+        DeserializationError error = deserializeJson(doc, payload);
         if (error) return false;
 
         JsonArray items = doc["items"].as<JsonArray>();
@@ -856,8 +844,8 @@ public:
                 return;
             }
 
-            if (WiFi.status() != WL_CONNECTED) {
-                schedule_retry("WiFi indisponible", -100);
+            if (!LTE::isReadyForData()) {
+                schedule_retry("LTE indisponible", -100);
                 return;
             }
 

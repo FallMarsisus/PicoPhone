@@ -3,6 +3,10 @@
 
 #include <Arduino.h>
 #include <EEPROM.h>
+#include "Hardware.h"
+
+// Déclaration anticipée: implémentée dans Hardware.h
+static inline void audio_amp_enable(bool enable);
 
 /**
  * Paramètres système persistants (stockés en EEPROM après le bloc WiFi).
@@ -152,7 +156,14 @@ static void setBrightness(uint8_t v) {
 }
 
 static uint8_t getVolume() { load(); return g_data.volume; }
-static void setVolume(uint8_t v) { load(); g_data.volume = v; save(); }
+static void setVolume(uint8_t v) {
+    load();
+    if (v > 100) v = 100;
+    g_data.volume = v;
+    // Applique immédiatement l'état de l'ampli pour éviter une sortie bloquée après mute/unmute.
+    audio_amp_enable(v > 0);
+    save();
+}
 
 static bool isWifiEnabled() { load(); return g_data.wifi_enabled; }
 static void setWifiEnabled(bool v) { load(); g_data.wifi_enabled = v; save(); }

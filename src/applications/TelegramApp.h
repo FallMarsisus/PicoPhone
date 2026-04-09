@@ -13,6 +13,7 @@
 #include <time.h>
 #include "../system/Secrets.h"
 #include "../system/NetworkErrorHandler.h"
+#include "../system/LTE.h"
 
 // --- CONFIG ---
 #define TG_CHECK_INTERVAL 3000 
@@ -721,7 +722,7 @@ public:
     void update1() override {
         // Core1: uniquement réseau + push events (NE PAS toucher LVGL ici)
         if (!bot_ready) return;
-        if (WiFi.status() != WL_CONNECTED) return;
+        if (!LTE::isReadyForData()) return;
 
         const unsigned long now = millis();
 

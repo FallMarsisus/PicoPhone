@@ -849,7 +849,7 @@ public:
         static unsigned long last_check = 0;
         if (now_ms - last_check > 3000) {
             last_check = now_ms;
-            if (WiFi.status() == WL_CONNECTED) lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x232323), 0);
+            if (LTE::isReadyForData()) lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x232323), 0);
             else lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xC1C1C1), 0);
         }
 

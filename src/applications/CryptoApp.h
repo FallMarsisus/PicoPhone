@@ -3,9 +3,6 @@
 #include "App.h"
 #include "AppManager.h"
 #include <lvgl.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h> // <-- AJOUT INDISPENSABLE POUR LE HTTPS
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
@@ -220,10 +217,7 @@ public:
         if (!refresh_requested) return;
         watchdog_update();
 
-        bool use_wifi = (WiFi.status() == WL_CONNECTED);
-        bool use_lte  = (!use_wifi && LTE::isReadyForData());
-
-        if (!use_wifi && !use_lte) {
+        if (!LTE::isReadyForData()) {
             CryptoData fail{};
             fail.success = false;
             NetworkErrorHandler::showIfError("Crypto", "Aucune connexion reseau");
@@ -249,25 +243,7 @@ public:
         newData.coins[2] = {"solana",   "Solana",   "SOL", 0x9945FF, 0, 0, false};
 
         String url = CRYPTO_API_URL;
-        String payload;
-
-        if (use_wifi) {
-            // --- CORRECTION HTTPS ICI ---
-            WiFiClientSecure secureClient;
-            secureClient.setInsecure(); // On ignore la validation stricte du certificat pour simplifier
-            
-            HTTPClient http;
-            http.setTimeout(10000);
-            http.begin(secureClient, url); // On passe le client sécurisé
-            int code = http.GET();
-            watchdog_update();
-            if (code == 200) {
-                payload = http.getString();
-            }
-            http.end();
-        } else {
-            payload = LTE::httpGetBlocking(url);
-        }
+        String payload = LTE::httpGetBlocking(url);
         watchdog_update();
 
         if (payload.length() > 0) {

@@ -117,6 +117,7 @@ private:
 
         settings::setVolume((uint8_t)val);
 
+
         char buf[16];
         snprintf(buf, sizeof(buf), "%d%%", val);
         lv_label_set_text(self->lbl_volume_val, buf);

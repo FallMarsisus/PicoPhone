@@ -9,6 +9,7 @@
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
 #include "../system/NetworkErrorHandler.h"
+#include "../system/LTE.h"
 
 namespace bambu_cfg {
     static constexpr const char* DEVICE_ID = "0309DA542100818";
@@ -273,9 +274,9 @@ public:
     void update1() override {
         watchdog_update();
 
-        // 1. Vérification du WiFi
-        if (WiFi.status() != WL_CONNECTED) {
-            NetworkErrorHandler::showIfError("Bambu", "WiFi non connecté");
+        // 1. Vérification de la connectivité LTE
+        if (!LTE::isReadyForData()) {
+            NetworkErrorHandler::showIfError("Bambu", "LTE non connectee");
             return;
         }
 

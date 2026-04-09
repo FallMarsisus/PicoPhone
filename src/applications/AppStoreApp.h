@@ -3,15 +3,13 @@
 
 #include "../App.h"
 #include "../AppManager.h"
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <lvgl.h>
 #include <hardware/watchdog.h>
 #include <pico/mutex.h>
 #include <vector>
+#include "../system/LTE.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  URL de base du dépôt d'applications
@@ -69,28 +67,8 @@ private:
     // ─── Utilitaires réseau (Core 1 uniquement) ──────────────
 
     String httpGet(const String& url) {
-        if (WiFi.status() != WL_CONNECTED) return "";
-        HTTPClient http;
-        WiFiClientSecure sec;
-        WiFiClient plain;
-        if (url.startsWith("https")) {
-            sec.setInsecure();
-            http.begin(sec, url);
-        } else {
-            http.begin(plain, url);
-        }
-        http.setTimeout(8000);
-        watchdog_update();
-        int code = http.GET();
-        watchdog_update();
-        String result = "";
-        if (code == 200) {
-            result = http.getString();
-        } else {
-            Serial.printf("[AppStore] GET %s → %d\n", url.c_str(), code);
-        }
-        http.end();
-        return result;
+        if (!LTE::isReadyForData()) return "";
+        return LTE::httpGetBlocking(url);
     }
 
     // ─── Vérifie si une app est déjà installée ──────────────
@@ -191,8 +169,8 @@ private:
         data.success = false;
         data.apps.clear();
         
-        if (WiFi.status() != WL_CONNECTED) {
-            data.error_msg = "Pas de WiFi";
+        if (!LTE::isReadyForData()) {
+            data.error_msg = "LTE indisponible";
             return;
         }
 

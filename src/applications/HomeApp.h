@@ -169,7 +169,7 @@ public:
         if (millis() - last_check > 2000) {
             last_check = millis();
             
-            if (WiFi.status() == WL_CONNECTED) {
+            if (LTE::isReadyForData()) {
                 lv_obj_set_style_text_color(wifi_label, lv_color_white(), 0);
             } else {
                 lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x555555), 0);

@@ -3,8 +3,6 @@
 #include "App.h"
 #include "AppManager.h"
 #include <lvgl.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <vector>
 #include <pico/mutex.h>
@@ -224,10 +222,7 @@ public:
             return;
         }
 
-        bool use_wifi = (WiFi.status() == WL_CONNECTED);
-        bool use_lte  = (!use_wifi && LTE::isReadyForData());
-
-        if (!use_wifi && !use_lte) {
+        if (!LTE::isReadyForData()) {
             NewsData fail{};
             fail.success = false;
             NetworkErrorHandler::showIfError("Actualites", "Aucune connexion reseau");
@@ -249,21 +244,7 @@ public:
         NewsData newData{};
         newData.success = false;
         String url = NEWS_API_URL;
-        String payload;
-
-        if (use_wifi) {
-            HTTPClient http;
-            http.setTimeout(10000);
-            http.begin(url);
-            int code = http.GET();
-            watchdog_update();
-            if (code == 200) {
-                payload = http.getString();
-            }
-            http.end();
-        } else {
-            payload = LTE::httpGetBlocking(url);
-        }
+        String payload = LTE::httpGetBlocking(url);
         watchdog_update();
 
         if (payload.length() > 0) {

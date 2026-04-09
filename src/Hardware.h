@@ -479,7 +479,8 @@ void showPowerMenu() {
 
 // --- FONCTION SONORE ---
 void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
-    static AudioOutputI2S out;
+    // Non-static pour assurer une réinitialisation propre à chaque appel
+    AudioOutputI2S out;
 
     audio_amp_enable(true);
 
@@ -487,11 +488,13 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     out.SetBitsPerSample(16);
     out.SetChannels(2);
     out.SetOutputModeMono(true);
+    out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 1.0f) gain = 1.0f;
     out.SetGain(gain);
-    out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+    
     if (!out.begin()) {
+        Serial.println("[AUDIO] Test tone: out.begin() failed!");
         audio_pins_quiet();
         return;
     }
@@ -499,7 +502,10 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     const int sampleRate = 44100;
     const int half_period = (freq > 0) ? (sampleRate / freq / 2) : 0;
     const int samples = (sampleRate * duration_ms) / 1000;
-    if (half_period <= 0 || samples <= 0) return;
+    if (half_period <= 0 || samples <= 0) {
+        out.stop();
+        return;
+    }
 
     int16_t amp = 12000;
     int count = 0;
@@ -523,7 +529,8 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
 
     out.flush();
     out.stop();
-    audio_pins_quiet();
+    // On garde l'ampli aligné avec le volume utilisateur au lieu de forcer un shutdown complet.
+    audio_amp_enable(settings::getVolume() > 0);
 }
 
 // --- LECTURE TACTILE CAPACITIF I2C ---
@@ -714,7 +721,7 @@ inline void hardware_deferred_init() {
     es8311_init();
     boot_stage("audio codec init ok");
     
-    audio_amp_enable(true);
+    audio_amp_enable(settings::getVolume() > 0);
     boot_stage("audio amp enabled");
 
     boot_stage("sim probe start", TFT_CYAN);

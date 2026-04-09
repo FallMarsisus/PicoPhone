@@ -687,8 +687,10 @@ public:
             sendAT("AT+CREG=1",       1000); // Active les notifications réseau
             sendAT("AT+CGREG=1",      1000); 
             
-            // On a supprimé AT+CGATT=1 et preparePacketDataContext() ici.
-            // On le laisse chercher le réseau tranquillement en arrière-plan.
+            Logger::println("[LTE] Configuration du moteur SSL...");
+            sendAT("AT+CSSLCFG=\"sslversion\",0,3", 1000); // Accepter TLS 1.2
+            sendAT("AT+CSSLCFG=\"authmode\",0,0", 1000);   // Ne pas exiger de certificat
+            sendAT("AT+CSSLCFG=\"ignorelocaltime\",0,1", 1000); // Ignorer l'expiration locale
             
             Logger::println("[LTE] Modem prêt ! En attente d'accroche réseau...");
         } else {
@@ -770,7 +772,7 @@ public:
         return true;
     }
 
-    static String httpGetBlocking(const String& url) {
+    static String httpGetBlocking(const String& url, const String& extraHeaders = "") {
         const size_t MAX_HTTP = 16000;
 
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed) {
@@ -793,6 +795,21 @@ public:
             if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
                 sendAT("AT+HTTPTERM", 500);
                 continue;
+            }
+
+            if (extraHeaders.length() > 0) {
+                sendAT("AT+HTTPTERM", 500);
+                continue;
+            }
+
+            if (extraHeaders.length() > 0) {
+                String headers = extraHeaders;
+                headers.replace("\r", "");
+                headers.replace("\n", "\\r\\n");
+                if (sendAT("AT+HTTPPARA=\"USERDATA\",\"" + headers + "\"", 2000).indexOf("OK") == -1) {
+                    sendAT("AT+HTTPTERM", 500);
+                    continue;
+                }
             }
 
             Logger::println("[LTE->GSM] AT+HTTPACTION=0");
@@ -921,6 +938,208 @@ public:
             if (body.length() > 0) {
                 s_http_busy = false;
                 return body;
+            }
+        }
+
+        s_http_busy = false;
+        return "";
+    }
+
+    static String httpPostBlocking(const String& url,
+                                   const String& body,
+                                   const String& contentType = "application/json",
+                                   const String& extraHeaders = "") {
+        const size_t MAX_HTTP = 16000;
+
+        if (!s_enabled || s_airplane_mode || !s_modem_confirmed) {
+            return "";
+        }
+
+        s_http_busy = true;
+
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            Logger::printf("[LTE HTTP] POST %s (%d/2)\n", url.c_str(), attempt);
+
+            if (!preparePacketDataContext()) continue;
+
+            sendAT("AT+HTTPTERM", 1000);
+            sleep_ms(100);
+
+            if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1) continue;
+
+            if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
+                sendAT("AT+HTTPTERM", 500);
+                continue;
+            }
+
+            if (extraHeaders.length() > 0) {
+                sendAT("AT+HTTPTERM", 500);
+                continue;
+            }
+
+            if (contentType.length() > 0) {
+                if (sendAT("AT+HTTPPARA=\"CONTENT\",\"" + contentType + "\"", 2000).indexOf("OK") == -1) {
+                    sendAT("AT+HTTPTERM", 500);
+                    continue;
+                }
+            }
+
+            if (extraHeaders.length() > 0) {
+                String headers = extraHeaders;
+                headers.replace("\r", "");
+                headers.replace("\n", "\\r\\n");
+                if (sendAT("AT+HTTPPARA=\"USERDATA\",\"" + headers + "\"", 2000).indexOf("OK") == -1) {
+                    sendAT("AT+HTTPTERM", 500);
+                    continue;
+                }
+            }
+
+            int body_len = body.length();
+            Logger::printf("[LTE HTTP] POST payload: %d octets\n", body_len);
+            Serial1.println(String("AT+HTTPDATA=") + body_len + ",10000");
+
+            String data_resp = "";
+            unsigned long data_start = millis();
+            while (millis() - data_start < 8000) {
+                watchdog_update();
+                while (Serial1.available()) data_resp += (char)Serial1.read();
+                if (data_resp.indexOf("DOWNLOAD") != -1) break;
+                if (data_resp.indexOf("ERROR") != -1) break;
+                sleep_ms(10);
+            }
+
+            if (data_resp.indexOf("DOWNLOAD") == -1) {
+                sendAT("AT+HTTPTERM", 500);
+                continue;
+            }
+
+            Serial1.print(body);
+
+            String data_ok = "";
+            unsigned long data_ok_start = millis();
+            while (millis() - data_ok_start < 12000) {
+                watchdog_update();
+                while (Serial1.available()) data_ok += (char)Serial1.read();
+                if (data_ok.indexOf("OK") != -1 || data_ok.indexOf("ERROR") != -1) break;
+                sleep_ms(10);
+            }
+
+            if (data_ok.indexOf("OK") == -1) {
+                sendAT("AT+HTTPTERM", 500);
+                continue;
+            }
+
+            Logger::println("[LTE->GSM] AT+HTTPACTION=1");
+            Serial1.println("AT+HTTPACTION=1");
+
+            unsigned long start = millis();
+            String resp = "";
+            int http_code = -1;
+            int data_len = 0;
+
+            while (millis() - start < 20000) {
+                watchdog_update();
+                while (Serial1.available()) {
+                    resp += (char)Serial1.read();
+                }
+
+                int idx = resp.indexOf("+HTTPACTION:");
+                if (idx != -1) {
+                    String part = resp.substring(idx + 12);
+                    int c1 = part.indexOf(',');
+                    int c2 = part.indexOf(',', c1 + 1);
+
+                    if (c1 > 0 && c2 > c1) {
+                        http_code = part.substring(c1 + 1, c2).toInt();
+                        data_len = part.substring(c2 + 1).toInt();
+                        break;
+                    }
+                }
+                sleep_ms(10);
+            }
+
+            Logger::printf("[LTE HTTP] HTTPACTION Code: %d, Taille: %d octets\n", http_code, data_len);
+
+            if (http_code < 200 || http_code >= 300 || data_len < 0) {
+                sendAT("AT+HTTPTERM", 500);
+                continue;
+            }
+
+            if (data_len > MAX_HTTP) {
+                Logger::printf("[LTE HTTP] ATTENTION: Reponse trop grande. Troncature a %d.\n", MAX_HTTP);
+                data_len = MAX_HTTP;
+            }
+
+            sleep_ms(300);
+            while (Serial1.available()) Serial1.read();
+
+            Serial1.print("AT+HTTPREAD=");
+            Serial1.println(data_len);
+
+            String out = "";
+            out.reserve(data_len + 1);
+            int total_read = 0;
+            unsigned long global_timeout = millis();
+
+            while (total_read < data_len && millis() - global_timeout < 25000) {
+                watchdog_update();
+
+                String header = "";
+                bool header_ok = false;
+                int chunk_expected = 0;
+                unsigned long t0 = millis();
+
+                while (millis() - t0 < 5000) {
+                    watchdog_update();
+                    while (Serial1.available()) {
+                        char c = Serial1.read();
+                        header += c;
+
+                        if (header.indexOf("ERROR") != -1) break;
+
+                        if (c == '\n' && header.indexOf("+HTTPREAD:") != -1) {
+                            int p = header.indexOf("+HTTPREAD:");
+                            int col = header.indexOf(':', p);
+                            chunk_expected = header.substring(col + 1).toInt();
+                            header_ok = true;
+                            break;
+                        }
+                    }
+                    if (header_ok || header.indexOf("ERROR") != -1) break;
+                    delayMicroseconds(500);
+                }
+
+                if (!header_ok || chunk_expected <= 0) {
+                    break;
+                }
+
+                int chunk_read = 0;
+                unsigned long t1 = millis();
+
+                while (chunk_read < chunk_expected && millis() - t1 < 5000) {
+                    watchdog_update();
+                    if (Serial1.available()) {
+                        while (Serial1.available() && chunk_read < chunk_expected) {
+                            out += (char)Serial1.read();
+                            chunk_read++;
+                            total_read++;
+                        }
+                        t1 = millis();
+                    } else {
+                        delayMicroseconds(200);
+                    }
+                }
+
+                if (chunk_read != chunk_expected) {
+                    break;
+                }
+            }
+
+            sendAT("AT+HTTPTERM", 500);
+
+            if (out.length() > 0 || data_len == 0) {
+                s_http_busy = false;
+                return out;
             }
         }
 

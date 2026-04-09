@@ -5,11 +5,9 @@
 #include "../AppManager.h"
 #include <lvgl.h>
 #include <LittleFS.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <hardware/watchdog.h>
 #include <ArduinoJson.h>
+#include "../system/LTE.h"
 extern "C" {
     #include "../plugins/pika/pikaScript.h"
     #include "../plugins/pika/PikaObj.h"
@@ -127,67 +125,40 @@ extern "C" void pika_app_go_home(void) {
 }
 
 extern "C" const char* pika_app_http_get(const char* url) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[HTTP] Pas de WiFi");
+    if (!LTE::isReadyForData()) {
+        Serial.println("[HTTP] LTE indisponible");
         return NULL;
     }
-    HTTPClient http;
-    WiFiClientSecure secureClient;
-    WiFiClient plainClient;
-    if (strncmp(url, "https", 5) == 0) {
-        secureClient.setInsecure();
-        http.begin(secureClient, url);
-    } else {
-        http.begin(plainClient, url);
-    }
-    http.setTimeout(10000);
     watchdog_update();
-    int code = http.GET();
+    _pika_http_response_buf = LTE::httpGetBlocking(String(url));
     watchdog_update();
-    if (code <= 0) {
-        Serial.printf("[HTTP GET] Echec code=%d\n", code);
-        http.end();
+    if (_pika_http_response_buf.length() == 0) {
+        Serial.println("[HTTP GET] Echec LTE");
         return NULL;
     }
-    _pika_http_response_buf = http.getString();
-    http.end();
     if (_pika_http_response_buf.length() > 16384) {
         _pika_http_response_buf = _pika_http_response_buf.substring(0, 16384);
     }
-    Serial.printf("[HTTP GET] OK %d, %d bytes\n", code, _pika_http_response_buf.length());
+    Serial.printf("[HTTP GET] OK, %d bytes\n", _pika_http_response_buf.length());
     return _pika_http_response_buf.c_str();
 }
 
 extern "C" const char* pika_app_http_post(const char* url, const char* body, const char* content_type) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[HTTP] Pas de WiFi");
+    if (!LTE::isReadyForData()) {
+        Serial.println("[HTTP] LTE indisponible");
         return NULL;
     }
-    HTTPClient http;
-    WiFiClientSecure secureClient;
-    WiFiClient plainClient;
-    if (strncmp(url, "https", 5) == 0) {
-        secureClient.setInsecure();
-        http.begin(secureClient, url);
-    } else {
-        http.begin(plainClient, url);
-    }
-    http.setTimeout(10000);
-    http.addHeader("Content-Type", content_type);
     watchdog_update();
-    int code = http.POST((uint8_t*)body, strlen(body));
+    _pika_http_response_buf = LTE::httpPostBlocking(String(url), String(body ? body : ""), String(content_type ? content_type : "application/json"));
     watchdog_update();
-    if (code <= 0) {
-        Serial.printf("[HTTP POST] Echec code=%d\n", code);
-        http.end();
+    if (_pika_http_response_buf.length() == 0) {
+        Serial.println("[HTTP POST] Echec LTE");
         return NULL;
     }
-    _pika_http_response_buf = http.getString();
-    http.end();
     if (_pika_http_response_buf.length() > 16384) {
         _pika_http_response_buf = _pika_http_response_buf.substring(0, 16384);
     }
-    Serial.printf("[HTTP POST] OK %d, %d bytes\n", code, _pika_http_response_buf.length());
+    Serial.printf("[HTTP POST] OK, %d bytes\n", _pika_http_response_buf.length());
     return _pika_http_response_buf.c_str();
 }
 
