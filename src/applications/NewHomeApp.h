@@ -6,6 +6,7 @@
 #include <vector>
 #include "App.h"
 #include "AppManager.h"
+#include <WiFi.h>
 #include "../system/Battery.h"
 #include "../system/Settings.h"
 #include "../system/LTE.h"
@@ -19,7 +20,7 @@ private:
     lv_obj_t* main_bg;
     lv_obj_t* bg_img;
     lv_obj_t* top_bar_cont; 
-    lv_obj_t* network_label;
+    lv_obj_t* wifi_label;
     lv_obj_t* time_label;
     lv_obj_t* batt_icon;
     lv_obj_t* signal_icon = nullptr;
@@ -757,10 +758,10 @@ private:
         lv_obj_set_style_text_font(signal_icon, &lv_font_montserrat_12, 0);
         lv_obj_align(signal_icon, LV_ALIGN_LEFT_MID, 0, 0);
 
-        network_label = lv_label_create(icon_zone);
-        lv_label_set_text(network_label, LV_SYMBOL_CALL);
-        lv_obj_set_style_text_color(network_label, lv_color_hex(0x323232), 0);
-        lv_obj_align(network_label, LV_ALIGN_LEFT_MID, 30, 0);
+        wifi_label = lv_label_create(icon_zone);
+        lv_label_set_text(wifi_label, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x323232), 0);
+        lv_obj_align(wifi_label, LV_ALIGN_LEFT_MID, 30, 0);
         
         time_label = lv_label_create(top_bar_cont);
         lv_label_set_text(time_label, "00:00");
@@ -848,8 +849,8 @@ public:
         static unsigned long last_check = 0;
         if (now_ms - last_check > 3000) {
             last_check = now_ms;
-            if (LTE::isReadyForData()) lv_obj_set_style_text_color(network_label, lv_color_hex(0x232323), 0);
-            else lv_obj_set_style_text_color(network_label, lv_color_hex(0xC1C1C1), 0);
+            if (LTE::isReadyForData()) lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x232323), 0);
+            else lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xC1C1C1), 0);
         }
 
         static unsigned long last_time_update = 0;
@@ -920,7 +921,7 @@ public:
         btn_next = nullptr;
         quick_actions_cont = nullptr;
         top_bar_cont = nullptr;
-        network_label = nullptr;
+        wifi_label = nullptr;
         time_label = nullptr;
         batt_icon = nullptr;
         bg_img = nullptr;

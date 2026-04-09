@@ -7,6 +7,7 @@
 #include "../system/LTE.h"
 #include "../system/HomeConfig.h"
 #include "../plugins/lv_t9_keyboard.h"
+#include <WiFi.h>
 #include <RP2040Support.h>
 #include <time.h>
 #include <vector>
@@ -53,6 +54,7 @@ private:
     
     // --- EVENTS ---
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
+    static void open_wifi_event(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
 
     // === REORDER PANEL ===
     // Selectionner une app dans la liste de reordonnancement
@@ -717,6 +719,15 @@ private:
         // ===== SECTION: SYSTEME =====
         createSection(list_cont, "SYSTEME");
 
+        // WiFi (deplace depuis l'ecran d'accueil)
+        lv_obj_t* row_wifi = createSettingRow(list_cont, "WiFi");
+        lv_obj_t* chevron_wifi = lv_label_create(row_wifi);
+        lv_label_set_text(chevron_wifi, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_wifi, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_wifi, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_wifi, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_wifi, open_wifi_event, LV_EVENT_CLICKED, this);
+        
         // Sync time auto
         lv_obj_t* row_sync_time = createSettingRow(list_cont, "Synchro heure auto");
         lv_obj_t* chevron_sync = lv_label_create(row_sync_time);

@@ -9,7 +9,6 @@
 #include <ArduinoJson.h>
 #include "../system/BackgroundServices.h"
 #include "../system/NotificationCenter.h"
-#include "../system/LTE.h"
 #include "../system/Secrets.h"
 
 class TelegramNotifyService : public IBackgroundService {
@@ -144,7 +143,7 @@ public:
 
     void update1() override {
         if (!bot) return;
-        if (!LTE::isReadyForData()) return;
+        if (WiFi.status() != WL_CONNECTED) return;
 
         const unsigned long now = millis();
         if ((now - last_check) < POLL_MS) return;

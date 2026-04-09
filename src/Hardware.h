@@ -308,30 +308,38 @@ void system_power_off() {
     system_is_shutting_down = true;
     sleep_ms(50);
 
-    // 2. EXTINCTION DU MODEM LTE (via PWRKEY)
+    // 2. COUPURE DU WIFI ET BLUETOOTH DU PICO W
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    sleep_ms(100);
+
+    // LTE::setLowPower(true);
+    watchdog_update();
+
+    // 3. EXTINCTION DU MODEM A7670E via PWRKEY
     Serial.println("[LTE] Extinction matérielle via PWRKEY...");
     pinMode(A7670_PWRKEY, OUTPUT);
     digitalWrite(A7670_PWRKEY, HIGH);  // Pin inversé: HIGH pour éteindre
     sleep_ms(1500);
 
-    // 3. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
+    // 4. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
     Serial1.end();
     pinMode(SIM800_TX, INPUT);
     pinMode(SIM800_RX, INPUT);
     pinMode(A7670_PWRKEY, INPUT);
 
-    // 4. COUPURE DE L'AUDIO
+    // 5. COUPURE DE L'AUDIO
     audio_pins_quiet(); 
     // IMPORTANT : Si vous avez relié SD_MODE du MAX98357 à un pin (ex: GP20)
     // pinMode(20, OUTPUT); digitalWrite(20, LOW); // Force le Shutdown total de l'ampli
 
-    // 5. EXTINCTION DE L'ÉCRAN
+    // 6. EXTINCTION DE L'ÉCRAN
     digitalWrite(LCD_BL_PIN, LOW);
     tft.writecommand(0x28); // Display OFF
     tft.writecommand(0x10); // Sleep IN
     sleep_ms(50);
 
-    // 6. VERROUILLAGE DES PINS FLOTTANTS (CRUCIAL CONTRE LES FUITES)
+    // 7. VERROUILLAGE DES PINS FLOTTANTS (CRUCIAL CONTRE LES FUITES)
     SPI.end();
     Wire.end();
 
@@ -352,7 +360,7 @@ void system_power_off() {
     Serial.println("[POWER] CPU Zzz...");
     Serial.flush(); 
 
-    // 7. BAISSE DE L'HORLOGE ET DODO PROFOND
+    // 8. BAISSE DE L'HORLOGE ET DODO PROFOND
     // On passe le RP2040 de 133 MHz à 2 MHz (fait chuter la conso du processeur à ~1mA)
     set_sys_clock_khz(20000, true);
 

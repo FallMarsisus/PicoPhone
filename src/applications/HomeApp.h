@@ -6,8 +6,8 @@
 #include <vector>
 #include "App.h"
 #include "AppManager.h"
+#include <WiFi.h>
 #include "../system/Battery.h"
-#include "../system/LTE.h"
 #include "../system/Settings.h"
 #include "../system/HomeConfig.h"
 #include "./PythonApp.h"
@@ -15,7 +15,7 @@
 class HomeApp : public App {
 private:
     lv_obj_t* main_bg;
-    lv_obj_t* network_label;
+    lv_obj_t* wifi_label;
     lv_obj_t* timel;
     lv_obj_t* batt_label;
     lv_obj_t* batt_icon;
@@ -107,6 +107,7 @@ public:
         
         // Charger la configuration des apps
         homeConfig::loadConfig(homeApps);
+        homeConfig::removeAppById(homeApps, "wifi");
         
         // Fond dégradé sombre
         lv_obj_set_style_bg_color(parent, lv_color_hex(0x0a0a0a), 0);
@@ -131,10 +132,10 @@ public:
         lv_obj_set_style_text_font(timel, &lv_font_montserrat_14, 0);
         lv_obj_align(timel, LV_ALIGN_LEFT_MID, 8, 0);
 
-        network_label = lv_label_create(bar);
-        lv_label_set_text(network_label, LV_SYMBOL_CALL);
-        lv_obj_set_style_text_color(network_label, lv_color_hex(0x555555), 0);
-        lv_obj_align(network_label, LV_ALIGN_RIGHT_MID, -50, 0);
+        wifi_label = lv_label_create(bar);
+        lv_label_set_text(wifi_label, LV_SYMBOL_WIFI);
+        lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x555555), 0);
+        lv_obj_align(wifi_label, LV_ALIGN_RIGHT_MID, -50, 0);
 
         batt_label = lv_label_create(bar);
         lv_label_set_text(batt_label, "--%");
@@ -163,15 +164,15 @@ public:
     }
 
     void update() override {
-        // Statut réseau LTE toutes les 2s
+        // WiFi status toutes les 2s
         static unsigned long last_check = 0;
         if (millis() - last_check > 2000) {
             last_check = millis();
-
+            
             if (LTE::isReadyForData()) {
-                lv_obj_set_style_text_color(network_label, lv_color_white(), 0);
+                lv_obj_set_style_text_color(wifi_label, lv_color_white(), 0);
             } else {
-                lv_obj_set_style_text_color(network_label, lv_color_hex(0x555555), 0);
+                lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x555555), 0);
             }
         }
 

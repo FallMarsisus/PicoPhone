@@ -13,6 +13,7 @@ extern void hardware_set_volume(int vol);  // Déclaration forward pour ControlC
 #include <lvgl.h>
 #include <Arduino.h>
 #include "LTE.h"
+#include <WiFi.h>
 #include "Battery.h"
 #include "Settings.h"
 #include "../Hardware.h"
@@ -45,6 +46,7 @@ private:
     lv_obj_t *lbl_volume_val = nullptr;
     lv_obj_t *slider_volume = nullptr;
 
+    lv_obj_t *btn_wifi     = nullptr;
     lv_obj_t *btn_son      = nullptr;
     lv_obj_t *btn_4g       = nullptr;
     lv_obj_t *btn_airplane = nullptr;
@@ -129,6 +131,26 @@ private:
             // Petit délai pour laisser le codec se stabiliser, puis jouer un beep audio
             delayMicroseconds(20000);  // 20ms pour stabilisation
             i2s_play_test_tone(350 + val * 7, 30, gain);  // Augmenté: 12ms → 30ms pour être clairement audible
+        }
+    }
+
+    static void wifi_toggle_event(lv_event_t *e)
+    {
+        ControlCenter *self = (ControlCenter *)lv_event_get_user_data(e);
+        bool enabled = settings::isWifiEnabled();
+
+        if (enabled)
+        {
+            WiFi.disconnect();
+            WiFi.mode(WIFI_OFF);
+            settings::setWifiEnabled(false);
+            set_btn_state(self->btn_wifi, false, 0x007AFF);
+        }
+        else
+        {
+            WiFi.mode(WIFI_STA);
+            settings::setWifiEnabled(true);
+            set_btn_state(self->btn_wifi, true, 0x007AFF);
         }
     }
 
@@ -376,11 +398,13 @@ private:
         lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
 
+        bool wifi_on = settings::isWifiEnabled();
         uint8_t cur_vol = settings::getVolume();
 
-        btn_son      = createRoundBtn(panel_top, LV_SYMBOL_BELL,  son_toggle_event,      30,  8, cur_vol > 0,           0xFF9500);
-        btn_4g       = createRoundBtn(panel_top, LV_SYMBOL_CALL,  lte_toggle_event,      120, 8, LTE::isEnabled(),      0x34C759);
-        btn_airplane = createRoundBtn(panel_top, "\xE2\x9C\x88", airplane_toggle_event, 210, 8, LTE::isAirplaneMode(), 0xFF3B30);
+        btn_wifi     = createRoundBtn(panel_top, LV_SYMBOL_WIFI,  wifi_toggle_event,     3, 8, wifi_on,              0x007AFF);
+        btn_son      = createRoundBtn(panel_top, LV_SYMBOL_BELL,  son_toggle_event,      73, 8, cur_vol > 0,         0xFF9500);
+        btn_4g       = createRoundBtn(panel_top, LV_SYMBOL_CALL,  lte_toggle_event,      143, 8, LTE::isEnabled(),   0x34C759);
+        btn_airplane = createRoundBtn(panel_top, "\xE2\x9C\x88", airplane_toggle_event, 213, 8, LTE::isAirplaneMode(), 0xFF3B30);
 
         lv_obj_t *sep = lv_obj_create(panel_top);
         lv_obj_set_size(sep, 240, 2);
