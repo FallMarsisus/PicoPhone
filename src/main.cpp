@@ -1,11 +1,8 @@
 #include <Arduino.h>
-#include <WiFi.h>
-#include <ArduinoOTA.h>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
 #include "Hardware.h"
 #include "AppManager.h"
-#include "WifiStore.h"
 #include "system/Settings.h"
 #include "system/NotificationCenter.h"
 #include "system/LockScreen.h"
@@ -13,7 +10,6 @@
 #include "services/CastService.h"
 #include "applications/HomeApp.h"
 #include "applications/BootloaderApp.h"
-#include "applications/WifiApp.h"
 #include "applications/WalletApp.h"
 #include "applications/TouchCalibApp.h"
 #include "applications/WeatherApp.h"
@@ -106,9 +102,6 @@ void loadApp(AppID id) {
             break;
         case APP_BOOTLOADER:
             currentApp = new BootloaderApp();
-            break;
-        case APP_WIFI:
-            currentApp = new WifiApp();
             break;
         case APP_WALLET:
             currentApp = new WalletApp();
@@ -246,13 +239,6 @@ void setup() {
     boot_stage("hardware_init done", TFT_GREEN);
     Serial.println("[BOOT] hardware_init ok");
 
-
-    
-    // WiFi (auto-connect en arrière-plan)
-    wifi_store::autoconnect_init();
-    boot_stage("wifi init done");
-    Serial.println("[BOOT] wifi init ok");
-    
     // Charger les paramètres et appliquer la luminosité
     settings::applyBrightness();
     boot_stage("settings brightness done");
@@ -308,10 +294,7 @@ void loop() {
     lv_timer_handler();
     yield();
 
-    // Auto-connexion WiFi (non bloquant, respecte les paramètres)
-    
-
-    feed_watchdog(); // Nourrir aussi après WiFi (peut être lent)
+    feed_watchdog();
 
     manager.update();
     background_services::manager().update();
@@ -370,16 +353,11 @@ void loop1() {
 
     core1_heartbeat = millis();
 
-    if (settings::isWifiEnabled()) {
-        wifi_store::autoconnect_tick();
-    }
-
     background_services::manager().update1();
 
-    // Retirez le mutex autour de update1()
-if (currentApp) {
-    currentApp->update1();
-}
+    if (currentApp) {
+        currentApp->update1();
+    }
 
     watchdog_update();
 

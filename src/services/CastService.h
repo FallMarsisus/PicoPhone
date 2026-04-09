@@ -3,11 +3,11 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
-#include <WiFi.h>
 #include <ArduinoJson.h>
-#include "pico/mutex.h" // <-- Utilisation du mutex natif du SDK Pico
+#include "pico/mutex.h"
 #include "../system/BackgroundServices.h"
 #include "../system/NotificationCenter.h"
+#include "../system/LTE.h"
 
 class CastService : public IBackgroundService {
 private:
@@ -31,7 +31,7 @@ private:
     volatile bool req_prev = false;
 
     void send_command(const String& endpoint) {
-        if (WiFi.status() != WL_CONNECTED) return;
+        if (!LTE::isReadyForData()) return;
         HTTPClient http;
         http.setTimeout(2500);
         http.begin(castEndpoint + endpoint);
@@ -61,7 +61,7 @@ public:
     }
 
     void update1() override {
-        if (WiFi.status() != WL_CONNECTED) return;
+        if (!LTE::isReadyForData()) return;
 
         // Dépilement asynchrone des commandes UI
         if (req_toggle) { req_toggle = false; send_command("/toggle"); last_check = millis() - CAST_POLL_MS + 2000; return; }

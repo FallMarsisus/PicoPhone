@@ -81,7 +81,6 @@ namespace homeConfig {
         {"sms",       "SMS",          LV_SYMBOL_KEYBOARD,  0xFF5722, APP_SMS, ""},
         {"telegram",  "Telegram",     LV_SYMBOL_GPS,       0x2196F3, APP_TELEGRAM, ""},
         {"velib",     "Velib",        "V",                 0x9C27B0, APP_VELIB, ""},
-        {"wifi",      "WiFi",         LV_SYMBOL_WIFI,      0x00BCD4, APP_WIFI, ""},
         {"webradio",  "Radio",        LV_SYMBOL_HOME,      0x607D8B, APP_WEBRADIO, ""},
         {"store",     "Store",        LV_SYMBOL_DOWNLOAD,  0x1565C0, APP_STORE, ""},
         {"crypto",    "Crypto",       LV_SYMBOL_CHARGE,    0xF7931A, APP_CRYPTO, ""},
@@ -89,7 +88,7 @@ namespace homeConfig {
         {"bambu",     "Bambu",        LV_SYMBOL_SETTINGS,  0x00A86B, APP_BAMBU, ""},
         {"chatbot",   "Gemini",       "AI",              0x7C4DFF, APP_CHATBOT, ""},
     };
-    const int ALL_APPS_COUNT = 20;
+    const int ALL_APPS_COUNT = 19;
 
     // Charge la config. Si pas de fichier -> toutes les apps par defaut.
     bool loadConfig(std::vector<HomeAppEntry>& apps) {
