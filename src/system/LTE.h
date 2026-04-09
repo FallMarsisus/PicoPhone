@@ -781,6 +781,8 @@ public:
 
         s_http_busy = true;
 
+        const bool is_https = url.startsWith("https://");
+
         for (int attempt = 1; attempt <= 2; attempt++) {
 
             Logger::printf("[LTE HTTP] GET %s (%d/2)\n", url.c_str(), attempt);
@@ -792,9 +794,11 @@ public:
 
             if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1) continue;
 
-            // 1. Activer le SSL si l'URL commence par https
-            if (url.startsWith("https://")) {
-                sendAT("AT+HTTPPARA=\"SSLCFG\",0", 1000);
+            if (is_https) {
+                if (sendAT("AT+HTTPPARA=\"SSLCFG\",0", 2000).indexOf("OK") == -1) {
+                    sendAT("AT+HTTPTERM", 500);
+                    continue;
+                }
             }
 
             if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
@@ -948,6 +952,8 @@ public:
 
         s_http_busy = true;
 
+        const bool is_https = url.startsWith("https://");
+
         for (int attempt = 1; attempt <= 2; attempt++) {
             Logger::printf("[LTE HTTP] POST %s (%d/2)\n", url.c_str(), attempt);
 
@@ -958,12 +964,14 @@ public:
 
             if (sendAT("AT+HTTPINIT", 3000).indexOf("OK") == -1) continue;
 
-            if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
-                sendAT("AT+HTTPTERM", 500);
-                continue;
+            if (is_https) {
+                if (sendAT("AT+HTTPPARA=\"SSLCFG\",0", 2000).indexOf("OK") == -1) {
+                    sendAT("AT+HTTPTERM", 500);
+                    continue;
+                }
             }
 
-            if (extraHeaders.length() > 0) {
+            if (sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 3000).indexOf("OK") == -1) {
                 sendAT("AT+HTTPTERM", 500);
                 continue;
             }
@@ -1238,7 +1246,8 @@ public:
             }
             return;
         }
-unsigned long state_timeout = 3000UL;
+
+        unsigned long state_timeout = 3000UL;
         if (state == 1) state_timeout = 45000UL; // 45 sec pour la recherche d'opérateur
         else if (state == 3) state_timeout = 5000UL;
         else if (state == 5) state_timeout = 15000UL; // Le serveur NTP peut mettre 10 secondes à répondre

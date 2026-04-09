@@ -9,8 +9,7 @@
 static inline void audio_amp_enable(bool enable);
 
 /**
- * Paramètres système persistants (stockés en EEPROM après le bloc WiFi).
- * Offset choisi à 1024 pour ne pas interférer avec WifiStore (Blob ~600 octets).
+ * Paramètres système persistants (stockés en EEPROM à l'offset 1024).
  */
 namespace settings {
 
@@ -35,8 +34,6 @@ struct Data {
     uint8_t brightness;      // 0-255
     // Son 
     uint8_t volume;          // 0-100
-    // WiFi
-    bool wifi_enabled;
     // Réservé pour futur usage
     uint8_t _reserved[16];
     // Checksum
@@ -65,7 +62,6 @@ static void defaults() {
     g_data.lock_timeout_ms = 30000; // 30 secondes par défaut
     g_data.brightness = 200;
     g_data.volume = 50;
-    g_data.wifi_enabled = true;
     g_data.checksum = calc_checksum(g_data);
 }
 
@@ -74,7 +70,7 @@ static void save();
 
 static void load() {
     if (g_loaded) return;
-    // S'assurer que EEPROM est initialisée (au cas où Settings est lu avant WifiStore)
+    // S'assurer que EEPROM est initialisée
     static bool eeprom_ready = false;
     if (!eeprom_ready) {
         EEPROM.begin(2048);
@@ -164,9 +160,6 @@ static void setVolume(uint8_t v) {
     audio_amp_enable(v > 0);
     save();
 }
-
-static bool isWifiEnabled() { load(); return g_data.wifi_enabled; }
-static void setWifiEnabled(bool v) { load(); g_data.wifi_enabled = v; save(); }
 
 // Appliquer la luminosité au démarrage
 static void applyBrightness() {
