@@ -869,11 +869,21 @@ public:
         if (now_ms - last_batt > 4000) {
             last_batt = now_ms;
             const uint8_t p = battery::read_percent();
-            if(p > 80) lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_FULL);
-            else if (p > 60) lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_3);
-            else if (p > 40) lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_2);
-            else if (p > 20) lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_1);
-            else lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_EMPTY);
+            const bool charging = battery::is_charging() || battery::is_external_power();
+            const bool eco_manual = battery::is_manual_saver_enabled() && !charging;
+
+            const char* icon = LV_SYMBOL_BATTERY_EMPTY;
+            if (p > 80) icon = LV_SYMBOL_BATTERY_FULL;
+            else if (p > 60) icon = LV_SYMBOL_BATTERY_3;
+            else if (p > 40) icon = LV_SYMBOL_BATTERY_2;
+            else if (p > 20) icon = LV_SYMBOL_BATTERY_1;
+
+            char batt_buf[16];
+            snprintf(batt_buf, sizeof(batt_buf), "%s%s", charging ? LV_SYMBOL_CHARGE : "", icon);
+            lv_label_set_text(batt_icon, batt_buf);
+            lv_obj_set_style_text_color(batt_icon,
+                                        eco_manual ? lv_color_hex(0xF2C94C) : lv_color_hex(0x323232),
+                                        0);
         }
 
         static unsigned long last_lte_check = 0;

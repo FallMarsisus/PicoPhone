@@ -35,7 +35,8 @@ enum AppID {
     APP_NEWS,
     APP_AIR_QUALITY,
     APP_BAMBU,
-    APP_CHATBOT
+    APP_CHATBOT,
+    APP_VECTOR_MAP,
 };
 
 class AppManager {
@@ -65,21 +66,21 @@ private:
 
     static String network_status() {
         if (LTE::isAirplaneMode()) {
-            return "Avion";
+            return "X";
         }
         if (LTE::isEnabled()) {
             int signal = LTE::getSignal();
             if (signal > 0) {
                 switch (signal) {
-                    case 1: return "1/4";
-                    case 2: return "2/4";
-                    case 3: return "3/4";
-                    default: return "4/4";
+                    case 1: return "I";
+                    case 2: return "II";
+                    case 3: return "III";
+                    default: return "IIII";
                 }
             }
-            return "Signal";
+            return "-";
         }
-        return "Off";
+        return "-";
     }
 
     void createStatusBar() {
@@ -114,14 +115,14 @@ private:
         statusNetwork = lv_label_create(statusBar);
         lv_obj_set_style_text_color(statusNetwork, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusNetwork, &lv_font_montserrat_12, 0);
-        lv_obj_set_width(statusNetwork, 44);
+        lv_obj_set_width(statusNetwork, 32);
         lv_label_set_long_mode(statusNetwork, LV_LABEL_LONG_CLIP);
-        lv_obj_align(statusNetwork, LV_ALIGN_RIGHT_MID, -40, 0);
+        lv_obj_align(statusNetwork, LV_ALIGN_RIGHT_MID, -64, 0);
 
         statusBattery = lv_label_create(statusBar);
         lv_obj_set_style_text_color(statusBattery, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusBattery, &lv_font_montserrat_12, 0);
-        lv_obj_set_width(statusBattery, 40);
+        lv_obj_set_width(statusBattery, 52);
         lv_label_set_long_mode(statusBattery, LV_LABEL_LONG_CLIP);
         lv_obj_align(statusBattery, LV_ALIGN_RIGHT_MID, 0, 0);
 
@@ -153,9 +154,19 @@ private:
 
         lv_label_set_text(statusNetwork, network_status().c_str());
 
-        uint8_t batt = battery::read_percent();
-        char batt_buf[12];
-        snprintf(batt_buf, sizeof(batt_buf), "%s %u%%", battery_icon(batt), batt);
+        const uint8_t batt = battery::read_percent();
+        const bool charging = battery::is_charging() || battery::is_external_power();
+        const bool eco_manual = battery::is_manual_saver_enabled() && !charging;
+
+        lv_obj_set_style_text_color(statusBattery,
+                        eco_manual ? lv_color_hex(0xF2C94C) : lv_color_white(),
+                        0);
+
+        char batt_buf[20];
+        snprintf(batt_buf, sizeof(batt_buf), "%s%s %u%%",
+                 charging ? LV_SYMBOL_CHARGE : "",
+                 battery_icon(batt),
+                 batt);
         lv_label_set_text(statusBattery, batt_buf);
 
         char app[20] = {0};

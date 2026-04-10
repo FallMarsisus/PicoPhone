@@ -22,6 +22,7 @@
 #include "applications/TimerApp.h"
 #include "applications/VelibApp.h"
 #include "applications/PhoneApp.h"
+#include "applications/VectorMapApp.h"
 #include "applications/SmsApp.h"
 #include "applications/WebRadioApp.h"
 #include "applications/PythonApp.h" 
@@ -67,6 +68,65 @@ static uint32_t last_mem_check = 0;
 // Watchdog : nourrir régulièrement sinon reboot auto
 static inline void feed_watchdog() {
     watchdog_update();
+}
+
+static void apply_battery_energy_policy() {
+    static uint32_t last_apply_ms = 0;
+    static bool first_apply = true;
+    static uint8_t last_brightness = 0xFF;
+    static int last_volume = -1;
+    static bool last_lte_low_power = false;
+    static battery::PowerMode last_mode = battery::PowerMode::NORMAL;
+
+    const uint32_t now = millis();
+    if (!first_apply && (now - last_apply_ms) < 1000) {
+        return;
+    }
+    last_apply_ms = now;
+
+    battery::update_energy_policy(first_apply);
+    const battery::EnergyPolicy& policy = battery::get_energy_policy();
+
+    const uint8_t user_brightness = settings::getBrightness();
+    const uint8_t effective_brightness = battery::cap_brightness(user_brightness);
+    if (first_apply || effective_brightness != last_brightness) {
+        pinMode(settings::BACKLIGHT_PIN, OUTPUT);
+        analogWrite(settings::BACKLIGHT_PIN, effective_brightness);
+        last_brightness = effective_brightness;
+    }
+
+    const uint8_t user_volume = settings::getVolume();
+    const int effective_volume = (int)battery::cap_volume(user_volume);
+    if (first_apply || effective_volume != last_volume) {
+        hardware_set_volume(effective_volume);
+        last_volume = effective_volume;
+    }
+
+    const bool lte_low_power = policy.lte_low_power;
+    if (first_apply) {
+        if (lte_low_power) {
+            LTE::setLowPower(true);
+        }
+        last_lte_low_power = lte_low_power;
+    } else if (lte_low_power != last_lte_low_power) {
+        LTE::setLowPower(lte_low_power);
+        last_lte_low_power = lte_low_power;
+    }
+
+    if (first_apply || policy.mode != last_mode) {
+        Logger::printf("[BAT] mode=%s pct=%u v=%umV ext=%d chg=%d bl=%u vol=%d lte_eco=%d\n",
+                       battery::power_mode_name(policy.mode),
+                       (unsigned)battery::read_percent(),
+                       (unsigned)battery::read_voltage_mv(),
+                       battery::is_external_power() ? 1 : 0,
+                       battery::is_charging() ? 1 : 0,
+                       (unsigned)effective_brightness,
+                       effective_volume,
+                       lte_low_power ? 1 : 0);
+        last_mode = policy.mode;
+    }
+
+    first_apply = false;
 }
 
 // Callback appelé automatiquement par LVGL quand l'animation est finie
@@ -183,6 +243,9 @@ void loadApp(AppID id) {
             break;
         case APP_CHATBOT:
             currentApp = new ChatbotApp();
+            break;
+        case APP_VECTOR_MAP:
+            currentApp = new VectorMapApp();
             break;
         default:
             currentApp = new NewHomeApp();
@@ -329,6 +392,7 @@ void loop() {
     feed_watchdog(); // Nourrir aussi après WiFi (peut être lent)
 
     manager.update();
+    apply_battery_energy_policy();
     background_services::manager().update();
     notifications::center().update();
     

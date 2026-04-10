@@ -26,6 +26,7 @@ public:
         if (!i2sOn) {
             // Slightly larger DMA queue to absorb network/decode jitter.
             i2s.setBuffers(40, 320);
+            i2s.setMCLK(I2S_MCLK);
         }
         return AudioOutputI2S::begin();
     }
@@ -345,7 +346,7 @@ private:
         }
 
         if (app->audio_out) {
-            app->audio_out->SetGain(val / 100.0f);
+            app->audio_out->SetGain(audio_output_gain_from_percent((uint8_t)val));
         }
     }
 
@@ -457,8 +458,8 @@ private:
         audio_out->SetBitsPerSample(16);
         audio_out->SetChannels(2);
         audio_out->SetOutputModeMono(true);
-        audio_out->SetGain(settings::getVolume() / 100.0f);
-        audio_out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+        audio_out->SetGain(audio_output_gain_from_percent(settings::getVolume()));
+        audio_output_set_pinout(*audio_out);
         if (!audio_out->begin()) return false;
 
         if (!stream_src) stream_src = new AudioFileSourceStream(65536);
@@ -745,7 +746,7 @@ public:
             set_ui_state(UI_IDLE, 0);
         } else if (is_playing) {
             set_ui_state((frames_count > 0) ? UI_PLAYING : UI_BUFFERING, 0);
-            if (audio_out) audio_out->SetGain(settings::getVolume() / 100.0f);
+            if (audio_out) audio_out->SetGain(audio_output_gain_from_percent(settings::getVolume()));
         }
 
         if (exit_requested && !is_playing && !force_stop) {

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <hardware/adc.h>
+#include <XPowersLib.h>
 
 namespace battery {
 
@@ -11,14 +12,86 @@ static constexpr uint8_t VSYS_ADC_GPIO = 29; // ADC3
 static constexpr float ADC_REF_V = 3.3f;
 static constexpr float ADC_MAX = 4095.0f;
 static constexpr float VSYS_DIVIDER = 3.0f;
+static constexpr uint32_t SAMPLE_INTERVAL_MS = 1200;
+static constexpr uint32_t POLICY_INTERVAL_MS = 1000;
+
+enum class PowerMode : uint8_t {
+    NORMAL = 0,
+    SAVER = 1,
+    CRITICAL = 2,
+};
+
+struct EnergyPolicy {
+    PowerMode mode;
+    uint8_t brightness_limit_percent;
+    uint8_t volume_limit_percent;
+    bool lte_low_power;
+    bool low_battery;
+    bool shutdown_requested;
+};
+
+struct Telemetry {
+    uint8_t percent;
+    float voltage_v;
+    bool external_power;
+    bool charging;
+    bool valid;
+};
 
 // État global partagé (inline variables C++17) :
 // évite les états divergents entre unités de compilation.
+inline XPowersAXP2101* g_pmic = nullptr;
+inline bool g_pmic_ready = false;
 inline float   g_last_good_v = 0.0f;
 inline bool    g_has_good_v = false;
 inline uint8_t g_last_percent = 0;
 inline bool    g_has_percent = false;
 inline uint8_t g_invalid_adc_streak = 0;
+inline Telemetry g_last_sample = {100, 4.0f, true, false, false};
+inline bool g_has_sample = false;
+inline uint32_t g_last_sample_ms = 0;
+inline PowerMode g_mode = PowerMode::NORMAL;
+inline EnergyPolicy g_policy = {PowerMode::NORMAL, 100, 100, false, false, false};
+inline uint32_t g_last_policy_ms = 0;
+inline bool g_manual_saver = false;
+
+static inline uint8_t clamp_percent_int(int value) {
+    if (value < 0) return 0;
+    if (value > 100) return 100;
+    return (uint8_t)value;
+}
+
+static inline uint8_t min_u8(uint8_t a, uint8_t b) {
+    return (a < b) ? a : b;
+}
+
+static inline bool attach_pmic(XPowersAXP2101* pmic) {
+    g_pmic = pmic;
+    g_pmic_ready = (pmic != nullptr);
+    if (!g_pmic_ready) {
+        return false;
+    }
+
+    // Active explicitement les mesures batterie, sinon certains boards renvoient 0.
+    g_pmic->enableBattDetection();
+    g_pmic->enableBattVoltageMeasure();
+    g_has_sample = false;
+    return true;
+}
+
+static inline void set_manual_saver_enabled(bool enabled) {
+    g_manual_saver = enabled;
+    g_last_policy_ms = 0;
+}
+
+static inline bool is_manual_saver_enabled() {
+    return g_manual_saver;
+}
+
+static inline bool toggle_manual_saver() {
+    set_manual_saver_enabled(!g_manual_saver);
+    return g_manual_saver;
+}
 
 static inline void begin() {
     static bool inited = false;
@@ -119,7 +192,49 @@ static inline uint8_t percent_from_lipo_volts(float v) {
     return 0;
 }
 
-static inline uint8_t read_percent() {
+static inline bool read_from_pmic(Telemetry& out) {
+    if (!g_pmic_ready || g_pmic == nullptr) {
+        return false;
+    }
+
+    const int pmic_percent = g_pmic->getBatteryPercent();
+    const uint16_t pmic_mv = g_pmic->getBattVoltage();
+    const bool external_power = g_pmic->isVbusIn();
+    const bool charging = g_pmic->isCharging();
+
+    const bool percent_valid = (pmic_percent >= 0 && pmic_percent <= 100);
+    const bool voltage_valid = (pmic_mv >= 2800 && pmic_mv <= 4600);
+
+    if (!percent_valid && !voltage_valid && !external_power) {
+        return false;
+    }
+
+    uint8_t percent = 100;
+    if (percent_valid) {
+        percent = (uint8_t)pmic_percent;
+    } else if (voltage_valid) {
+        percent = percent_from_lipo_volts((float)pmic_mv / 1000.0f);
+    } else if (g_has_percent) {
+        percent = g_last_percent;
+    }
+
+    out.percent = percent;
+    out.voltage_v = voltage_valid ? ((float)pmic_mv / 1000.0f) : g_last_good_v;
+    out.external_power = external_power;
+    out.charging = charging;
+    out.valid = true;
+
+    if (voltage_valid) {
+        g_last_good_v = out.voltage_v;
+        g_has_good_v = true;
+    }
+    g_last_percent = out.percent;
+    g_has_percent = true;
+    g_invalid_adc_streak = 0;
+    return true;
+}
+
+static inline bool read_from_adc(Telemetry& out) {
     // 3 lectures + médiane pour réduire les glitches ADC
     float a = read_vsys_volts_raw(10);
     float b = read_vsys_volts_raw(10);
@@ -149,30 +264,165 @@ static inline uint8_t read_percent() {
         g_has_good_v = true;
         g_last_percent = percent_from_lipo_volts(v);
         g_has_percent = true;
-        return g_last_percent;
+
+        out.percent = g_last_percent;
+        out.voltage_v = v;
+        out.external_power = false;
+        out.charging = false;
+        out.valid = true;
+        return true;
     }
 
     // Si l'ADC est invalide plusieurs cycles, ne jamais retomber à 0%.
-    // On garde la dernière valeur fiable; à défaut (boot sur alim externe), 100%.
     if (g_invalid_adc_streak >= 3) {
-        if (g_has_percent) return g_last_percent;
-        return 100;
+        out.percent = g_has_percent ? g_last_percent : 100;
+        out.voltage_v = g_has_good_v ? g_last_good_v : 4.0f;
+        out.external_power = external_power;
+        out.charging = external_power;
+        out.valid = true;
+        return true;
     }
 
-    // Si alimenté via USB/chargeur, on garde le dernier % batterie fiable
-    if (external_power) {
-        if (g_has_percent) return g_last_percent;
-        return 100;
+    // Si alimenté via USB/chargeur, on garde le dernier % batterie fiable.
+    if (external_power || glitch_low) {
+        out.percent = g_has_percent ? g_last_percent : 100;
+        out.voltage_v = g_has_good_v ? g_last_good_v : v;
+        out.external_power = external_power;
+        out.charging = external_power;
+        out.valid = true;
+        return true;
     }
 
-    // Glitch bas ADC: garder dernière valeur fiable
-    if (glitch_low) {
-        if (g_has_percent) return g_last_percent;
-        return 100;
+    out.percent = percent_from_lipo_volts(v);
+    out.voltage_v = v;
+    out.external_power = false;
+    out.charging = false;
+    out.valid = true;
+    g_last_percent = out.percent;
+    g_has_percent = true;
+    return true;
+}
+
+static inline const Telemetry& read_sample(bool force = false) {
+    begin();
+
+    const uint32_t now = millis();
+    if (!force && g_has_sample && (now - g_last_sample_ms) < SAMPLE_INTERVAL_MS) {
+        return g_last_sample;
     }
 
-    // Valeur hors plage sans historique: fallback direct
-    return percent_from_lipo_volts(v);
+    Telemetry sample = g_has_sample ? g_last_sample : Telemetry{100, 4.0f, true, false, false};
+    bool ok = false;
+    if (g_pmic_ready) {
+        ok = read_from_pmic(sample);
+    }
+    if (!ok) {
+        ok = read_from_adc(sample);
+    }
+
+    if (ok) {
+        g_last_sample = sample;
+        g_has_sample = true;
+        g_last_sample_ms = now;
+    }
+    return g_last_sample;
+}
+
+static inline uint8_t read_percent() {
+    return read_sample(false).percent;
+}
+
+static inline uint16_t read_voltage_mv() {
+    const Telemetry& t = read_sample(false);
+    if (t.voltage_v <= 0.0f) return 0;
+    return (uint16_t)(t.voltage_v * 1000.0f + 0.5f);
+}
+
+static inline bool is_external_power() {
+    return read_sample(false).external_power;
+}
+
+static inline bool is_charging() {
+    return read_sample(false).charging;
+}
+
+static inline PowerMode compute_mode(const Telemetry& t) {
+    if (t.external_power || t.charging) {
+        return PowerMode::NORMAL;
+    }
+
+    if (g_manual_saver) {
+        if (t.percent <= 8) return PowerMode::CRITICAL;
+        return PowerMode::SAVER;
+    }
+
+    switch (g_mode) {
+        case PowerMode::NORMAL:
+            if (t.percent <= 20) return PowerMode::SAVER;
+            return PowerMode::NORMAL;
+        case PowerMode::SAVER:
+            if (t.percent <= 8) return PowerMode::CRITICAL;
+            if (t.percent >= 20) return PowerMode::NORMAL;
+            return PowerMode::SAVER;
+        case PowerMode::CRITICAL:
+        default:
+            if (t.percent >= 14) return PowerMode::SAVER;
+            return PowerMode::CRITICAL;
+    }
+}
+
+static inline void update_energy_policy(bool force = false) {
+    const uint32_t now = millis();
+    if (!force && (now - g_last_policy_ms) < POLICY_INTERVAL_MS) {
+        return;
+    }
+
+    const Telemetry& t = read_sample(force);
+    if (t.external_power || t.charging) {
+        g_manual_saver = false;
+    }
+    g_mode = compute_mode(t);
+
+    switch (g_mode) {
+        case PowerMode::NORMAL:
+            g_policy = {PowerMode::NORMAL, 100, 100, false, false, false};
+            break;
+        case PowerMode::SAVER:
+            g_policy = {PowerMode::SAVER, 60, 60, true, true, false};
+            break;
+        case PowerMode::CRITICAL:
+        default:
+            g_policy = {PowerMode::CRITICAL, 35, 0, true, true, (!t.external_power && t.percent <= 2)};
+            break;
+    }
+
+    g_last_policy_ms = now;
+}
+
+static inline const EnergyPolicy& get_energy_policy() {
+    update_energy_policy(false);
+    return g_policy;
+}
+
+static inline uint8_t cap_brightness(uint8_t requested_brightness) {
+    const EnergyPolicy& p = get_energy_policy();
+    uint16_t cap = (uint16_t)p.brightness_limit_percent * 255u / 100u;
+    if (cap < 10u) cap = 10u;
+    return min_u8(requested_brightness, (uint8_t)cap);
+}
+
+static inline uint8_t cap_volume(uint8_t requested_volume) {
+    const EnergyPolicy& p = get_energy_policy();
+    return min_u8(requested_volume, clamp_percent_int((int)p.volume_limit_percent));
+}
+
+static inline const char* power_mode_name(PowerMode mode) {
+    switch (mode) {
+        case PowerMode::NORMAL: return "normal";
+        case PowerMode::SAVER: return "saver";
+        case PowerMode::CRITICAL: return "critical";
+        default: return "unknown";
+    }
 }
 
 } // namespace battery

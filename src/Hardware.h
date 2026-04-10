@@ -16,6 +16,7 @@
 #include <AudioOutputI2S.h>
 #include <I2S.h> 
 #include <ES8311.h>
+#include <math.h>
 #include <hardware/vreg.h>
 #include <Wire.h> 
 #include <XPowersLib.h>
@@ -36,6 +37,20 @@ XPowersAXP2101 PMIC;
 #define I2C_PORT i2c0
 
 static ES8311 g_es8311(&Wire1);
+
+class AudioOutputI2SRP : public AudioOutputI2S {
+public:
+    using AudioOutputI2S::AudioOutputI2S;
+
+    bool begin() override {
+#if defined(ARDUINO_ARCH_RP2040)
+        if (!i2sOn) {
+            i2s.setMCLK(14);
+        }
+#endif
+        return AudioOutputI2S::begin();
+    }
+};
 
 
 // --- PINS ECRAN (Waveshare RP2350-Touch-LCD-3.5) ---
@@ -185,6 +200,35 @@ static inline void audio_amp_enable(bool enable) {
     digitalWrite(PA_CTRL_PIN, enable ? HIGH : LOW);
 }
 
+static inline bool audio_output_set_pinout(AudioOutputI2S& out) {
+#if defined(ARDUINO_ARCH_RP2040)
+    // Arduino-Pico I2S derive LRCLK from the base BCLK pin (+1).
+    // Our board wiring is LRCLK=15 and BCLK=16, so we use swapClocks and
+    // the lower pin as base to keep GPIO17 free for PA_CTRL.
+    out.SwapClocks(true);
+    return out.SetPinout(I2S_OUT_WS, I2S_OUT_BCLK, I2S_OUT_DIN);
+#else
+    return out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+#endif
+}
+
+static inline float audio_output_gain_from_percent(uint8_t vol_percent) {
+    if (vol_percent == 0) {
+        return 0.0f;
+    }
+
+    float n = (float)vol_percent / 100.0f;
+    // Courbe perceptuelle: remonte les faibles volumes sans exploser le max.
+    float g = sqrtf(n) * 1.25f;
+    if (g < 0.08f) g = 0.08f;
+    if (g > 1.60f) g = 1.60f;
+    return g;
+}
+
+static inline void audio_apply_codec_volume(uint8_t vol_percent) {
+    g_es8311.setVolume(vol_percent);
+}
+
 // ─ Initialisation du codec audio ES8311 via I2C ─
 static inline void es8311_init() {
     Serial.println("[AUDIO] Initialisation du codec ES8311...");
@@ -195,43 +239,13 @@ static inline void es8311_init() {
         return;
     }
 
-    // Configuration valide sur cette carte: on passe par l'API de la librairie
-    // mais avec la sequence de registres connue comme stable.
-    ok = ok && g_es8311.writeRegister(0x00, 0x1F); // Reset
-    sleep_ms(10);
-    ok = ok && g_es8311.writeRegister(0x00, 0x00); // Release reset
-    sleep_ms(50);
-
-    ok = ok && g_es8311.writeRegister(0x01, 0x00);
-    sleep_ms(10);
-
-    ok = ok && g_es8311.writeRegister(0x03, 0x10);
-    ok = ok && g_es8311.writeRegister(0x04, 0x00);
-    ok = ok && g_es8311.writeRegister(0x05, 0x00);
-    ok = ok && g_es8311.writeRegister(0x08, 0x00);
-
-    ok = ok && g_es8311.writeRegister(0x09, 0x00); // I2S slave
-    ok = ok && g_es8311.writeRegister(0x0A, 0x00); // I2S slave
-
-    ok = ok && g_es8311.writeRegister(0x0B, 0x00);
-    ok = ok && g_es8311.writeRegister(0x0C, 0x00);
-    ok = ok && g_es8311.writeRegister(0x0D, 0x0C); // Slave mode
-    ok = ok && g_es8311.writeRegister(0x0E, 0x02); // 16-bit format
-    ok = ok && g_es8311.writeRegister(0x0F, 0x00);
-
-    ok = ok && g_es8311.writeRegister(0x15, 0x00);
-    ok = ok && g_es8311.writeRegister(0x16, 0x24);
-
-    ok = ok && g_es8311.writeRegister(0x31, 0x00);
-    ok = ok && g_es8311.writeRegister(0x32, 0x00);
-    ok = ok && g_es8311.writeRegister(0x33, 0xB8);
-    ok = ok && g_es8311.writeRegister(0x34, 0x20);
-
-    ok = ok && g_es8311.writeRegister(0x35, 0xB0);
-    ok = ok && g_es8311.writeRegister(0x37, 0x88);
-
-    // Le volume utilisateur reste pilote par la librairie.
-    ok = ok && g_es8311.setVolume(settings::getVolume());
+    // Garder une config simple et cohérente avec la librairie pour éviter
+    // les registres custom qui peuvent couper la sortie DAC.
+    ok = ok && g_es8311.setSampleRate(44100);
+    ok = ok && g_es8311.setBitsPerSample(16);
+    ok = ok && g_es8311.writeRegister(0x31, 0x00); // DAC unmute
+    ok = ok && g_es8311.writeRegister(0x37, 0x08); // bypass EQ DAC (valeur stable lib)
+    audio_apply_codec_volume(settings::getVolume());
 
     if (ok) {
         Serial.println("[AUDIO] ES8311 initialisé via librairie");
@@ -487,7 +501,9 @@ void showPowerMenu() {
 // --- FONCTION SONORE ---
 void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     // Non-static pour assurer une réinitialisation propre à chaque appel
-    AudioOutputI2S out;
+    AudioOutputI2SRP out;
+
+    Serial.printf("[AUDIO] test tone req f=%d d=%d gain=%.2f\n", freq, duration_ms, gain);
 
     audio_amp_enable(true);
 
@@ -495,16 +511,23 @@ void i2s_play_test_tone(int freq, int duration_ms, float gain = 0.6f) {
     out.SetBitsPerSample(16);
     out.SetChannels(2);
     out.SetOutputModeMono(true);
-    out.SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+    audio_output_set_pinout(out);
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 1.0f) gain = 1.0f;
-    out.SetGain(gain);
+    const uint8_t gain_percent = (uint8_t)(gain * 100.0f + 0.5f);
+    out.SetGain(audio_output_gain_from_percent(gain_percent));
     
     if (!out.begin()) {
-        Serial.println("[AUDIO] Test tone: out.begin() failed!");
-        audio_pins_quiet();
-        return;
+        Serial.println("[AUDIO] Test tone: out.begin() failed, tentative reinit codec...");
+        es8311_init();
+        if (!out.begin()) {
+            Serial.println("[AUDIO] Test tone: out.begin() failed apres reinit codec");
+            audio_pins_quiet();
+            return;
+        }
     }
+
+    Serial.println("[AUDIO] test tone i2s begin ok");
 
     const int sampleRate = 44100;
     const int half_period = (freq > 0) ? (sampleRate / freq / 2) : 0;
@@ -663,6 +686,8 @@ void hardware_init() {
         Serial.println("Erreur: Impossible de trouver le AXP2101 !");
         while (1);
     }
+
+    battery::attach_pmic(&PMIC);
 
     PMIC.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
     PMIC.clearIrqStatus();
@@ -916,6 +941,9 @@ void hardware_wake() {
 
 // Fonction physique de gestion du volume
 inline void hardware_set_volume(int vol) {
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+
     // 1. Gestion de l'amplificateur physique
     if (vol == 0) {
         digitalWrite(PA_CTRL_PIN, LOW); // Coupe l'ampli (Mute)
@@ -923,19 +951,10 @@ inline void hardware_set_volume(int vol) {
         digitalWrite(PA_CTRL_PIN, HIGH); // Allume l'ampli
     }
 
-    // 2. Gestion du volume numérique du DAC de l'ES8311 (Registre 0x32)ƒ
-    // 0x00 = Volume Max (+24dB) | 0x50 = Volume modéré | 0xFF = Mute
-    uint8_t reg_val;
-    if (vol == 0) {
-        reg_val = 0xFF;
-    } else {
-        // On map le pourcentage (1-100) vers la plage du registre ES8311
-        // Attention : Plus la valeur I2C est PETITE, plus le son est FORT
-        reg_val = map(vol, 1, 100, 0x50, 0x00); 
-    }
-    
-    // Envoi de l'ordre à la puce
-    DEV_I2C_Write_Byte(ES8311_I2C_ADDR, 0x32, reg_val);
+    // 2. Gestion du volume numérique via l'API codec.
+    // Le mapping registre brut diffère selon les libs ES8311; cette API évite
+    // les inversions qui mènent à un mute involontaire.
+    audio_apply_codec_volume((uint8_t)vol);
 }
 
 #endif

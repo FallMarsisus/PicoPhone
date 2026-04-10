@@ -191,14 +191,15 @@ public:
             pinMode(27, OUTPUT);
 
             if (!i2sIn) i2sIn = new I2S(INPUT);
-            if (!out)   out   = new AudioOutputI2S();
+            if (!out)   out   = new AudioOutputI2SRP();
 
             if (!i2sIn || !out) {
                 bridge_requested = false;
                 return;
             }
 
-            i2sIn->setBCLK(I2S_IN_BCLK);
+            i2sIn->swapClocks();
+            i2sIn->setBCLK(I2S_IN_WS);
             i2sIn->setDATA(I2S_IN_DOUT);
             i2sIn->setBitsPerSample(32);
             i2sIn->begin(8000);
@@ -208,7 +209,7 @@ public:
             out->SetChannels(2);
             out->SetOutputModeMono(true);
             out->SetGain(1.0f);
-            out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN);
+            audio_output_set_pinout(*out);
             audio_amp_enable(true);
             out->begin();
 
@@ -257,14 +258,15 @@ public:
             pinMode(27, OUTPUT);    
 
             if (!i2sIn) i2sIn = new I2S(INPUT);
-            if (!out)   out   = new AudioOutputI2S();
+            if (!out)   out   = new AudioOutputI2SRP();
 
             if (!i2sIn || !out) {
                 bridge_requested = false;
                 return;
             }
 
-            i2sIn->setBCLK(I2S_IN_BCLK);
+            i2sIn->swapClocks();
+            i2sIn->setBCLK(I2S_IN_WS);
             i2sIn->setDATA(I2S_IN_DOUT);
             i2sIn->setBitsPerSample(32);
             i2sIn->begin(8000); 
@@ -274,7 +276,7 @@ public:
             out->SetChannels(2);
             out->SetOutputModeMono(true);
             out->SetGain(1.0f); 
-            out->SetPinout(I2S_OUT_BCLK, I2S_OUT_WS, I2S_OUT_DIN); 
+            audio_output_set_pinout(*out);
             audio_amp_enable(true);
             out->begin();
 

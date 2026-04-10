@@ -46,7 +46,7 @@ private:
     lv_obj_t *lbl_volume_val = nullptr;
     lv_obj_t *slider_volume = nullptr;
 
-    lv_obj_t *btn_wifi     = nullptr;
+    lv_obj_t *btn_eco      = nullptr;
     lv_obj_t *btn_son      = nullptr;
     lv_obj_t *btn_4g       = nullptr;
     lv_obj_t *btn_airplane = nullptr;
@@ -130,28 +130,15 @@ private:
             if (gain < 0.03f) gain = 0.03f;
             // Petit délai pour laisser le codec se stabiliser, puis jouer un beep audio
             delayMicroseconds(20000);  // 20ms pour stabilisation
-            i2s_play_test_tone(350 + val * 7, 30, gain);  // Augmenté: 12ms → 30ms pour être clairement audible
+            i2s_play_test_tone(350 + val * 7, 140, gain);
         }
     }
 
-    static void wifi_toggle_event(lv_event_t *e)
+    static void eco_toggle_event(lv_event_t *e)
     {
         ControlCenter *self = (ControlCenter *)lv_event_get_user_data(e);
-        bool enabled = settings::isWifiEnabled();
-
-        if (enabled)
-        {
-            WiFi.disconnect();
-            WiFi.mode(WIFI_OFF);
-            settings::setWifiEnabled(false);
-            set_btn_state(self->btn_wifi, false, 0x007AFF);
-        }
-        else
-        {
-            WiFi.mode(WIFI_STA);
-            settings::setWifiEnabled(true);
-            set_btn_state(self->btn_wifi, true, 0x007AFF);
-        }
+        const bool enabled = battery::toggle_manual_saver();
+        set_btn_state(self->btn_eco, enabled, 0xF2C94C);
     }
 
     static void lte_toggle_event(lv_event_t *e)
@@ -398,10 +385,10 @@ private:
         lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
 
-        bool wifi_on = settings::isWifiEnabled();
+        bool eco_on = battery::is_manual_saver_enabled();
         uint8_t cur_vol = settings::getVolume();
 
-        btn_wifi     = createRoundBtn(panel_top, LV_SYMBOL_WIFI,  wifi_toggle_event,     3, 8, wifi_on,              0x007AFF);
+        btn_eco      = createRoundBtn(panel_top, "ECO",          eco_toggle_event,      3, 8, eco_on,               0xF2C94C);
         btn_son      = createRoundBtn(panel_top, LV_SYMBOL_BELL,  son_toggle_event,      73, 8, cur_vol > 0,         0xFF9500);
         btn_4g       = createRoundBtn(panel_top, LV_SYMBOL_CALL,  lte_toggle_event,      143, 8, LTE::isEnabled(),   0x34C759);
         btn_airplane = createRoundBtn(panel_top, "\xE2\x9C\x88", airplane_toggle_event, 213, 8, LTE::isAirplaneMode(), 0xFF3B30);
@@ -553,6 +540,11 @@ public:
         lv_slider_set_value(slider_volume, vol, LV_ANIM_OFF);
         snprintf(buf, sizeof(buf), "%d%%", vol);
         lv_label_set_text(lbl_volume_val, buf);
+
+        set_btn_state(btn_eco, battery::is_manual_saver_enabled(), 0xF2C94C);
+        set_btn_state(btn_4g, LTE::isEnabled(), 0x34C759);
+        set_btn_state(btn_airplane, LTE::isAirplaneMode(), 0xFF3B30);
+        set_btn_state(btn_son, settings::getVolume() > 0, 0xFF9500);
 
         char n_app[20], n_title[36], n_body[96];
         bool media_active = cast_service::instance().isMediaActive();

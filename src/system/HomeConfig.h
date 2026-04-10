@@ -88,8 +88,9 @@ namespace homeConfig {
         {"news",      "Actualites",   LV_SYMBOL_LIST,      0xFF3B30, APP_NEWS, ""},
         {"bambu",     "Bambu",        LV_SYMBOL_SETTINGS,  0x00A86B, APP_BAMBU, ""},
         {"chatbot",   "Gemini",       "AI",              0x7C4DFF, APP_CHATBOT, ""},
+        {"vector_map", "Cartes",      LV_SYMBOL_GPS,     0x009688, APP_VECTOR_MAP, ""},
     };
-    const int ALL_APPS_COUNT = 20;
+    const int ALL_APPS_COUNT = 21;
 
     // Charge la config. Si pas de fichier -> toutes les apps par defaut.
     bool loadConfig(std::vector<HomeAppEntry>& apps) {

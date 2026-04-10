@@ -43,6 +43,7 @@ private:
 
     static volatile int s_pending_enable;
     static volatile int s_pending_airplane;
+    static volatile int s_gps_pending_state; // 0 = Rien, 1 = Allumer, -1 = Eteindre
 
     static volatile bool s_modem_confirmed;
     static volatile bool s_http_busy;
@@ -988,9 +989,130 @@ public:
         return true;
     }
 
-static String httpGetBlocking(const String &url, const String &extraHeaders = "", bool is_foreground = true, bool is_json = true)
+    // --- GESTION DU GPS INTERNE (A7670E) ---
+
+// --- GESTION DU GPS (SÉCURITÉ DOUBLE CŒUR) ---
+
+  // --- GESTION DU GPS (COMPATIBLE SIMCOM A7670E) ---
+
+    static void enableGPS() {
+        s_gps_pending_state = 1; 
+    }
+
+    static void disableGPS() {
+        s_gps_pending_state = -1; 
+    }
+
+    static void flushPendingGPS() {
+        if (s_gps_pending_state == 0) return;
+
+        int state = s_gps_pending_state;
+        s_gps_pending_state = 0; 
+
+        if (state == 1) {
+            Logger::println("[LTE GPS] Allumage GNSS (Mode A7670)...");
+            // 1. On éteint par sécurité
+            sendAT("AT+CGNSSPWR=0", 1000); 
+            
+            // 2. On allume avec la NOUVELLE commande
+            String resp = sendAT("AT+CGNSSPWR=1", 2000); 
+            
+            // 3. Repli de secours sur l'ancienne commande si erreur
+            if (resp.indexOf("ERROR") != -1) {
+                Logger::println("[LTE GPS] Repli sur ancienne commande (AT+CGPS=1)...");
+                sendAT("AT+CGPS=1", 2000);
+            } else {
+                // Optionnel : On active tous les systèmes (GPS + GLONASS + BEIDOU)
+                sendAT("AT+CGNSSMODE=15", 1000); 
+            }
+
+        } else if (state == -1) {
+            Logger::println("[LTE GPS] Extinction GNSS...");
+            sendAT("AT+CGNSSPWR=0", 2000);
+            sendAT("AT+CGPS=0", 1000); // Secours
+        }
+    }
+
+    static bool getGPSLocation(float &out_lat, float &out_lon) {
+        PriorityGuard guard(true);
+
+        flushPendingGPS(); // On exécute les Post-its
+
+        // On interroge avec la NOUVELLE commande A7670
+        String resp = sendAT("AT+CGNSSINFO", 1000);
+        
+        // Si échec, on tente l'ancienne au cas où
+        if (resp.indexOf("ERROR") != -1) {
+            resp = sendAT("AT+CGPSINFO", 1000);
+            if (resp.indexOf("ERROR") != -1) return false;
+        }
+
+        // On détermine quel format de réponse on a reçu
+        int idx = resp.indexOf("+CGNSSINFO: ");
+        bool is_cgnss = true;
+        
+        if (idx == -1) {
+            idx = resp.indexOf("+CGPSINFO: ");
+            is_cgnss = false;
+            if (idx == -1) return false;
+        }
+
+        // On coupe le début de la phrase (+CGNSSINFO:  ou +CGPSINFO: )
+        String data = resp.substring(idx + (is_cgnss ? 12 : 11)); 
+        data.trim();
+        
+        // Si ça commence par une virgule, c'est que le module cherche encore les satellites
+        if (data.startsWith(",")) return false; 
+
+        // --- DÉCOUPE DES VIRGULES (PARSER UNIVERSEL) ---
+        int commas[10];
+        int c_idx = 0;
+        int last_pos = 0;
+        while (c_idx < 10) {
+            int p = data.indexOf(',', last_pos);
+            commas[c_idx++] = p;
+            if (p == -1) break;
+            last_pos = p + 1;
+        }
+
+        String lat_str, ns_str, lon_str, ew_str;
+
+        if (is_cgnss) {
+            // Le format CGNSSINFO = mode, gps_sv, glo_sv, bds_sv, LAT, N/S, LON, E/W
+            if (commas[3] == -1 || commas[7] == -1) return false;
+            lat_str = data.substring(commas[3] + 1, commas[4]);
+            ns_str = data.substring(commas[4] + 1, commas[5]);
+            lon_str = data.substring(commas[5] + 1, commas[6]);
+            ew_str = data.substring(commas[6] + 1, commas[7]);
+        } else {
+            // Le format CGPSINFO = LAT, N/S, LON, E/W
+            if (commas[0] == -1 || commas[3] == -1) return false;
+            lat_str = data.substring(0, commas[0]);
+            ns_str = data.substring(commas[0] + 1, commas[1]);
+            lon_str = data.substring(commas[1] + 1, commas[2]);
+            ew_str = data.substring(commas[2] + 1, commas[3]);
+        }
+
+        if (lat_str.length() < 4 || lon_str.length() < 5) return false;
+
+        // --- CONVERSION EN DEGRÉS DÉCIMAUX ---
+        float lat_deg = lat_str.substring(0, 2).toFloat();
+        float lat_min = lat_str.substring(2).toFloat();
+        out_lat = lat_deg + (lat_min / 60.0f);
+        if (ns_str == "S") out_lat = -out_lat;
+
+        float lon_deg = lon_str.substring(0, 3).toFloat();
+        float lon_min = lon_str.substring(3).toFloat();
+        out_lon = lon_deg + (lon_min / 60.0f);
+        if (ew_str == "W") out_lon = -out_lon;
+
+        return true;
+    }
+    
+    static String httpGetBlocking(const String &url, const String &extraHeaders = "", bool is_foreground = true, bool is_json = true)
     {
         PriorityGuard guard(is_foreground);
+        flushPendingGPS(); // <--- AJOUTE CETTE LIGNE ICI !
         const size_t MAX_HTTP = 16000;
 
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed) return "";
@@ -1754,6 +1876,7 @@ String LTE::s_sms_rx_number = "";
 String LTE::s_sms_rx_idx = "";
 String LTE::s_sms_rx_text = "";
 unsigned long LTE::s_sms_rx_timeout = 0;
+volatile int LTE::s_gps_pending_state=0;
 
 LTE::SmsSendReq LTE::s_sms_send_req = {};
 volatile bool LTE::s_sms_send_pending = false;
