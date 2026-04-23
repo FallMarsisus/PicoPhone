@@ -499,7 +499,6 @@ public:
         lv_obj_set_style_radius(bg, 0, 0);
         lv_obj_clear_flag(bg, LV_OBJ_FLAG_SCROLLABLE);
 
-        // Halos statiques legerement translucides pour un rendu plus moderne
         lv_obj_t* glow_top = lv_obj_create(bg);
         lv_obj_set_size(glow_top, screen_w + 120, screen_w + 120);
         lv_obj_align(glow_top, LV_ALIGN_TOP_MID, 0, -(screen_w / 2));
@@ -542,14 +541,19 @@ public:
         lv_obj_clear_flag(power_chip, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(power_chip, LV_OBJ_FLAG_CLICKABLE);
 
-        lbl_power = lv_label_create(main_view);
+        // CORRECTION N°1 : Assigner 'power_chip' comme objet parent au lieu de 'main_view' 
+        lbl_power = lv_label_create(power_chip);
         lv_label_set_text(lbl_power, "--%");
         lv_obj_set_style_text_color(lbl_power, lv_color_white(), 0);
         lv_obj_set_style_text_font(lbl_power, &lv_font_montserrat_14, 0);
-        lv_obj_align_to(lbl_power, power_chip, LV_ALIGN_CENTER, 0, 0);
+        // Ainsi le label restera magnétiquement centré dans la puce !
+        lv_obj_center(lbl_power); 
 
         // Heure
         lbl_time = lv_label_create(main_view);
+        // CORRECTION N°2 : Forcer la largeur et centrer le texte pour un rendu dynamique parfait
+        lv_obj_set_width(lbl_time, screen_w); 
+        lv_obj_set_style_text_align(lbl_time, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(lbl_time, "00:00");
         lv_obj_set_style_text_color(lbl_time, lv_color_white(), 0);
         lv_obj_set_style_text_font(lbl_time, &lv_font_montserrat_28, 0);
@@ -557,9 +561,13 @@ public:
 
         // Date
         lbl_date = lv_label_create(main_view);
+        // CORRECTION N°3 : Même chose pour la date
+        lv_obj_set_width(lbl_date, screen_w); 
+        lv_obj_set_style_text_align(lbl_date, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(lbl_date, "");
         lv_obj_set_style_text_color(lbl_date, lv_color_hex(0xA9B9D5), 0);
         lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_14, 0);
+        // On aligne par rapport au label de l'heure en ajoutant LV_ALIGN_OUT_BOTTOM_MID
         lv_obj_align_to(lbl_date, lbl_time, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
 
         // Panneau notifications
@@ -644,8 +652,6 @@ public:
         lv_obj_set_style_text_font(lbl_swipe_hint, &lv_font_montserrat_12, 0);
         lv_obj_align_to(lbl_swipe_hint, notif_panel, LV_ALIGN_OUT_TOP_MID, 0, -10);
 
-        // VUE PIN creee a la demande (buildPinUI)
-
         // Par défaut caché
         lv_obj_add_flag(bg, LV_OBJ_FLAG_HIDDEN);
 
@@ -686,8 +692,6 @@ public:
     void unlock() {
         if (!is_locked) return;
 
-        // En sortie de veille, on declare d'abord l'etat de verrouillage comme
-        // inactif pour que le reveil materiel restaure la luminosite normale.
         if (display_sleeping) {
             is_locked = false;
             hardware_wake();
