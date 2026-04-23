@@ -8,6 +8,7 @@
 #include "../system/LTE.h"
 #include "../system/NotificationCenter.h"
 #include "../system/Secrets.h"
+#include "../system/UnifiedContacts.h"
 
 inline void (*telegram_incoming_cb)(String chat_id, String name, String text, long ts) = nullptr;
 
@@ -145,21 +146,22 @@ public:
             String chat_id(m.chat_id);
             String from_name(m.from_name);
             String text(m.text);
+            String display_name = unified_contacts::display_name_for_telegram(chat_id, from_name);
 
             // On écrit sur LittleFS en toute sécurité depuis le Core 0
-            upsert_contact(chat_id, from_name, text);
+            upsert_contact(chat_id, display_name, text);
             append_message(chat_id, text, m.ts);
 
             // On prévient l'application Telegram si elle est ouverte
             if (telegram_incoming_cb) {
-                telegram_incoming_cb(chat_id, from_name, text, m.ts);
+                telegram_incoming_cb(chat_id, display_name, text, m.ts);
             }
 
             // On lance la notification visuelle en haut de l'écran
             char body[96];
             strncpy(body, text.c_str(), sizeof(body) - 1);
             body[sizeof(body) - 1] = '\0';
-            notifications::push(String(String(LV_SYMBOL_GPS) + " Telegram").c_str(), from_name.c_str(), body);
+            notifications::push(String(String(LV_SYMBOL_GPS) + " Telegram").c_str(), display_name.c_str(), body);
         }
     }
 

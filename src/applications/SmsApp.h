@@ -10,6 +10,7 @@
 #include <time.h>
 #include "../system/LTE.h"
 #include "../system/NetworkErrorHandler.h"
+#include "../system/UnifiedContacts.h"
 
 #define SMS_MAX_HISTORY 20
 #define SMS_COL_BG_LIST  0x1C1C1E // Noir iOS
@@ -75,6 +76,35 @@ private:
         return -1;
     }
 
+    static bool is_number_like(const String& in) {
+        if (in.length() == 0) return false;
+        bool has_digit = false;
+        for (int i = 0; i < in.length(); ++i) {
+            char c = in.charAt(i);
+            if (c >= '0' && c <= '9') {
+                has_digit = true;
+                continue;
+            }
+            if (c == '+' && i == 0) continue;
+            if (c == ' ' || c == '-' || c == '(' || c == ')') continue;
+            return false;
+        }
+        return has_digit;
+    }
+
+    String resolve_target_number(const String& input) {
+        if (is_number_like(input)) {
+            return unified_contacts::normalize_phone(input);
+        }
+
+        String by_name;
+        if (unified_contacts::phone_for_name(input, by_name)) {
+            return unified_contacts::normalize_phone(by_name);
+        }
+
+        return unified_contacts::normalize_phone(input);
+    }
+
     void save_contacts_to_flash() {
         if (!fs_ok) return;
         JsonDocument doc;
@@ -95,7 +125,8 @@ private:
         creating_conversation = false;
         lv_obj_add_flag(view_contacts, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(view_chat, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(header_title, contacts[idx].name.c_str());
+        const String display_name = unified_contacts::display_name_for_phone(contacts[idx].number, contacts[idx].name);
+        lv_label_set_text(header_title, display_name.c_str());
         lv_textarea_set_placeholder_text(ta_visible, "Message");
         lv_obj_clear_flag(keyboard_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ta_visible, LV_OBJ_FLAG_HIDDEN);
@@ -126,7 +157,10 @@ private:
             contacts.clear();
             JsonArray arr = doc.as<JsonArray>();
             for (JsonObject obj : arr) {
-                contacts.push_back({obj["id"].as<String>(), obj["n"].as<String>(), obj["p"].as<String>(), false});
+                const String number = obj["id"].as<String>();
+                const String fallback_name = obj["n"].as<String>();
+                const String display_name = unified_contacts::display_name_for_phone(number, fallback_name.length() ? fallback_name : number);
+                contacts.push_back({number, display_name, obj["p"].as<String>(), false});
             }
         }
         f.close();
@@ -236,10 +270,15 @@ private:
         const char* text = lv_textarea_get_text(app->ta_visible);
 
         if (text && strlen(text) > 0 && app->creating_conversation) {
-            String number = String(text);
+            String number = app->resolve_target_number(String(text));
+            if (number.length() == 0) {
+                lv_label_set_text(app->header_title, "Numero invalide");
+                return;
+            }
             int idx = app->find_contact_index(number);
             if (idx == -1) {
-                app->contacts.push_back({number, number, "", false});
+                const String display_name = unified_contacts::display_name_for_phone(number, number);
+                app->contacts.push_back({number, display_name, "", false});
                 idx = (int)app->contacts.size() - 1;
             }
             app->save_contacts_to_flash();

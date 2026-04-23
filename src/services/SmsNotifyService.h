@@ -10,6 +10,7 @@
 #include "../system/BackgroundServices.h"
 #include "../system/NotificationCenter.h"
 #include "../system/LTE.h"
+#include "../system/UnifiedContacts.h"
 
 class SmsNotifyService : public IBackgroundService {
 private:
@@ -29,6 +30,7 @@ private:
         bool found = false;
         for (JsonObject obj : arr) {
             if (String(obj["id"] | "") == number) {
+                obj["n"] = unified_contacts::display_name_for_phone(number, String(obj["n"] | number));
                 obj["p"] = preview;
                 found = true;
                 break;
@@ -37,7 +39,7 @@ private:
         if (!found) {
             JsonObject obj = arr.add<JsonObject>();
             obj["id"] = number;
-            obj["n"]  = number;
+            obj["n"]  = unified_contacts::display_name_for_phone(number, number);
             obj["p"]  = preview;
         }
         File fw = LittleFS.open("/sms_contacts.json", "w");
@@ -89,6 +91,7 @@ public:
 
             String num_s  = String(number);
             String text_s = String(text);
+            String display_name = unified_contacts::display_name_for_phone(num_s, num_s);
 
             upsert_contact(num_s, text_s);
             append_message(num_s, text_s, ts);
@@ -99,7 +102,7 @@ public:
 
             notifications::push(
                 (String(LV_SYMBOL_KEYBOARD) + " Nouveau SMS").c_str(),
-                number,
+                display_name.c_str(),
                 body
             );
             Serial.printf("[SMS] SMS traite OK (de='%s')\n", number);

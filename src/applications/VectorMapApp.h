@@ -328,6 +328,14 @@ public:
                 }
                 mutex_exit(&gpsMutex);
             }
+
+            if (lbl_info) {
+                if (got_fix) {
+                    lv_label_set_text_fmt(lbl_info, "Fix %.5f, %.5f", lat, lon);
+                } else {
+                    lv_label_set_text(lbl_info, "Recherche Satellites...");
+                }
+            }
         }
     }
 

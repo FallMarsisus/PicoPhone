@@ -1,3 +1,6 @@
 {
-    "C_Cpp.errorSquiggles": "disabled"
+    "C_Cpp.errorSquiggles": "disabled",
+    "chat.tools.terminal.autoApprove": {
+        "$HOME/.platformio/penv/bin/platformio": true
+    }
 }

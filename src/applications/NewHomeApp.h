@@ -6,7 +6,6 @@
 #include <vector>
 #include "App.h"
 #include "AppManager.h"
-#include <WiFi.h>
 #include "../system/Battery.h"
 #include "../system/Settings.h"
 #include "../system/LTE.h"
@@ -20,7 +19,6 @@ private:
     lv_obj_t* main_bg;
     lv_obj_t* bg_img;
     lv_obj_t* top_bar_cont; 
-    lv_obj_t* wifi_label;
     lv_obj_t* time_label;
     lv_obj_t* batt_icon;
     lv_obj_t* signal_icon = nullptr;
@@ -56,7 +54,9 @@ private:
     lv_color_t bg_anim_to;
 
     int current_page = 0;
-    static const int ITEMS_PER_PAGE = 4;
+    static const int GRID_COLS = 4;
+    static const int GRID_ROWS = 3;
+    static const int ITEMS_PER_PAGE = GRID_COLS * GRID_ROWS;
 
     std::vector<HomeAppEntry> loaded_apps;
     int current_folder_index = -1; 
@@ -394,7 +394,7 @@ private:
 
     static void next_page_cb(lv_event_t* e) {
         NewHomeApp* app = (NewHomeApp*)lv_event_get_user_data(e);
-        int total_pages = ((int)app->loaded_apps.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        int total_pages = app->computeTotalPages(app->getCurrentSourceTotal());
         if(app && app->current_page < total_pages - 1) {
             app->current_page++;
             app->renderCurrentPage(1); 
@@ -407,17 +407,44 @@ private:
         lv_obj_set_style_transition(btn, &btn_trans, LV_STATE_PRESSED);
     }
 
+    int getCurrentSourceTotal() {
+        if (current_folder_index >= 0 && current_folder_index < (int)loaded_apps.size()
+            && loaded_apps[current_folder_index].isFolder()) {
+            return (int)homeConfig::getFolderChildren(loaded_apps[current_folder_index].id).size();
+        }
+        return (int)loaded_apps.size();
+    }
+
+    int computeTotalPages(int total) {
+        if (current_folder_index >= 0 && total > 0) {
+            const int first_page_capacity = ITEMS_PER_PAGE - 1;
+            if (total <= first_page_capacity) return 1;
+            const int remaining = total - first_page_capacity;
+            return 1 + ((remaining + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE);
+        }
+
+        int pages = (total + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+        return (pages < 1) ? 1 : pages;
+    }
+
     void create_list_item(lv_obj_t* parent, HomeAppEntry* entry) {
-        lv_obj_t* btn = lv_btn_create(parent);
-        lv_obj_set_size(btn, 280, 60); 
-        lv_obj_set_style_bg_color(btn, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_30, 0); 
-        lv_obj_set_style_radius(btn, 15, 0); 
+        lv_obj_t* tile = lv_obj_create(parent);
+        lv_obj_set_size(tile, 64, 70);
+        lv_obj_set_style_bg_opa(tile, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile, 0, 0);
+        lv_obj_set_style_pad_all(tile, 0, 0);
+        lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* btn = lv_btn_create(tile);
+        lv_obj_set_size(btn, 50, 50);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(entry->color), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(btn, 15, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
-        
         apply_btn_style(btn);
-        
+
         if (entry->isFolder()) {
             int folder_idx = -1;
             for (int i = 0; i < (int)loaded_apps.size(); i++) {
@@ -429,15 +456,7 @@ private:
             lv_obj_add_event_cb(btn, app_click_cb, LV_EVENT_CLICKED, (void*)entry);
         }
 
-        lv_obj_t* icon_bg = lv_obj_create(btn);
-        lv_obj_set_size(icon_bg, 45, 45);
-        lv_obj_set_style_radius(icon_bg, 15, 0);
-        lv_obj_set_style_bg_color(icon_bg, lv_color_hex(entry->color), 0);
-        lv_obj_set_style_border_width(icon_bg, 0, 0);
-        lv_obj_align(icon_bg, LV_ALIGN_LEFT_MID, 5, 0);
-        lv_obj_clear_flag(icon_bg, LV_OBJ_FLAG_SCROLLABLE); 
-
-        lv_obj_t* icon_lbl = lv_label_create(icon_bg);
+        lv_obj_t* icon_lbl = lv_label_create(btn);
         String iconText = (entry->isFolder() || entry->pythonPath.length() == 0)
             ? entry->symbol
             : buildPythonInitials(entry->name, entry->id);
@@ -446,7 +465,7 @@ private:
         lv_obj_set_style_text_font(icon_lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(icon_lbl);
 
-        lv_obj_t* lbl = lv_label_create(btn);
+        lv_obj_t* lbl = lv_label_create(tile);
         if (entry->isFolder()) {
             char buf[64];
             snprintf(buf, sizeof(buf), "%s (%d)", entry->name.c_str(), homeConfig::getFolderChildCount(entry->id));
@@ -454,41 +473,48 @@ private:
         } else {
             lv_label_set_text(lbl, entry->name.c_str());
         }
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0); 
-        lv_obj_set_style_text_color(lbl, lv_color_white(), 0); 
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 70, 0);
+        lv_obj_set_width(lbl, 64);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_height(lbl, 14);
+        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -2);
     }
 
     void create_back_item(lv_obj_t* parent) {
-        lv_obj_t* btn = lv_btn_create(parent);
-        lv_obj_set_size(btn, 280, 60);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x3a3a3c), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_60, 0);
+        lv_obj_t* tile = lv_obj_create(parent);
+        lv_obj_set_size(tile, 64, 70);
+        lv_obj_set_style_bg_opa(tile, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile, 0, 0);
+        lv_obj_set_style_pad_all(tile, 0, 0);
+        lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* btn = lv_btn_create(tile);
+        lv_obj_set_size(btn, 50, 50);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x007AFF), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(btn, 15, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, folder_back_cb, LV_EVENT_CLICKED, (void*)this);
-
         apply_btn_style(btn);
 
-        lv_obj_t* icon_bg = lv_obj_create(btn);
-        lv_obj_set_size(icon_bg, 45, 45);
-        lv_obj_set_style_radius(icon_bg, 15, 0);
-        lv_obj_set_style_bg_color(icon_bg, lv_color_hex(0x007AFF), 0);
-        lv_obj_set_style_border_width(icon_bg, 0, 0);
-        lv_obj_align(icon_bg, LV_ALIGN_LEFT_MID, 5, 0);
-        lv_obj_clear_flag(icon_bg, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t* icon_lbl = lv_label_create(icon_bg);
+        lv_obj_t* icon_lbl = lv_label_create(btn);
         lv_label_set_text(icon_lbl, LV_SYMBOL_LEFT);
         lv_obj_set_style_text_color(icon_lbl, lv_color_white(), 0);
         lv_obj_center(icon_lbl);
 
-        lv_obj_t* lbl = lv_label_create(btn);
+        lv_obj_t* lbl = lv_label_create(tile);
         lv_label_set_text(lbl, "Retour");
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+        lv_obj_set_width(lbl, 64);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 70, 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_height(lbl, 14);
+        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -2);
     }
 
     void renderCurrentPage(int direction = 0) {
@@ -547,14 +573,7 @@ private:
             items_shown++;
         }
 
-        int total_pages;
-        if (current_folder_index >= 0 && total > 0) {
-            total_pages = 1 + ((total - (ITEMS_PER_PAGE - 1) + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE);
-            if (total <= ITEMS_PER_PAGE - 1) total_pages = 1;
-        } else {
-            total_pages = (total + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-        }
-        if (total_pages < 1) total_pages = 1;
+        int total_pages = computeTotalPages(total);
 
         String dots = "";
         for(int i=0; i<total_pages; i++) {
@@ -602,14 +621,16 @@ private:
 
         app_page_cont = lv_obj_create(app_list_cont);
         lv_obj_set_size(app_page_cont, 280, 268);
-        lv_obj_align(app_page_cont, LV_ALIGN_TOP_MID, 0, 45);
+        lv_obj_align(app_page_cont, LV_ALIGN_TOP_MID, 0, 52);
         lv_obj_set_style_bg_opa(app_page_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(app_page_cont, 0, 0);
         lv_obj_set_style_pad_all(app_page_cont, 0, 0);
         lv_obj_clear_flag(app_page_cont, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_flex_flow(app_page_cont, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(app_page_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_flex_flow(app_page_cont, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(app_page_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         lv_obj_set_style_pad_gap(app_page_cont, 8, 0);
+        lv_obj_set_style_pad_row(app_page_cont, 8, 0);
+        lv_obj_set_style_pad_column(app_page_cont, 8, 0);
 
         lv_obj_t* footer_cont = lv_obj_create(app_list_cont);
         lv_obj_set_size(footer_cont, 280, 60);
@@ -757,11 +778,6 @@ private:
         lv_obj_set_style_text_color(signal_icon, lv_color_hex(0x323232), 0);
         lv_obj_set_style_text_font(signal_icon, &lv_font_montserrat_12, 0);
         lv_obj_align(signal_icon, LV_ALIGN_LEFT_MID, 0, 0);
-
-        wifi_label = lv_label_create(icon_zone);
-        lv_label_set_text(wifi_label, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x323232), 0);
-        lv_obj_align(wifi_label, LV_ALIGN_LEFT_MID, 30, 0);
         
         time_label = lv_label_create(top_bar_cont);
         lv_label_set_text(time_label, "00:00");
@@ -771,7 +787,7 @@ private:
         batt_icon = lv_label_create(icon_zone);
         lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_FULL);
         lv_obj_set_style_text_color(batt_icon, lv_color_hex(0x323232), 0);
-        lv_obj_align(batt_icon, LV_ALIGN_LEFT_MID, 75, 0);
+        lv_obj_align(batt_icon, LV_ALIGN_RIGHT_MID, -2, 0);
     }
 
     void createQuickActionApps(lv_obj_t* parent) {
@@ -845,13 +861,6 @@ public:
         pollLongPress();
 
         const unsigned long now_ms = millis();
-
-        static unsigned long last_check = 0;
-        if (now_ms - last_check > 3000) {
-            last_check = now_ms;
-            if (LTE::isReadyForData()) lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x232323), 0);
-            else lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xC1C1C1), 0);
-        }
 
         static unsigned long last_time_update = 0;
         if (now_ms - last_time_update > 1000) {
@@ -931,7 +940,6 @@ public:
         btn_next = nullptr;
         quick_actions_cont = nullptr;
         top_bar_cont = nullptr;
-        wifi_label = nullptr;
         time_label = nullptr;
         batt_icon = nullptr;
         bg_img = nullptr;

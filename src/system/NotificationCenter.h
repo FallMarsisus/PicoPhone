@@ -60,13 +60,20 @@ private:
     void ensure_ui() {
         if (ui_ready) return;
 
+        lv_disp_t* disp = lv_disp_get_default();
+        lv_coord_t screen_w = disp ? lv_disp_get_hor_res(disp) : 320;
+        lv_coord_t panel_w = screen_w - 16;
+        if (panel_w < 240) panel_w = 240;
+
         root = lv_obj_create(lv_layer_top());
-        lv_obj_set_size(root, 304, 72);
-        lv_obj_align(root, LV_ALIGN_TOP_MID, 0, 8);
-        lv_obj_set_style_bg_color(root, lv_color_hex(0x1C1C1E), 0);
+        lv_obj_set_size(root, panel_w, 78);
+        lv_obj_align(root, LV_ALIGN_TOP_MID, 0, 22);
+        lv_obj_set_style_bg_color(root, lv_color_hex(0x101A2C), 0);
         lv_obj_set_style_bg_opa(root, LV_OPA_90, 0);
-        lv_obj_set_style_radius(root, 14, 0);
-        lv_obj_set_style_border_width(root, 0, 0);
+        lv_obj_set_style_radius(root, 16, 0);
+        lv_obj_set_style_border_width(root, 1, 0);
+        lv_obj_set_style_border_color(root, lv_color_hex(0x2E4368), 0);
+        lv_obj_set_style_border_opa(root, LV_OPA_90, 0);
         lv_obj_set_style_pad_all(root, 10, 0);
         lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(root, LV_OBJ_FLAG_CLICKABLE);
@@ -78,12 +85,14 @@ private:
         lv_obj_align(lbl_app, LV_ALIGN_TOP_LEFT, 0, 0);
 
         lbl_title = lv_label_create(root);
+        lv_obj_set_width(lbl_title, panel_w - 20);
+        lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(lbl_title, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_title, LV_ALIGN_TOP_LEFT, 0, 18);
 
         lbl_body = lv_label_create(root);
-        lv_obj_set_width(lbl_body, 284);
+        lv_obj_set_width(lbl_body, panel_w - 20);
         lv_label_set_long_mode(lbl_body, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(lbl_body, lv_color_hex(0xC7C7CC), 0);
         lv_obj_set_style_text_font(lbl_body, &lv_font_montserrat_12, 0);
@@ -97,6 +106,7 @@ private:
         lv_label_set_text(lbl_app, it.app[0] ? it.app : "System");
         lv_label_set_text(lbl_title, it.title[0] ? it.title : "Notification");
         lv_label_set_text(lbl_body, it.body);
+        lv_obj_move_foreground(root);
         lv_obj_clear_flag(root, LV_OBJ_FLAG_HIDDEN);
         showing = true;
         show_since = millis();
@@ -134,7 +144,7 @@ public:
         ensure_ui();
 
         if (showing) {
-            if ((millis() - show_since) > 3200) {
+            if ((millis() - show_since) > 2800) {
                 lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
                 showing = false;
             } else {
@@ -162,6 +172,10 @@ namespace notifications {
     inline NotificationCenter& center() {
         static NotificationCenter c;
         return c;
+    }
+
+    inline bool latest(uint8_t index, char* out_app, char* out_title, char* out_body) {
+        return center().get_latest(index, out_app, out_title, out_body);
     }
 
     inline void push(const char* app, const char* title, const char* body) {

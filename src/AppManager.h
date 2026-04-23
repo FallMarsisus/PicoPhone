@@ -54,7 +54,9 @@ private:
     lv_obj_t* statusNetwork = nullptr;
     lv_obj_t* statusNotif = nullptr;
     lv_obj_t* statusBattery = nullptr;
-    static constexpr lv_coord_t status_bar_height = 18;
+    uint32_t status_last_update_ms = 0;
+    bool status_was_visible = false;
+    static constexpr lv_coord_t status_bar_height = 20;
 
     static const char* battery_icon(uint8_t percent) {
         if (percent >= 80) return LV_SYMBOL_BATTERY_FULL;
@@ -86,15 +88,23 @@ private:
     void createStatusBar() {
         if (statusBar) return;
 
+        lv_disp_t* disp = lv_disp_get_default();
+        const lv_coord_t screen_w = disp ? lv_disp_get_hor_res(disp) : 320;
+
         statusBar = lv_obj_create(lv_layer_top());
-        lv_obj_set_size(statusBar, 320, status_bar_height);
+        lv_obj_set_size(statusBar, screen_w, status_bar_height);
         lv_obj_align(statusBar, LV_ALIGN_TOP_MID, 0, 0);
-        lv_obj_set_style_bg_color(statusBar, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_bg_opa(statusBar, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(statusBar, 0, 0);
+        lv_obj_set_style_bg_grad_dir(statusBar, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_style_bg_color(statusBar, lv_color_hex(0x0B1220), 0);
+        lv_obj_set_style_bg_grad_color(statusBar, lv_color_hex(0x162338), 0);
+        lv_obj_set_style_bg_opa(statusBar, LV_OPA_80, 0);
+        lv_obj_set_style_border_width(statusBar, 1, 0);
+        lv_obj_set_style_border_color(statusBar, lv_color_hex(0x26344F), 0);
+        lv_obj_set_style_border_side(statusBar, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_opa(statusBar, LV_OPA_80, 0);
         lv_obj_set_style_radius(statusBar, 0, 0);
-        lv_obj_set_style_pad_left(statusBar, 4, 0);
-        lv_obj_set_style_pad_right(statusBar, 4, 0);
+        lv_obj_set_style_pad_left(statusBar, 6, 0);
+        lv_obj_set_style_pad_right(statusBar, 6, 0);
         lv_obj_set_style_pad_top(statusBar, 0, 0);
         lv_obj_set_style_pad_bottom(statusBar, 0, 0);
         lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_SCROLLABLE);
@@ -102,27 +112,27 @@ private:
         lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
         statusTime = lv_label_create(statusBar);
-        lv_obj_set_style_text_color(statusTime, lv_color_white(), 0);
+        lv_obj_set_style_text_color(statusTime, lv_color_hex(0xDCE7FF), 0);
         lv_obj_set_style_text_font(statusTime, &lv_font_montserrat_12, 0);
         lv_obj_align(statusTime, LV_ALIGN_LEFT_MID, 0, 0);
 
         statusNotif = lv_label_create(statusBar);
         lv_label_set_text(statusNotif, "");
-        lv_obj_set_style_text_color(statusNotif, lv_color_hex(0xFF453A), 0);
+        lv_obj_set_style_text_color(statusNotif, lv_color_hex(0x67B6FF), 0);
         lv_obj_set_style_text_font(statusNotif, &lv_font_montserrat_12, 0);
         lv_obj_align(statusNotif, LV_ALIGN_CENTER, 0, 0);
 
         statusNetwork = lv_label_create(statusBar);
         lv_obj_set_style_text_color(statusNetwork, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusNetwork, &lv_font_montserrat_12, 0);
-        lv_obj_set_width(statusNetwork, 32);
+        lv_obj_set_width(statusNetwork, 42);
         lv_label_set_long_mode(statusNetwork, LV_LABEL_LONG_CLIP);
-        lv_obj_align(statusNetwork, LV_ALIGN_RIGHT_MID, -64, 0);
+        lv_obj_align(statusNetwork, LV_ALIGN_RIGHT_MID, -70, 0);
 
         statusBattery = lv_label_create(statusBar);
         lv_obj_set_style_text_color(statusBattery, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusBattery, &lv_font_montserrat_12, 0);
-        lv_obj_set_width(statusBattery, 52);
+        lv_obj_set_width(statusBattery, 64);
         lv_label_set_long_mode(statusBattery, LV_LABEL_LONG_CLIP);
         lv_obj_align(statusBattery, LV_ALIGN_RIGHT_MID, 0, 0);
 
@@ -135,12 +145,22 @@ private:
         lv_obj_move_foreground(statusBar);
 
         const bool show_on_screen = (currentAppID != APP_HOME && currentAppID != APP_OLD_HOME);
-        if (!show_on_screen) {
+        const bool hide_for_lock = lockScreen.isLocked();
+        if (!show_on_screen || hide_for_lock) {
             lv_obj_add_flag(statusBar, LV_OBJ_FLAG_HIDDEN);
+            status_was_visible = false;
             return;
         }
 
         lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_HIDDEN);
+
+        const uint32_t now_ms = millis();
+        const uint32_t refresh_interval_ms = lockScreen.isLocked() ? 2500 : 1000;
+        if (status_was_visible && (uint32_t)(now_ms - status_last_update_ms) < refresh_interval_ms) {
+            return;
+        }
+        status_was_visible = true;
+        status_last_update_ms = now_ms;
 
         char time_buf[6] = {0};
         time_t now = time(nullptr);
@@ -152,7 +172,15 @@ private:
         }
         lv_label_set_text(statusTime, time_buf);
 
-        lv_label_set_text(statusNetwork, network_status().c_str());
+        const String net = network_status();
+        lv_label_set_text(statusNetwork, net.c_str());
+        if (net == "X") {
+            lv_obj_set_style_text_color(statusNetwork, lv_color_hex(0xFFB15A), 0);
+        } else if (net == "-") {
+            lv_obj_set_style_text_color(statusNetwork, lv_color_hex(0xA0AEC8), 0);
+        } else {
+            lv_obj_set_style_text_color(statusNetwork, lv_color_hex(0xCFE4FF), 0);
+        }
 
         const uint8_t batt = battery::read_percent();
         const bool charging = battery::is_charging() || battery::is_external_power();
@@ -173,7 +201,7 @@ private:
         char title[36] = {0};
         char body[96] = {0};
         if (notifications::center().get_latest(0, app, title, body)) {
-            lv_label_set_text(statusNotif, "!");
+            lv_label_set_text(statusNotif, LV_SYMBOL_BELL);
         } else {
             lv_label_set_text(statusNotif, "");
         }

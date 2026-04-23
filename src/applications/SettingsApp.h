@@ -4,6 +4,7 @@
 #include "App.h"
 #include "AppManager.h"
 #include "../system/Settings.h"
+#include "../system/Battery.h"
 #include "../system/LTE.h"
 #include "../system/HomeConfig.h"
 #include "../plugins/lv_t9_keyboard.h"
@@ -34,6 +35,16 @@ private:
     lv_obj_t* roller_month;
     lv_obj_t* roller_year;
     lv_obj_t* lbl_time_status;
+
+    // Battery details panel
+    lv_obj_t* battery_panel = nullptr;
+    lv_obj_t* battery_panel_status = nullptr;
+    lv_obj_t* battery_panel_mode = nullptr;
+    lv_obj_t* battery_panel_power = nullptr;
+    lv_obj_t* battery_panel_policy = nullptr;
+    lv_obj_t* battery_panel_limits = nullptr;
+    lv_obj_t* battery_panel_warning = nullptr;
+    uint32_t battery_panel_last_update_ms = 0;
 
     // Home customization panels
     lv_obj_t* home_reorder_panel = nullptr;
@@ -386,6 +397,27 @@ private:
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         app->showTimePanel();
     }
+
+    static void show_battery_panel_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->showBatteryPanel();
+    }
+
+    static void battery_panel_close_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->hideBatteryPanel();
+    }
+
+    static void battery_toggle_saver_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        battery::toggle_manual_saver();
+        app->refreshBatteryPanel(true);
+    }
+
+    static void battery_refresh_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->refreshBatteryPanel(true);
+    }
     
     static void time_panel_save(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
@@ -486,6 +518,69 @@ private:
     
     void hideTimePanel() {
         lv_obj_add_flag(time_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void showBatteryPanel() {
+        if (!battery_panel) return;
+        refreshBatteryPanel(true);
+        lv_obj_clear_flag(battery_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(battery_panel);
+    }
+
+    void hideBatteryPanel() {
+        if (!battery_panel) return;
+        lv_obj_add_flag(battery_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    void refreshBatteryPanel(bool force = false) {
+        if (!battery_panel) return;
+        if (!force && lv_obj_has_flag(battery_panel, LV_OBJ_FLAG_HIDDEN)) return;
+
+        const uint32_t now = millis();
+        if (!force && (now - battery_panel_last_update_ms) < 800) {
+            return;
+        }
+        battery_panel_last_update_ms = now;
+
+        const uint8_t pct = battery::read_percent();
+        const uint16_t mv = battery::read_voltage_mv();
+        const bool ext = battery::is_external_power();
+        const bool chg = battery::is_charging();
+        const battery::EnergyPolicy& policy = battery::get_energy_policy();
+        const bool saver_manual = battery::is_manual_saver_enabled();
+
+        char line[128];
+
+        snprintf(line, sizeof(line), "Niveau: %u%%  |  Tension: %u mV", (unsigned)pct, (unsigned)mv);
+        lv_label_set_text(battery_panel_status, line);
+
+        snprintf(line, sizeof(line), "Mode: %s  |  Eco manuel: %s",
+                 battery::power_mode_name(policy.mode), saver_manual ? "ON" : "OFF");
+        lv_label_set_text(battery_panel_mode, line);
+
+        snprintf(line, sizeof(line), "Alim ext: %s  |  Charge: %s", ext ? "oui" : "non", chg ? "oui" : "non");
+        lv_label_set_text(battery_panel_power, line);
+
+        snprintf(line, sizeof(line), "Politique: low_bat=%s  lte_eco=%s",
+                 policy.low_battery ? "oui" : "non",
+                 policy.lte_low_power ? "oui" : "non");
+        lv_label_set_text(battery_panel_policy, line);
+
+        snprintf(line, sizeof(line), "Limites: ecran %u%%  son %u%%",
+                 (unsigned)policy.brightness_limit_percent,
+                 (unsigned)policy.volume_limit_percent);
+        lv_label_set_text(battery_panel_limits, line);
+
+        if (policy.shutdown_requested) {
+            lv_label_set_text(battery_panel_warning, "Urgence: <2% sur batterie -> extinction materielle totale");
+            lv_obj_set_style_text_color(battery_panel_warning, lv_color_hex(0xFF453A), 0);
+        } else if (!ext && pct <= 8) {
+            lv_label_set_text(battery_panel_warning, "Alerte critique: branchez vite un chargeur");
+            lv_obj_set_style_text_color(battery_panel_warning, lv_color_hex(0xFF9F0A), 0);
+        } else {
+            lv_label_set_text(battery_panel_warning, "Protection profonde active: coupure auto sous 2% sur batterie");
+            lv_obj_set_style_text_color(battery_panel_warning, lv_color_hex(0x8E8E93), 0);
+        }
     }
 
     void showHomeReorderPanel() {
@@ -719,6 +814,14 @@ private:
         // ===== SECTION: SYSTEME =====
         createSection(list_cont, "SYSTEME");
 
+        lv_obj_t* row_battery = createSettingRow(list_cont, "Batterie (details)");
+        lv_obj_t* chevron_battery = lv_label_create(row_battery);
+        lv_label_set_text(chevron_battery, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_battery, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_battery, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_battery, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_battery, show_battery_panel_event, LV_EVENT_CLICKED, this);
+
         // WiFi (deplace depuis l'ecran d'accueil)
         lv_obj_t* row_wifi = createSettingRow(list_cont, "WiFi");
         lv_obj_t* chevron_wifi = lv_label_create(row_wifi);
@@ -852,7 +955,7 @@ public:
         
         // --- LISTE SCROLLABLE ---
         list_cont = lv_obj_create(main_bg);
-        lv_obj_set_size(list_cont, 320, 430);
+        lv_obj_set_size(list_cont, 320, 430 - 18);
         lv_obj_align(list_cont, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_bg_opa(list_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(list_cont, 0, 0);
@@ -1220,6 +1323,86 @@ public:
         lv_t9_kb_set_textarea(home_t9_kb, home_t9_ta);
         lv_obj_add_event_cb(home_t9_kb, t9_confirm_event, LV_EVENT_READY, this);
         lv_obj_add_event_cb(home_t9_kb, t9_cancel_event, LV_EVENT_CANCEL, this);
+
+        // --- BATTERY PANEL ---
+        battery_panel = lv_obj_create(main_bg);
+        lv_obj_set_size(battery_panel, 320, 480);
+        lv_obj_center(battery_panel);
+        lv_obj_set_style_bg_color(battery_panel, lv_color_hex(0x1c1c1e), 0);
+        lv_obj_set_style_border_width(battery_panel, 0, 0);
+        lv_obj_set_style_pad_all(battery_panel, 12, 0);
+        lv_obj_set_style_pad_gap(battery_panel, 8, 0);
+        lv_obj_set_flex_flow(battery_panel, LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_flag(battery_panel, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* batt_title = lv_label_create(battery_panel);
+        lv_label_set_text(batt_title, "Etat batterie");
+        lv_obj_set_style_text_color(batt_title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(batt_title, &lv_font_montserrat_14, 0);
+
+        battery_panel_status = lv_label_create(battery_panel);
+        lv_obj_set_style_text_color(battery_panel_status, lv_color_white(), 0);
+        lv_obj_set_style_text_font(battery_panel_status, &lv_font_montserrat_12, 0);
+
+        battery_panel_mode = lv_label_create(battery_panel);
+        lv_obj_set_style_text_color(battery_panel_mode, lv_color_white(), 0);
+        lv_obj_set_style_text_font(battery_panel_mode, &lv_font_montserrat_12, 0);
+
+        battery_panel_power = lv_label_create(battery_panel);
+        lv_obj_set_style_text_color(battery_panel_power, lv_color_white(), 0);
+        lv_obj_set_style_text_font(battery_panel_power, &lv_font_montserrat_12, 0);
+
+        battery_panel_policy = lv_label_create(battery_panel);
+        lv_obj_set_style_text_color(battery_panel_policy, lv_color_white(), 0);
+        lv_obj_set_style_text_font(battery_panel_policy, &lv_font_montserrat_12, 0);
+
+        battery_panel_limits = lv_label_create(battery_panel);
+        lv_obj_set_style_text_color(battery_panel_limits, lv_color_white(), 0);
+        lv_obj_set_style_text_font(battery_panel_limits, &lv_font_montserrat_12, 0);
+
+        battery_panel_warning = lv_label_create(battery_panel);
+        lv_obj_set_width(battery_panel_warning, lv_pct(100));
+        lv_label_set_long_mode(battery_panel_warning, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(battery_panel_warning, &lv_font_montserrat_12, 0);
+
+        lv_obj_t* batt_actions = lv_obj_create(battery_panel);
+        lv_obj_set_size(batt_actions, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(batt_actions, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(batt_actions, 0, 0);
+        lv_obj_set_style_pad_all(batt_actions, 0, 0);
+        lv_obj_set_style_pad_gap(batt_actions, 8, 0);
+        lv_obj_set_flex_flow(batt_actions, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(batt_actions, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* btn_batt_refresh = lv_btn_create(batt_actions);
+        lv_obj_set_size(btn_batt_refresh, 95, 38);
+        lv_obj_set_style_bg_color(btn_batt_refresh, lv_color_hex(0x2f6ff0), 0);
+        lv_obj_add_event_cb(btn_batt_refresh, battery_refresh_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_batt_refresh = lv_label_create(btn_batt_refresh);
+        lv_label_set_text(lbl_batt_refresh, "Rafraichir");
+        lv_obj_center(lbl_batt_refresh);
+
+        lv_obj_t* btn_batt_saver = lv_btn_create(batt_actions);
+        lv_obj_set_size(btn_batt_saver, 112, 38);
+        lv_obj_set_style_bg_color(btn_batt_saver, lv_color_hex(0x34C759), 0);
+        lv_obj_add_event_cb(btn_batt_saver, battery_toggle_saver_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_batt_saver = lv_label_create(btn_batt_saver);
+        lv_label_set_text(lbl_batt_saver, "Eco manuel");
+        lv_obj_center(lbl_batt_saver);
+
+        lv_obj_t* btn_batt_close = lv_btn_create(battery_panel);
+        lv_obj_set_size(btn_batt_close, lv_pct(100), 40);
+        lv_obj_set_style_bg_color(btn_batt_close, lv_color_hex(0x3a3a3c), 0);
+        lv_obj_add_event_cb(btn_batt_close, battery_panel_close_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_batt_close = lv_label_create(btn_batt_close);
+        lv_label_set_text(lbl_batt_close, "Fermer");
+        lv_obj_center(lbl_batt_close);
+
+        refreshBatteryPanel(true);
+    }
+
+    void update() override {
+        refreshBatteryPanel(false);
     }
 };
 

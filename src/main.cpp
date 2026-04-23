@@ -73,6 +73,7 @@ static inline void feed_watchdog() {
 static void apply_battery_energy_policy() {
     static uint32_t last_apply_ms = 0;
     static bool first_apply = true;
+    static bool low_battery_shutdown_started = false;
     static uint8_t last_brightness = 0xFF;
     static int last_volume = -1;
     static bool last_lte_low_power = false;
@@ -89,10 +90,24 @@ static void apply_battery_energy_policy() {
 
     const uint8_t user_brightness = settings::getBrightness();
     const uint8_t effective_brightness = battery::cap_brightness(user_brightness);
-    if (first_apply || effective_brightness != last_brightness) {
-        pinMode(settings::BACKLIGHT_PIN, OUTPUT);
-        analogWrite(settings::BACKLIGHT_PIN, effective_brightness);
-        last_brightness = effective_brightness;
+    const bool lock_active = manager.lockScreen.isLocked();
+    const bool lock_display_sleeping = lock_active && manager.lockScreen.isDisplaySleeping();
+
+    uint8_t target_brightness = effective_brightness;
+    if (lock_display_sleeping) {
+        target_brightness = 0;
+    } else if (lock_active) {
+        const uint8_t lock_cap = manager.lockScreen.lockAwakePwm();
+        target_brightness = (effective_brightness > lock_cap) ? lock_cap : effective_brightness;
+    }
+
+    if (first_apply || target_brightness != last_brightness) {
+        if (lock_display_sleeping) {
+            hardware_backlight_fade_to(0, 140);
+        } else {
+            hardware_backlight_set(target_brightness);
+        }
+        last_brightness = target_brightness;
     }
 
     const uint8_t user_volume = settings::getVolume();
@@ -120,10 +135,24 @@ static void apply_battery_energy_policy() {
                        (unsigned)battery::read_voltage_mv(),
                        battery::is_external_power() ? 1 : 0,
                        battery::is_charging() ? 1 : 0,
-                       (unsigned)effective_brightness,
+                       (unsigned)target_brightness,
                        effective_volume,
                        lte_low_power ? 1 : 0);
         last_mode = policy.mode;
+    }
+
+    if (policy.shutdown_requested) {
+        if (!low_battery_shutdown_started) {
+            low_battery_shutdown_started = true;
+            Logger::printf("[BAT] Coupure urgence: %u%%, extinction materielle pour proteger la batterie\n",
+                           (unsigned)battery::read_percent());
+            system_power_off();
+        }
+        return;
+    }
+
+    if (low_battery_shutdown_started && (battery::is_external_power() || battery::is_charging())) {
+        low_battery_shutdown_started = false;
     }
 
     first_apply = false;
@@ -299,14 +328,14 @@ void loadApp(AppID id) {
     enable_gesture_bubble_recursive(new_scr, enable_gesture_bubble_recursive);
     lv_obj_add_event_cb(new_scr, global_gesture_cb, LV_EVENT_GESTURE, nullptr);
 
-    // --- 5. Lancement de l'animation ---
+    // --- 5. Changement d'ecran sans animation ---
     if (old_app == nullptr) {
         // Premier écran réel: charger sans animation pour éviter de rester
         // bloqué sur l'écran noir par défaut si le tick LVGL n'est pas prêt.
         lv_scr_load(new_scr);
     } else {
-        // Transition animée (ex: Slide depuis la droite, 300ms, délai 0, true = effacer old_scr)
-        lv_scr_load_anim(new_scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 350, 0, true);
+        // Aucun effet visuel, mais on garde auto_del=true pour libérer old_scr.
+        lv_scr_load_anim(new_scr, LV_SCR_LOAD_ANIM_NONE, 0, 0, true);
     }
 
     mutex_exit(&app_switch_mutex);
@@ -408,6 +437,16 @@ void loop() {
 
     yield();
     
+    // En lockscreen, on adapte le duty-cycle CPU selon etat ecran.
+    if (manager.lockScreen.isLocked()) {
+        if (manager.lockScreen.isDisplaySleeping()) {
+            sleep_ms(40);
+        } else {
+            sleep_ms(10);
+        }
+        return;
+    }
+
     // Throttling léger: laisser LVGL respirer (cible ~100 FPS = 10ms min par frame)
     static unsigned long last_loop = 0;
     unsigned long now = millis();
@@ -449,9 +488,20 @@ void loop1() {
 
     watchdog_update();
 
-    // LTE est le SEUL gestionnaire de Serial1...
+    const bool lock_active = manager.lockScreen.isLocked();
+
+    // LTE est le SEUL gestionnaire de Serial1.
+    // En lockscreen, on garde un update periodique lent pour eviter de laisser
+    // le modem dans un etat incoherent tout en limitant la conso.
     if (!kDisableLteTemporarily) {
-        LTE::update();
+        static uint32_t last_lte_update_locked_ms = 0;
+        const uint32_t now_ms = millis();
+        if (!lock_active) {
+            LTE::update();
+        } else if ((uint32_t)(now_ms - last_lte_update_locked_ms) >= 5000) {
+            last_lte_update_locked_ms = now_ms;
+            LTE::update();
+        }
     }
 
     core1_heartbeat = millis();

@@ -11,6 +11,7 @@
 #include "../system/Secrets.h"
 #include "../system/NetworkErrorHandler.h"
 #include "../system/LTE.h"
+#include "../system/UnifiedContacts.h"
 
 // Déclaration externe du pont créé dans TelegramNotifyService
 extern void (*telegram_incoming_cb)(String chat_id, String name, String text, long ts);
@@ -159,7 +160,7 @@ private:
             for (JsonObject obj : arr) {
                 ContactMetadata c;
                 c.chat_id = obj["id"].as<String>();
-                c.name = obj["n"].as<String>();
+                c.name = unified_contacts::display_name_for_telegram(c.chat_id, obj["n"].as<String>());
                 c.last_msg_preview = obj["p"].as<String>();
                 c.has_new = false; 
                 contacts.push_back(c);
@@ -334,7 +335,8 @@ private:
             }, LV_EVENT_CLICKED, this);
 
             lv_obj_t* lbl = lv_label_create(btn);
-            lv_label_set_text(lbl, contacts[i].name.c_str());
+            const String display_name = unified_contacts::display_name_for_telegram(contacts[i].chat_id, contacts[i].name);
+            lv_label_set_text(lbl, display_name.c_str());
             lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
             lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 5, 5);
 
@@ -361,7 +363,8 @@ private:
 
         lv_obj_add_flag(view_contacts, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(view_chat, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(header_title, contacts[idx].name.c_str());
+        const String display_name = unified_contacts::display_name_for_telegram(contacts[idx].chat_id, contacts[idx].name);
+        lv_label_set_text(header_title, display_name.c_str());
 
         load_history_to_ui(contacts[idx].chat_id);
         lv_obj_scroll_to_y(msg_list, 10000, LV_ANIM_OFF);
@@ -558,9 +561,11 @@ public:
                     if (contacts[k].chat_id == chat_id) { idx = (int)k; break; }
                 }
                 if (idx == -1) {
-                    contacts.push_back({chat_id, name.length() ? name : String("Inconnu"), text, true});
+                    const String display_name = unified_contacts::display_name_for_telegram(chat_id, name.length() ? name : String("Inconnu"));
+                    contacts.push_back({chat_id, display_name, text, true});
                     idx = (int)contacts.size() - 1;
                 } else {
+                    contacts[idx].name = unified_contacts::display_name_for_telegram(chat_id, contacts[idx].name);
                     contacts[idx].last_msg_preview = text;
                     if (current_contact_idx != idx) contacts[idx].has_new = true;
                 }

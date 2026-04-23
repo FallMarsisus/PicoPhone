@@ -8,6 +8,7 @@
 #include <AudioOutputI2S.h>
 #include <hardware/watchdog.h>
 #include "../Hardware.h"
+#include "../system/UnifiedContacts.h"
 
 LV_FONT_DECLARE(lv_font_montserrat_14);
 
@@ -65,7 +66,8 @@ private:
             lv_label_set_text(lbl_status, "Entrez un numero");
             return;
         }
-        lv_label_set_text(lbl_status, "Numerotation...");
+        const String display = unified_contacts::display_name_for_phone(String(num), String(num));
+        lv_label_set_text_fmt(lbl_status, "Appel: %s", display.c_str());
         while (Serial1.available()) Serial1.read();
         Serial1.print("ATD");
         Serial1.print(num);

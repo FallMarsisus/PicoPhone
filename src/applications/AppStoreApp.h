@@ -564,7 +564,7 @@ public:
 
         // ── Conteneur liste ──
         list_cont = lv_obj_create(main_bg);
-        lv_obj_set_size(list_cont, 320, 430);
+        lv_obj_set_size(list_cont, 320, 430- 18);
         lv_obj_align(list_cont, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_bg_opa(list_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(list_cont, 0, 0);

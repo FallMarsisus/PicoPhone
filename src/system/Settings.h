@@ -7,6 +7,7 @@
 
 // Déclaration anticipée: implémentée dans Hardware.h
 static inline void audio_amp_enable(bool enable);
+static inline void hardware_backlight_set(uint8_t pwm);
 
 /**
  * Paramètres système persistants (stockés en EEPROM après le bloc WiFi).
@@ -150,8 +151,7 @@ static void setBrightness(uint8_t v) {
     load();
     if (v < 10) v = 10;
     g_data.brightness = v;
-    pinMode(BACKLIGHT_PIN, OUTPUT);
-    analogWrite(BACKLIGHT_PIN, v);
+    hardware_backlight_set(v);
     save();
 }
 
@@ -173,8 +173,7 @@ static void applyBrightness() {
     load();
     uint8_t v = g_data.brightness;
     if (v < 10) v = 200;
-    pinMode(BACKLIGHT_PIN, OUTPUT);
-    analogWrite(BACKLIGHT_PIN, v);
+    hardware_backlight_set(v);
 }
 
 } // namespace settings

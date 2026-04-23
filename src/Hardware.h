@@ -33,6 +33,8 @@ uint8_t DEV_Module_Init(void);
 
 // Création de l'objet pour le PMIC AXP2101
 XPowersAXP2101 PMIC;
+static bool g_pmic_available = false;
+static uint32_t g_pmic_irq_ignore_until_ms = 0;
 
 #define I2C_PORT i2c0
 
@@ -157,9 +159,52 @@ static volatile bool g_touch_irq_pending = false;
 static volatile bool g_hw_deferred_init_pending = true;
 static uint16_t g_boot_stage_y = 24;
 static bool g_boot_stage_onscreen_enabled = true;
+static volatile uint8_t g_backlight_pwm = 255;
+static bool g_backlight_known = false;
 
 // Mutex global
 auto_init_mutex(spi_mutex);
+
+static inline void hardware_backlight_set(uint8_t pwm) {
+    pinMode(LCD_BL_PIN, OUTPUT);
+    analogWrite(LCD_BL_PIN, pwm);
+    g_backlight_pwm = pwm;
+    g_backlight_known = true;
+}
+
+static inline uint8_t hardware_backlight_current() {
+    return g_backlight_pwm;
+}
+
+static inline void hardware_backlight_fade_to(uint8_t target_pwm, uint16_t duration_ms = 180) {
+    if (!g_backlight_known || duration_ms == 0) {
+        hardware_backlight_set(target_pwm);
+        return;
+    }
+
+    const int start = (int)hardware_backlight_current();
+    const int target = (int)target_pwm;
+    if (start == target) {
+        return;
+    }
+
+    const int delta = (target > start) ? (target - start) : (start - target);
+    uint16_t steps = (uint16_t)(delta / 4);
+    if (steps < 1) steps = 1;
+    if (steps > 64) steps = 64;
+
+    uint16_t step_delay_ms = duration_ms / steps;
+    if (step_delay_ms < 2) step_delay_ms = 2;
+
+    for (uint16_t i = 1; i <= steps; ++i) {
+        const int next = start + ((target - start) * (int)i) / (int)steps;
+        hardware_backlight_set((uint8_t)next);
+        watchdog_update();
+        sleep_ms(step_delay_ms);
+    }
+
+    hardware_backlight_set(target_pwm);
+}
 
 static inline void boot_stage(const char* msg, uint16_t color = TFT_WHITE) {
     if (Serial) {
@@ -312,8 +357,176 @@ static bool modem_boot_probe(uint8_t retries = 3) {
 static void touch_int_callback() {
     g_touch_irq_pending = true;
 }
+
+static inline bool pmic_init_with_retries(uint8_t max_attempts = 5) {
+    const uint16_t retry_delays_ms[] = {50, 100, 200, 400, 800};
+
+    for (uint8_t attempt = 0; attempt < max_attempts; ++attempt) {
+        Wire1.end();
+        sleep_ms(5);
+
+        Wire1.setSDA(DEV_SDA_PIN);
+        Wire1.setSCL(DEV_SCL_PIN);
+        Wire1.setClock(400 * 1000);
+        Wire1.begin();
+
+        // Apres brownout/court-circuit, le PMIC et le bus I2C peuvent mettre
+        // du temps a redevenir stables.
+        sleep_ms(150);
+
+        if (PMIC.init(Wire1, DEV_SDA_PIN, DEV_SCL_PIN)) {
+            g_pmic_available = true;
+            Serial.printf("[PMIC] AXP2101 detecte (tentative %u/%u)\n", (unsigned)(attempt + 1), (unsigned)max_attempts);
+            return true;
+        }
+
+        Serial.printf("[PMIC] AXP2101 non detecte (tentative %u/%u)\n", (unsigned)(attempt + 1), (unsigned)max_attempts);
+        if (attempt < max_attempts - 1) {
+            sleep_ms(retry_delays_ms[attempt < 5 ? attempt : 4]);
+        }
+    }
+
+    g_pmic_available = false;
+    return false;
+}
+
 // Variable globale pour prévenir le Core 1 de l'extinction
 volatile bool system_is_shutting_down = false;
+
+// ─ Configuration optimisée du chargeur PMIC ─
+static inline void pmic_configure_charging() {
+    if (!g_pmic_available) {
+        return;
+    }
+
+    Serial.println("[PMIC] Configuration du chargeur rapide...");
+    
+    // 1. Définir la tension cible à 4.2V (max safe pour Li-ion)
+    // setChargeTargetVoltage accepte un enum (0-4 = 4.0V, 4.1V, 4.2V, 4.35V, 4.4V)
+    PMIC.setChargeTargetVoltage(2);  // 2 = 4.2V
+    
+    // 2. Courant de charge en mode rapide (enum XPowers)
+    PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+
+    // 2bis. Marge d'entree VBUS pour mieux encaisser les pointes du modem
+    // alimente depuis BATT (evite les cas limites a 500/900mA).
+    PMIC.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
+    
+    // 3. Configurer le seuil thermique (protection thermique contre les surcharges)
+    // Les valeurs typiques: 60°C, 80°C, 100°C, 120°C
+    // Utilise 80°C pour un bon équilibre entre charge rapide et protection
+    
+    Serial.println("[PMIC] Chargeur rapide: 4.2V, 1000mA");
+}
+
+// ─ Configuration des sorties de puissance (DCDC + ALDO) ─
+static inline void pmic_configure_power_outputs() {
+    if (!g_pmic_available) {
+        return;
+    }
+
+    Serial.println("[PMIC] Configuration des sorties d'alimentation...");
+    
+    // Pour un RP2350-Touch-LCD-3.5 typique:
+    
+    // ALDO1: 3.3V pour capteurs/IMU/Touch
+    PMIC.setALDO1Voltage(3300);
+    PMIC.enableALDO1();
+    
+    // ALDO2: 3.3V pour réserve (commande audio, codec, etc)
+    PMIC.setALDO2Voltage(3300);
+    PMIC.enableALDO2();
+    
+    // DCDC1/DCDC2: Rails principaux du système (activés par défaut)
+    PMIC.enableDC1();
+    PMIC.enableDC2();
+    
+    Serial.println("[PMIC] Sorties d'alimentation configurées");
+}
+
+// ─ Couper la plupart des canaux d'alimentation (extinction complète) ─
+static inline void pmic_power_down_all_channels() {
+    if (!g_pmic_available) {
+        return;
+    }
+
+    Serial.println("[PMIC] Coupure des canaux non-essentiels...");
+    
+    // Désactiver les DCDC supplémentaires (garder DC1/DC2 si essentiels)
+    PMIC.disableDC3();
+    PMIC.disableDC4();
+    PMIC.disableDC5();
+    
+    // Désactiver tous les ALDO sauf ALDO1 pour les capteurs bas-débit
+    PMIC.disableALDO2();
+    PMIC.disableALDO3();
+    PMIC.disableALDO4();
+    
+    // Désactiver les autres sorties si disponibles
+    PMIC.disableBLDO1();
+    PMIC.disableBLDO2();
+    PMIC.disableCPUSLDO();
+    PMIC.disableDLDO1();
+    PMIC.disableDLDO2();
+
+    // En extinction logicielle, on coupe aussi ALDO1 pour eviter tout rail residuel.
+    PMIC.disableALDO1();
+    
+    Serial.println("[PMIC] Canaux non-essentiels désactivés");
+}
+
+// ─ Mode veille: couper les périphériques non-essentiels ─
+static inline void pmic_sleep_mode() {
+    if (!g_pmic_available) {
+        return;
+    }
+
+    Serial.println("[PMIC] Passage en mode veille (réduction des sorties)...");
+    
+    // Couper uniquement les canaux clairement non-essentiels en veille.
+    // Garder ALDO2/DC2 actifs pour preserver la marge d'alimentation systeme.
+    PMIC.disableALDO3();
+    PMIC.disableALDO4();
+    
+    // DCDC2 est conserve: sur certaines cartes il conditionne la stabilite
+    // de l'alimentation logique autour du modem.
+    PMIC.disableDC3();
+    PMIC.disableDC4();
+    PMIC.disableDC5();
+
+    PMIC.disableBLDO1();
+    PMIC.disableBLDO2();
+    PMIC.disableCPUSLDO();
+    PMIC.disableDLDO1();
+    PMIC.disableDLDO2();
+    
+    // Garder une marge energie maximale en veille pour eviter les ratés modem.
+    PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+    
+    Serial.println("[PMIC] Mode veille activé");
+}
+
+// ─ Sortie de veille: restaurer tous les canaux ─
+static inline void pmic_wake_mode() {
+    if (!g_pmic_available) {
+        return;
+    }
+
+    Serial.println("[PMIC] Sortie de mode veille (restauration des sorties)...");
+
+    PMIC.disableSleep();
+    PMIC.disableWakeup();
+    
+    // Réactiver les canaux essentiels
+    PMIC.enableALDO1();
+    PMIC.enableALDO2();
+    PMIC.enableDC2();
+    
+    // Restaurer le courant de charge normal
+    PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+    
+    Serial.println("[PMIC] Mode veille désactivé");
+}
 
 
 void system_power_off() {
@@ -347,8 +560,8 @@ void system_power_off() {
     // IMPORTANT : Si vous avez relié SD_MODE du MAX98357 à un pin (ex: GP20)
     // pinMode(20, OUTPUT); digitalWrite(20, LOW); // Force le Shutdown total de l'ampli
 
-    // 6. EXTINCTION DE L'ÉCRAN
-    digitalWrite(LCD_BL_PIN, LOW);
+    // 6. EXTINCTION DE L'ECRAN
+    hardware_backlight_fade_to(0, 220);
     tft.writecommand(0x28); // Display OFF
     tft.writecommand(0x10); // Sleep IN
     sleep_ms(50);
@@ -372,9 +585,21 @@ void system_power_off() {
     pinMode(DEV_SCL_PIN, INPUT_PULLDOWN);
 
     Serial.println("[POWER] CPU Zzz...");
-    Serial.flush(); 
+    Serial.flush();
+    
+    // 8. COUPURE DES CANAUX PMIC NON-ESSENTIELS (économie max)
+    pmic_power_down_all_channels();
+    sleep_ms(100);
 
-    // 8. BAISSE DE L'HORLOGE ET DODO PROFOND
+    // 9. Extinction materielle complete du PMIC (coupe tous les rails systeme).
+    if (g_pmic_available) {
+        Serial.println("[PMIC] Shutdown matériel demandé");
+        Serial.flush();
+        PMIC.shutdown();
+        sleep_ms(50);
+    }
+
+    // 10. Fallback si le PMIC ne coupe pas (ou PMIC absent): dodo profond CPU.
     // On passe le RP2040 de 133 MHz à 2 MHz (fait chuter la conso du processeur à ~1mA)
     set_sys_clock_khz(20000, true);
 
@@ -665,8 +890,7 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
 void hardware_init() {
 
     
-    pinMode(LCD_BL_PIN, OUTPUT); 
-    digitalWrite(LCD_BL_PIN, HIGH);
+    hardware_backlight_set(255);
 
     Logger::begin();
 
@@ -680,18 +904,26 @@ void hardware_init() {
     Wire1.setSDA(DEV_SDA_PIN);
     Wire1.setSCL(DEV_SCL_PIN);
     Wire1.setClock(400 * 1000);
-    Wire1.begin();
+    const bool pmic_ok = pmic_init_with_retries(5);
+    if (pmic_ok) {
+        battery::attach_pmic(&PMIC);
 
-    if (!PMIC.init(Wire1, DEV_SDA_PIN, DEV_SCL_PIN)) {
-        Serial.println("Erreur: Impossible de trouver le AXP2101 !");
-        while (1);
+        PMIC.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
+        PMIC.clearIrqStatus();
+        sleep_ms(20);
+        PMIC.getIrqStatus();
+        PMIC.clearIrqStatus();
+        g_pmic_irq_ignore_until_ms = millis() + 2500;
+    } else {
+        Serial.println("[PMIC] AXP2101 indisponible, boot continue en mode degrade (fallback ADC).");
+        battery::attach_pmic(nullptr);
     }
 
-    battery::attach_pmic(&PMIC);
-
-    PMIC.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
-    PMIC.clearIrqStatus();
     pinMode(SYS_OUT_PIN, INPUT_PULLUP);
+    
+    // Configurer la charge rapide et les sorties PMIC
+    pmic_configure_charging();
+    pmic_configure_power_outputs();
 
     pinMode(LCD_RST_PIN, OUTPUT);
     digitalWrite(LCD_RST_PIN, LOW);
@@ -822,8 +1054,9 @@ inline void hardware_deferred_init() {
 
 // Dans Hardware.h
 void hardware_sleep() {
+    hardware_backlight_fade_to(0, 180);
+
     mutex_enter_blocking(&spi_mutex);
-    digitalWrite(LCD_BL_PIN, LOW);
     tft.writecommand(0x10); // Sleep écran
     mutex_exit(&spi_mutex);
 
@@ -831,6 +1064,12 @@ void hardware_sleep() {
     if (g_touch_present) {
         DEV_I2C_Write_Byte(FT6336U_I2C_ADDR, FT6336U_ADDR_POWER_MODE, 0x03);
     }
+    
+    // Réduire les sorties PMIC en mode veille
+    pmic_sleep_mode();
+
+    // IMPORTANT: ne pas piloter le modem ici.
+    // La veille lockscreen ne doit pas modifier son etat d'alimentation.
 }
 
 // Appelle hardware_sleep() pour mettre en veille, hardware_wake() pour réveiller.
@@ -841,31 +1080,88 @@ void check_sleep_button() {
     return;
 #endif
 
-    static uint32_t pmic_poll_ms = 0;
-    const uint32_t now = millis();
-    const bool pmic_irq_active = (digitalRead(SYS_OUT_PIN) == LOW);
-    if (pmic_irq_active && (now - pmic_poll_ms >= 20)) {
-        pmic_poll_ms = now;
-        PMIC.getIrqStatus();
-    }
-
-    // Priorite au bouton PMIC (K3 / PWRON) si les IRQ PEK sont remontees.
-    if (PMIC.isPekeyLongPressIrq()) {
-        Serial.println("Bouton K3 (PWRON) maintenu !");
-        PMIC.clearIrqStatus();
-        showPowerMenu();
-        return;
-    }
-
-    if (PMIC.isPekeyShortPressIrq()) {
-        Serial.println("Bouton K3 (PWRON) pressé brièvement !");
-        PMIC.clearIrqStatus();
+    auto handle_short_press = []() {
         if (!manager.lockScreen.isLocked()) {
             manager.lockScreen.lock();
-        } else {
-            manager.lockScreen.unlock();
+            return;
         }
-        return;
+
+        // Si l'ecran est eteint, un appui court reveille vers le lockscreen.
+        // S'il est deja allume sur le lockscreen, un appui court le remet en veille.
+        if (manager.lockScreen.isDisplaySleeping()) {
+            manager.lockScreen.wakeToLockScreen();
+        } else {
+            manager.lockScreen.lock();
+        }
+    };
+
+    static uint32_t pmic_poll_ms = 0;
+    static bool pmic_key_pressed = false;
+    static uint32_t pmic_key_press_start_ms = 0;
+    const uint32_t now = millis();
+    if (g_pmic_available) {
+        const bool pmic_irq_active = (digitalRead(SYS_OUT_PIN) == LOW);
+        // Certaines revisions ne cablent pas SYS_OUT de maniere fiable.
+        // On garde l'IRQ materielle quand disponible, mais on sonde aussi le PMIC
+        // periodiquement pour ne jamais rater les appuis K3.
+        const bool periodic_poll_due = ((uint32_t)(now - pmic_poll_ms) >= 120);
+        if ((pmic_irq_active || periodic_poll_due) && (now - pmic_poll_ms >= 20)) {
+            pmic_poll_ms = now;
+            PMIC.getIrqStatus();
+
+            // Ignore les IRQ PEK transitoires juste apres un redemarrage
+            // suite a brownout/court-circuit/batterie tres basse.
+            if (now < g_pmic_irq_ignore_until_ms) {
+                PMIC.clearIrqStatus();
+            }
+        }
+
+        if (now >= g_pmic_irq_ignore_until_ms) {
+            // Priorite au bouton PMIC (K3 / PWRON) si les IRQ PEK sont remontees.
+            if (PMIC.isPekeyLongPressIrq()) {
+                Serial.println("Bouton K3 (PWRON) maintenu !");
+                PMIC.clearIrqStatus();
+                showPowerMenu();
+                return;
+            }
+
+            if (PMIC.isPekeyShortPressIrq()) {
+                Serial.println("Bouton K3 (PWRON) pressé brièvement !");
+                PMIC.clearIrqStatus();
+                handle_short_press();
+                return;
+            }
+
+            // Fallback robuste: certaines cartes ne remontent que positive/negative,
+            // sans evenements short/long directement decodees.
+            if (PMIC.isPekeyPositiveIrq()) {
+                pmic_key_pressed = true;
+                pmic_key_press_start_ms = now;
+            }
+
+            if (PMIC.isPekeyNegativeIrq()) {
+                uint32_t press_ms = 0;
+                if (pmic_key_pressed) {
+                    press_ms = (uint32_t)(now - pmic_key_press_start_ms);
+                }
+                pmic_key_pressed = false;
+
+                // 1.2s pour distinguer appui court/long (proche du chemin GPIO).
+                if (press_ms >= 1200) {
+                    Serial.println("[POWER] K3 long press (fallback) !");
+                    PMIC.clearIrqStatus();
+                    showPowerMenu();
+                    return;
+                }
+
+                if (press_ms >= 40) {
+                    Serial.println("[POWER] K3 short press (fallback) !");
+                    PMIC.clearIrqStatus();
+                    handle_short_press();
+                    return;
+                }
+            }
+        }
     }
 
     static uint32_t press_start_time = 0;
@@ -900,11 +1196,7 @@ void check_sleep_button() {
             // L'anti-rebond de 50ms évite les faux positifs
             if (!long_press_handled && (millis() - press_start_time > 50)) {
                 Serial.println("[POWER] Appui court détecté !");
-                if (!manager.lockScreen.isLocked()) {
-                    manager.lockScreen.lock();
-                } else {
-                    manager.lockScreen.unlock();
-                }
+                handle_short_press();
             }
         }
     }
@@ -912,6 +1204,13 @@ void check_sleep_button() {
 
 void hardware_wake() {
     SPI.begin(); 
+
+    // On garde le backlight a zero pendant la sequence de reveil LCD pour
+    // eviter un flash blanc avant restauration de l'image.
+    hardware_backlight_set(0);
+    
+    // Restaurer les sorties PMIC depuis le mode veille
+    pmic_wake_mode();
     
     // RÉVEILLER LE TACTILE AVEC UN RESET MATÉRIEL
     digitalWrite(Touch_RST_PIN, LOW);
@@ -929,10 +1228,19 @@ void hardware_wake() {
     tft.writecommand(0x29); // Display ON
     tft.endWrite();
 
-    digitalWrite(LCD_BL_PIN, HIGH);
-    Serial1.println("AT+CSCLK=0"); // Réveiller le modem LTE
+    tft.fillScreen(TFT_BLACK);
     
-    tft.fillScreen(TFT_BLACK); 
+    // Forcer LVGL a redessiner immédiatement avant le fade du backlight
+    // pour éviter un flash blanc ou une transition saccadée.
+    yield();
+    lv_refr_now(lv_disp_get_default());
+    yield();
+    watchdog_update();
+
+    const uint8_t target_pwm = battery::cap_brightness(settings::getBrightness());
+    // Augmenter la durée du fade (400ms au lieu de 220ms) pour une transition fluide
+    // une fois que l'écran est prêt à afficher le bon contenu.
+    hardware_backlight_fade_to(target_pwm, 400);
 }
 
 // À appeler dans loop() : check_sleep_button();

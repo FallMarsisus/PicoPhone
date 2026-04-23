@@ -902,17 +902,39 @@ public:
     {
         if (enable)
         {
-            // Mode économie : Désactive la RF (Radio Fréquence)
-            // Consommation chute drastiquement (~1.5mA au lieu de 20-40mA)
-            Serial1.println("AT+CFUN=0");
-            Serial.println("[LTE] RF OFF (Mode Eco)");
+            // Mode economie sans couper la radio: CSCLK avec verification.
+            sendAT("AT", 800);
+            sendAT("AT+CFUN=1", 2000);
+
+            bool ok = false;
+            for (uint8_t i = 0; i < 3; ++i) {
+                String resp = sendAT("AT+CSCLK=1", 1200);
+                if (resp.indexOf("OK") != -1) {
+                    ok = true;
+                    break;
+                }
+                sleep_ms(120);
+            }
+            Serial.println(ok ? "[LTE] Mode Eco: CSCLK=1 (radio conservee)" : "[LTE] Mode Eco: CSCLK=1 non confirme");
         }
         else
         {
-            // Mode normal : Réactive la 4G et la SIM
-            Serial1.println("AT+CFUN=1");
-            Serial.println("[LTE] RF ON (Full Function)");
-            // On peut ajouter un AT+CREG? après quelques secondes pour vérifier le réseau
+            // Mode normal: reveil UART + full function avec retries.
+            bool wake_ok = false;
+            for (uint8_t i = 0; i < 3; ++i) {
+                String resp = sendAT("AT+CSCLK=0", 1200);
+                if (resp.indexOf("OK") != -1) {
+                    wake_ok = true;
+                    break;
+                }
+                sendAT("AT", 800);
+                sleep_ms(120);
+            }
+
+            String cfun = sendAT("AT+CFUN=1", 2500);
+            String ping = sendAT("AT", 1000);
+            const bool ok = wake_ok && (cfun.indexOf("OK") != -1) && (ping.indexOf("OK") != -1);
+            Serial.println(ok ? "[LTE] Mode normal: CSCLK=0, RF ON" : "[LTE] Mode normal: reveil partiel, retry auto via loop");
         }
     }
 

@@ -6,7 +6,6 @@
 #include <vector>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include "../plugins/lv_t9_keyboard.h"
 
 // Theme sombre moderne (style iOS)
 #define COL_BG       0x000000
@@ -267,7 +266,7 @@ private:
             case 1: return "Step 2/5 - Last name";
             case 2: return "Step 3/5 - Phone";
             case 3: return "Step 4/5 - Email";
-            case 4: return "Step 5/5 - Telegram";
+            case 4: return "Step 5/5 - Link Telegram";
             default: return "Step";
         }
     }
@@ -278,7 +277,7 @@ private:
             case 1: return "Type last name, then press OK";
             case 2: return "Type phone number, then press OK";
             case 3: return "Type email, then press OK";
-            case 4: return "Pick Telegram name/ID or type it";
+            case 4: return "Link this contact to a Telegram ID";
             default: return "";
         }
     }
@@ -310,7 +309,7 @@ private:
         if (form_step == FORM_STEPS - 1) lv_label_set_text(btn_next_lbl, "Save");
         else lv_label_set_text(btn_next_lbl, "Next");
 
-        if (kb && ta_current) lv_t9_kb_set_textarea(kb, ta_current);
+        if (kb && ta_current) lv_keyboard_set_textarea(kb, ta_current);
     }
 
     void open_editor() {
@@ -323,7 +322,7 @@ private:
 
     void close_editor() {
         lv_obj_add_flag(editor_overlay, LV_OBJ_FLAG_HIDDEN);
-        if (kb) lv_t9_kb_set_textarea(kb, nullptr);
+        if (kb) lv_keyboard_set_textarea(kb, nullptr);
     }
 
     bool save_contact_from_form() {
@@ -442,7 +441,7 @@ private:
 
         if (contacts.empty()) {
             lv_obj_t* empty = lv_label_create(list_cont);
-            lv_label_set_text(empty, "No contacts yet");
+            lv_label_set_text(empty, "Aucun contact");
             lv_obj_set_style_text_color(empty, lv_color_hex(COL_SUB), 0);
             lv_obj_center(empty);
             return;
@@ -450,15 +449,15 @@ private:
 
         for (const auto& c : contacts) {
             lv_obj_t* card = lv_obj_create(list_cont);
-            lv_obj_set_size(card, 292, 88);
+            lv_obj_set_size(card, 304, 92);
             lv_obj_set_style_bg_color(card, lv_color_hex(COL_CARD), 0);
-            lv_obj_set_style_radius(card, 14, 0);
+            lv_obj_set_style_radius(card, 16, 0);
             lv_obj_set_style_border_width(card, 0, 0);
-            lv_obj_set_style_pad_all(card, 10, 0);
+            lv_obj_set_style_pad_all(card, 12, 0);
             disable_scroll(card);
 
             lv_obj_t* avatar = lv_obj_create(card);
-            lv_obj_set_size(avatar, 42, 42);
+            lv_obj_set_size(avatar, 44, 44);
             lv_obj_set_style_bg_color(avatar, lv_color_hex(COL_ACCENT), 0);
             lv_obj_set_style_border_width(avatar, 0, 0);
             lv_obj_set_style_radius(avatar, LV_RADIUS_CIRCLE, 0);
@@ -471,24 +470,50 @@ private:
             else if (c.nom.length() > 0) first[0] = c.nom[0];
             lv_label_set_text(initial, first);
             lv_obj_set_style_text_color(initial, lv_color_hex(COL_TEXT), 0);
+            lv_obj_set_style_text_font(initial, &lv_font_montserrat_14, 0);
             lv_obj_center(initial);
 
-            lv_obj_t* lbl = lv_label_create(card);
-            lv_label_set_text_fmt(lbl, "%s %s\nTel: %s\nTG: %s", 
-                                 c.prenom.c_str(), c.nom.c_str(), 
-                                 c.telephone.c_str(), c.telegramID.c_str());
-            lv_obj_set_style_text_color(lbl, lv_color_hex(COL_TEXT), 0);
-            lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 52, 0);
+            String display_name = c.prenom;
+            if (c.nom.length() > 0) {
+                if (display_name.length() > 0) display_name += " ";
+                display_name += c.nom;
+            }
+            display_name.trim();
+            if (display_name.length() == 0) {
+                display_name = "Sans nom";
+            }
+
+            lv_obj_t* name_lbl = lv_label_create(card);
+            lv_label_set_text(name_lbl, display_name.c_str());
+            lv_obj_set_style_text_color(name_lbl, lv_color_hex(COL_TEXT), 0);
+            lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_width(name_lbl, 200);
+            lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+            lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 56, 6);
+
+            String meta = "Tel: ";
+            meta += (c.telephone.length() > 0) ? c.telephone : "-";
+            meta += "  |  TG: ";
+            meta += (c.telegramID.length() > 0) ? c.telegramID : "-";
+
+            lv_obj_t* meta_lbl = lv_label_create(card);
+            lv_label_set_text(meta_lbl, meta.c_str());
+            lv_obj_set_style_text_color(meta_lbl, lv_color_hex(COL_SUB), 0);
+            lv_obj_set_style_text_font(meta_lbl, &lv_font_montserrat_12, 0);
+            lv_obj_set_width(meta_lbl, 210);
+            lv_label_set_long_mode(meta_lbl, LV_LABEL_LONG_DOT);
+            lv_obj_align(meta_lbl, LV_ALIGN_TOP_LEFT, 56, 34);
 
             if (c.telegramID.length() > 0) {
                 lv_obj_t* btn_tg = lv_btn_create(card);
-                lv_obj_set_size(btn_tg, 34, 34);
+                lv_obj_set_size(btn_tg, 32, 32);
                 lv_obj_align(btn_tg, LV_ALIGN_RIGHT_MID, 0, 0);
                 lv_obj_set_style_bg_color(btn_tg, lv_color_hex(COL_ACCENT), 0);
                 lv_obj_set_style_border_width(btn_tg, 0, 0);
                 lv_obj_set_style_radius(btn_tg, LV_RADIUS_CIRCLE, 0);
                 lv_obj_t* l_tg = lv_label_create(btn_tg);
                 lv_label_set_text(l_tg, LV_SYMBOL_GPS);
+                lv_obj_set_style_text_font(l_tg, &lv_font_montserrat_12, 0);
                 lv_obj_center(l_tg);
             }
         }
@@ -502,8 +527,9 @@ public:
         lv_obj_set_style_bg_color(parent, lv_color_hex(COL_BG), 0);
         disable_scroll(parent);
 
+        // --- INTERFACE PRINCIPALE (INTACTE) ---
         lv_obj_t* header = lv_obj_create(parent);
-        lv_obj_set_size(header, 320, 56);
+        lv_obj_set_size(header, lv_pct(100), 56);
         lv_obj_set_style_bg_color(header, lv_color_hex(COL_SURFACE), 0);
         lv_obj_set_style_border_width(header, 0, 0);
         lv_obj_set_style_radius(header, 0, 0);
@@ -536,33 +562,38 @@ public:
         lv_obj_center(lbl_add);
         lv_obj_add_event_cb(btn_add, open_editor_cb, LV_EVENT_CLICKED, this);
 
-        status_lbl = lv_label_create(parent);
-        lv_label_set_text(status_lbl, fs_ok ? "Ready" : "LittleFS unavailable");
-        lv_obj_set_style_text_color(status_lbl, lv_color_hex(fs_ok ? COL_SUB : 0xFF9500), 0);
-        lv_obj_align(status_lbl, LV_ALIGN_TOP_LEFT, 16, 62);
+        status_lbl = nullptr;
 
         list_cont = lv_obj_create(parent);
-        lv_obj_set_size(list_cont, 304, 396);
-        lv_obj_align(list_cont, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_size(list_cont, lv_pct(100), 406);
+        lv_obj_align(list_cont, LV_ALIGN_TOP_MID, 0, 56);
         lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(list_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_bg_opa(list_cont, 0, 0);
         lv_obj_set_style_border_width(list_cont, 0, 0);
-        lv_obj_set_style_pad_gap(list_cont, 8, 0);
+        lv_obj_set_style_pad_gap(list_cont, 10, 0);
+        lv_obj_set_style_pad_top(list_cont, 8, 0);
+        lv_obj_set_style_pad_bottom(list_cont, 8, 0);
         lv_obj_set_scrollbar_mode(list_cont, LV_SCROLLBAR_MODE_OFF);
 
+
+        // --- ECRAN D'AJOUT DE CONTACT (AMELIORE & FIXE) ---
         editor_overlay = lv_obj_create(parent);
-        lv_obj_set_size(editor_overlay, 320, 480);
+        lv_obj_set_size(editor_overlay, lv_pct(100), lv_pct(100));
         lv_obj_add_flag(editor_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_color(editor_overlay, lv_color_hex(COL_BG), 0);
         lv_obj_set_style_border_width(editor_overlay, 0, 0);
+        
+        // C'EST CECI QUI REGLE LES BORDURES NOIRES ET LE SCROLL:
+        lv_obj_set_style_pad_all(editor_overlay, 0, 0); 
         disable_scroll(editor_overlay);
 
         lv_obj_t* ov_header = lv_obj_create(editor_overlay);
-        lv_obj_set_size(ov_header, 320, 52);
+        lv_obj_set_size(ov_header, lv_pct(100), 52);
         lv_obj_set_style_bg_color(ov_header, lv_color_hex(COL_SURFACE), 0);
         lv_obj_set_style_border_width(ov_header, 0, 0);
         lv_obj_set_style_radius(ov_header, 0, 0);
+        lv_obj_set_style_pad_all(ov_header, 0, 0);
         lv_obj_align(ov_header, LV_ALIGN_TOP_MID, 0, 0);
         disable_scroll(ov_header);
 
@@ -581,54 +612,61 @@ public:
         lv_obj_set_style_text_color(lbl_close, lv_color_hex(COL_ACCENT), 0);
         lv_obj_center(lbl_close);
 
+        // --- Textes descriptifs centrés proprement ---
         step_lbl = lv_label_create(editor_overlay);
         lv_label_set_text(step_lbl, "Step 1 of 5");
         lv_obj_set_style_text_color(step_lbl, lv_color_hex(COL_SUB), 0);
-        lv_obj_align(step_lbl, LV_ALIGN_TOP_MID, 0, 60);
+        lv_obj_align(step_lbl, LV_ALIGN_TOP_MID, 0, 65);
 
         form_title_lbl = lv_label_create(editor_overlay);
         lv_label_set_text(form_title_lbl, "Step 1/5 - First name");
         lv_obj_set_style_text_color(form_title_lbl, lv_color_hex(COL_TEXT), 0);
         lv_obj_set_style_text_font(form_title_lbl, &lv_font_montserrat_14, 0);
-        lv_obj_align(form_title_lbl, LV_ALIGN_TOP_LEFT, 16, 84);
+        lv_obj_align(form_title_lbl, LV_ALIGN_TOP_MID, 0, 85);
 
         form_hint_lbl = lv_label_create(editor_overlay);
         lv_label_set_text(form_hint_lbl, "Type first name, then press OK");
         lv_obj_set_style_text_color(form_hint_lbl, lv_color_hex(COL_SUB), 0);
-        lv_obj_align(form_hint_lbl, LV_ALIGN_TOP_LEFT, 16, 104);
+        lv_obj_align(form_hint_lbl, LV_ALIGN_TOP_MID, 0, 105);
 
-        auto create_input = [&](const char* placeholder, int y) {
+        // --- Fonction de création des champs centrés ---
+        auto create_input = [&](const char* placeholder) {
             lv_obj_t* ta = lv_textarea_create(editor_overlay);
-            lv_obj_set_size(ta, 288, 40);
-            lv_obj_set_pos(ta, 20, y);
+            lv_obj_set_size(ta, lv_pct(90), 40);           // S'adapte à 90% de l'écran
+            lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, 135);    // Toujours bien au centre
             lv_textarea_set_placeholder_text(ta, placeholder);
             lv_textarea_set_one_line(ta, true);
             lv_obj_set_style_bg_color(ta, lv_color_hex(COL_CARD), 0);
             lv_obj_set_style_text_color(ta, lv_color_hex(COL_TEXT), 0);
             lv_obj_set_style_border_width(ta, 0, 0);
             lv_obj_set_style_radius(ta, 10, 0);
+            
+            // Tes événements d'origine (safe)
             lv_obj_add_event_cb(ta, [](lv_event_t* e){
                 ContactsApp* app = (ContactsApp*)lv_event_get_user_data(e);
                 if (!app || !app->kb) return;
-                lv_t9_kb_set_textarea(app->kb, lv_event_get_target(e));
+                lv_keyboard_set_textarea(app->kb, (lv_obj_t*)lv_event_get_target(e));
             }, LV_EVENT_FOCUSED, this);
+            
             lv_obj_add_event_cb(ta, [](lv_event_t* e){
                 ContactsApp* app = (ContactsApp*)lv_event_get_user_data(e);
                 if (!app || !app->kb) return;
-                lv_t9_kb_set_textarea(app->kb, lv_event_get_target(e));
+                lv_keyboard_set_textarea(app->kb, (lv_obj_t*)lv_event_get_target(e));
             }, LV_EVENT_CLICKED, this);
             return ta;
         };
 
-        ta_prenom = create_input("Prenom", 130);
-        ta_nom = create_input("Nom", 130);
-        ta_tel = create_input("Telephone", 130);
-        ta_email = create_input("Email", 130);
-        ta_tg = create_input("Telegram ID", 130);
+        // On ne passe plus le 'y', le lambda centre tout à y=135
+        ta_prenom = create_input("Prenom");
+        ta_nom = create_input("Nom");
+        ta_tel = create_input("Telephone");
+        ta_email = create_input("Email");
+        ta_tg = create_input("Telegram ID");
 
+        // Menu déroulant Telegram
         tg_dropdown = lv_dropdown_create(editor_overlay);
-        lv_obj_set_size(tg_dropdown, 288, 40);
-        lv_obj_set_pos(tg_dropdown, 20, 176);
+        lv_obj_set_size(tg_dropdown, lv_pct(90), 40);
+        lv_obj_align(tg_dropdown, LV_ALIGN_TOP_MID, 0, 135); // Au même endroit que les inputs !
         lv_obj_set_style_bg_color(tg_dropdown, lv_color_hex(COL_CARD), 0);
         lv_obj_set_style_text_color(tg_dropdown, lv_color_hex(COL_TEXT), 0);
         lv_obj_set_style_border_width(tg_dropdown, 0, 0);
@@ -636,9 +674,10 @@ public:
         lv_obj_add_event_cb(tg_dropdown, tg_dropdown_cb, LV_EVENT_VALUE_CHANGED, this);
         load_telegram_sources();
 
+        // --- Boutons Précédent et Suivant ---
         btn_prev = lv_btn_create(editor_overlay);
-        lv_obj_set_size(btn_prev, 110, 42);
-        lv_obj_set_pos(btn_prev, 20, 230);
+        lv_obj_set_size(btn_prev, lv_pct(42), 42); 
+        lv_obj_align(btn_prev, LV_ALIGN_TOP_LEFT, 16, 190); // Positionné juste sous le champ de texte
         lv_obj_set_style_bg_color(btn_prev, lv_color_hex(COL_CARD), 0);
         lv_obj_set_style_border_width(btn_prev, 0, 0);
         lv_obj_set_style_radius(btn_prev, 12, 0);
@@ -649,8 +688,8 @@ public:
         lv_obj_center(prev_lbl);
 
         btn_next = lv_btn_create(editor_overlay);
-        lv_obj_set_size(btn_next, 170, 42);
-        lv_obj_set_pos(btn_next, 130, 230);
+        lv_obj_set_size(btn_next, lv_pct(42), 42);
+        lv_obj_align(btn_next, LV_ALIGN_TOP_RIGHT, -16, 190); // Aligné proprement sur la droite
         lv_obj_set_style_bg_color(btn_next, lv_color_hex(COL_ACCENT), 0);
         lv_obj_set_style_border_width(btn_next, 0, 0);
         lv_obj_set_style_radius(btn_next, 12, 0);
@@ -661,13 +700,15 @@ public:
         lv_obj_set_style_text_color(btn_next_lbl, lv_color_hex(COL_TEXT), 0);
         lv_obj_center(btn_next_lbl);
 
-        kb = lv_t9_kb_create(editor_overlay);
-        lv_obj_set_size(kb, 320, 190);
+        // --- Clavier ---
+        kb = lv_keyboard_create(editor_overlay);
+        lv_obj_set_size(kb, lv_pct(100), 200);
         lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_READY, this);
         lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_CANCEL, this);
-        disable_scroll(kb);
+        lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
 
+        // On cache le nécessaire pour le Step 0
         lv_obj_add_flag(tg_dropdown, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ta_nom, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ta_tel, LV_OBJ_FLAG_HIDDEN);

@@ -295,7 +295,7 @@ public:
 
         // Liste
         list_cont = lv_obj_create(ui_root);
-        lv_obj_set_size(list_cont, 320, 430);
+        lv_obj_set_size(list_cont, 320, 430 - 18);  
         lv_obj_align(list_cont, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_bg_opa(list_cont, LV_OPA_TRANSP, 0);
         lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
