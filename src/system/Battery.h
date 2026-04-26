@@ -4,10 +4,79 @@
 #include <Arduino.h>
 #include <hardware/adc.h>
 #include <XPowersLib.h>
+#include <vector>
+#include <LittleFS.h>
+
+// Déclaration externe pour la luminosité
+static inline uint8_t hardware_backlight_current();
 
 namespace battery {
 
-// RP2040/Pico: VSYS est généralement connecté à ADC3 (GPIO29) via un pont diviseur ~1/3
+    // --- COULOMÈTRE LOGICIEL (Auto-rattrapage intégré) ---
+    struct UsageStats {
+        uint32_t total_minutes = 0;
+        float mah_consumed_est = 0.0f;
+    };
+    
+    inline UsageStats& get_history() {
+        static UsageStats history_instance;
+        return history_instance;
+    }
+
+    // Profil de consommation en mA
+    static constexpr float MA_BASE_CPU_BOOST = 35.0f; 
+    static constexpr float MA_BASE_CPU_SLEEP = 3.0f;
+    static constexpr float MA_SCREEN_MAX = 110.0f; 
+
+    // Calcul dynamique avec modulation de luminosité
+    inline float get_estimated_current_ma() {
+        float total_ma = 0.0f;
+        uint8_t bl = hardware_backlight_current();
+
+        if (bl > 0) {
+            total_ma += MA_BASE_CPU_BOOST;
+            // L'écran consomme proportionnellement à sa luminosité
+            total_ma += MA_SCREEN_MAX * ((float)bl / 255.0f);
+        } else {
+            // Écran éteint = CPU en sommeil
+            total_ma += MA_BASE_CPU_SLEEP;
+        }
+        return total_ma;
+    }
+
+    inline void update_usage_stats() {
+        static uint32_t last_min = 0;
+        uint32_t now = millis();
+        
+        // Initialisation au premier appel
+        if (last_min == 0) {
+            last_min = now;
+            return;
+        }
+
+        uint32_t delta = now - last_min;
+        if (delta < 60000) return; // Moins d'une minute s'est écoulée
+
+        // Rattrapage des minutes passées (si l'appli dormait)
+        uint32_t mins_passed = delta / 60000;
+        last_min += (mins_passed * 60000);
+
+        UsageStats& hist = get_history();
+        float current_ma = get_estimated_current_ma();
+        
+        // Formule : mAh = (mA * minutes) / 60
+        hist.mah_consumed_est += (current_ma * (float)mins_passed) / 60.0f;
+        hist.total_minutes += mins_passed;
+
+        // Limite stricte de la fenêtre à 3h (180 minutes)
+        if (hist.total_minutes > 180) {
+            // Réduction proportionnelle pour garder la moyenne glissante exacte
+            hist.mah_consumed_est = hist.mah_consumed_est * (180.0f / (float)hist.total_minutes);
+            hist.total_minutes = 180;
+        }
+    }
+    // ----------------------------
+
 static constexpr uint8_t VSYS_ADC_GPIO = 29; // ADC3
 static constexpr float ADC_REF_V = 3.3f;
 static constexpr float ADC_MAX = 4095.0f;
@@ -38,8 +107,6 @@ struct Telemetry {
     bool valid;
 };
 
-// État global partagé (inline variables C++17) :
-// évite les états divergents entre unités de compilation.
 inline XPowersAXP2101* g_pmic = nullptr;
 inline bool g_pmic_ready = false;
 inline float   g_last_good_v = 0.0f;
@@ -72,7 +139,6 @@ static inline bool attach_pmic(XPowersAXP2101* pmic) {
         return false;
     }
 
-    // Active explicitement les mesures batterie, sinon certains boards renvoient 0.
     g_pmic->enableBattDetection();
     g_pmic->enableBattVoltageMeasure();
     g_has_sample = false;
@@ -97,15 +163,10 @@ static inline void begin() {
     static bool inited = false;
     if (inited) return;
 
-    // Force la résolution attendue par nos calculs (0..4095)
     analogReadResolution(12);
 #if defined(analogReadAveraging)
     analogReadAveraging(16);
 #endif
-    // Sur RP2040 : NE PAS appeler pinMode() sur une broche ADC — ça active
-    // le buffer digital Schmitt trigger et court-circuite l'entrée analogique.
-    // adc_gpio_init() configure correctement la broche en mode ADC (fonction NULL,
-    // pas de pulls, pas de buffer digital).
     adc_init();
     adc_gpio_init(VSYS_ADC_GPIO);
     inited = true;
@@ -113,15 +174,11 @@ static inline void begin() {
 
 static inline float read_vsys_volts_raw(uint8_t samples = 8) {
     begin();
-    analogReadResolution(12); // défensif: d'autres modules peuvent modifier la résolution
+    analogReadResolution(12); 
 
     if (samples < 5) samples = 5;
     if (samples > 25) samples = 25;
 
-    // Moyenne tronquée: ignore min/max pour limiter les glitches.
-    // On combine 2 chemins de lecture:
-    //   1) analogRead(GPIO29)
-    //   2) ADC brut direct canal 3 (secours si mapping core défaillant)
     uint32_t acc = 0;
     uint16_t minv = 0xFFFF;
     uint16_t maxv = 0;
@@ -149,20 +206,13 @@ static inline float read_vsys_volts_raw(uint8_t samples = 8) {
     const float v_adc = (raw * ADC_REF_V) / ADC_MAX;
     const float vsys = v_adc * VSYS_DIVIDER;
 
-    static unsigned long last_dbg = 0;
-    if (millis() - last_dbg > 15000) {
-        last_dbg = millis();
-        Serial.printf("[BAT] raw=%.0f v_adc=%.3fV vsys=%.3fV\n", raw, v_adc, vsys);
-    }
     return vsys;
 }
 
 static inline uint8_t percent_from_lipo_volts(float v) {
-    // Courbe simple LiPo 1S (approx). Clamp pour éviter USB (~5V) => 100%
     if (v >= 4.20f) return 100;
     if (v <= 3.30f) return 0;
 
-    // LUT (volts, %)
     struct Point { float v; uint8_t p; };
     static constexpr Point lut[] = {
         {4.20f, 100},
@@ -187,15 +237,11 @@ static inline uint8_t percent_from_lipo_volts(float v) {
             return (uint8_t)(p + 0.5f);
         }
     }
-
-    // Fallback
     return 0;
 }
 
 static inline bool read_from_pmic(Telemetry& out) {
-    if (!g_pmic_ready || g_pmic == nullptr) {
-        return false;
-    }
+    if (!g_pmic_ready || g_pmic == nullptr) return false;
 
     const int pmic_percent = g_pmic->getBatteryPercent();
     const uint16_t pmic_mv = g_pmic->getBattVoltage();
@@ -205,9 +251,7 @@ static inline bool read_from_pmic(Telemetry& out) {
     const bool percent_valid = (pmic_percent >= 0 && pmic_percent <= 100);
     const bool voltage_valid = (pmic_mv >= 2800 && pmic_mv <= 4600);
 
-    if (!percent_valid && !voltage_valid && !external_power) {
-        return false;
-    }
+    if (!percent_valid && !voltage_valid && !external_power) return false;
 
     uint8_t percent = 100;
     if (percent_valid) {
@@ -235,7 +279,6 @@ static inline bool read_from_pmic(Telemetry& out) {
 }
 
 static inline bool read_from_adc(Telemetry& out) {
-    // 3 lectures + médiane pour réduire les glitches ADC
     float a = read_vsys_volts_raw(10);
     float b = read_vsys_volts_raw(10);
     float c = read_vsys_volts_raw(10);
@@ -244,14 +287,10 @@ static inline bool read_from_adc(Telemetry& out) {
     else if ((b <= a && a <= c) || (c <= a && a <= b)) v = a;
     else v = c;
 
-    // Sur TP4056 + charge, OUT+/VSYS peut ne plus refléter fidèlement la batterie.
-    // Une LiPo 1S ne dépasse pas ~4.2V (4.25V max). Au-delà (~5V USB), on "gèle"
-    // la dernière valeur batterie connue pour éviter les sauts 100%/0%.
     const bool in_batt_range = (v >= 3.0f && v <= 4.35f);
     const bool glitch_low = (v < 2.8f);
     const bool external_power = (v > 4.35f && v <= 5.5f);
 
-    // ADC VSYS clairement invalide (pin flottante/non câblée/mapping KO)
     const bool invalid_adc = (v < 0.8f || v > 6.2f);
     if (invalid_adc) {
         if (g_invalid_adc_streak < 255) g_invalid_adc_streak++;
@@ -273,7 +312,6 @@ static inline bool read_from_adc(Telemetry& out) {
         return true;
     }
 
-    // Si l'ADC est invalide plusieurs cycles, ne jamais retomber à 0%.
     if (g_invalid_adc_streak >= 3) {
         out.percent = g_has_percent ? g_last_percent : 100;
         out.voltage_v = g_has_good_v ? g_last_good_v : 4.0f;
@@ -283,7 +321,6 @@ static inline bool read_from_adc(Telemetry& out) {
         return true;
     }
 
-    // Si alimenté via USB/chargeur, on garde le dernier % batterie fiable.
     if (external_power || glitch_low) {
         out.percent = g_has_percent ? g_last_percent : 100;
         out.voltage_v = g_has_good_v ? g_last_good_v : v;
@@ -305,6 +342,9 @@ static inline bool read_from_adc(Telemetry& out) {
 
 static inline const Telemetry& read_sample(bool force = false) {
     begin();
+    
+    // --- APPEL AUTOMATIQUE DES STATS ---
+    update_usage_stats();
 
     const uint32_t now = millis();
     if (!force && g_has_sample && (now - g_last_sample_ms) < SAMPLE_INTERVAL_MS) {
@@ -328,34 +368,21 @@ static inline const Telemetry& read_sample(bool force = false) {
     return g_last_sample;
 }
 
-static inline uint8_t read_percent() {
-    return read_sample(false).percent;
-}
-
+static inline uint8_t read_percent() { return read_sample(false).percent; }
 static inline uint16_t read_voltage_mv() {
     const Telemetry& t = read_sample(false);
     if (t.voltage_v <= 0.0f) return 0;
     return (uint16_t)(t.voltage_v * 1000.0f + 0.5f);
 }
-
-static inline bool is_external_power() {
-    return read_sample(false).external_power;
-}
-
-static inline bool is_charging() {
-    return read_sample(false).charging;
-}
+static inline bool is_external_power() { return read_sample(false).external_power; }
+static inline bool is_charging() { return read_sample(false).charging; }
 
 static inline PowerMode compute_mode(const Telemetry& t) {
-    if (t.external_power || t.charging) {
-        return PowerMode::NORMAL;
-    }
-
+    if (t.external_power || t.charging) return PowerMode::NORMAL;
     if (g_manual_saver) {
         if (t.percent <= 8) return PowerMode::CRITICAL;
         return PowerMode::SAVER;
     }
-
     switch (g_mode) {
         case PowerMode::NORMAL:
             if (t.percent <= 20) return PowerMode::SAVER;
@@ -373,14 +400,10 @@ static inline PowerMode compute_mode(const Telemetry& t) {
 
 static inline void update_energy_policy(bool force = false) {
     const uint32_t now = millis();
-    if (!force && (now - g_last_policy_ms) < POLICY_INTERVAL_MS) {
-        return;
-    }
+    if (!force && (now - g_last_policy_ms) < POLICY_INTERVAL_MS) return;
 
     const Telemetry& t = read_sample(force);
-    if (t.external_power || t.charging) {
-        g_manual_saver = false;
-    }
+    if (t.external_power || t.charging) g_manual_saver = false;
     g_mode = compute_mode(t);
 
     switch (g_mode) {
@@ -395,7 +418,6 @@ static inline void update_energy_policy(bool force = false) {
             g_policy = {PowerMode::CRITICAL, 35, 0, true, true, (!t.external_power && t.percent <= 2)};
             break;
     }
-
     g_last_policy_ms = now;
 }
 

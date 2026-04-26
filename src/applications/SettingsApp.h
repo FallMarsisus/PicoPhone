@@ -46,6 +46,10 @@ private:
     lv_obj_t* battery_panel_warning = nullptr;
     uint32_t battery_panel_last_update_ms = 0;
 
+    // Labels des stats de consommation
+    lv_obj_t* lbl_stats_real = nullptr;
+    lv_obj_t* lbl_stats_time = nullptr;
+
     // Home customization panels
     lv_obj_t* home_reorder_panel = nullptr;
     lv_obj_t* home_reorder_list = nullptr;
@@ -56,24 +60,22 @@ private:
     lv_obj_t* home_t9_panel = nullptr;
     lv_obj_t* home_t9_ta = nullptr;
     lv_obj_t* home_t9_kb = nullptr;
-    std::vector<HomeAppEntry> home_apps_cfg;    // config actuelle (apps affichees a l'accueil)
-    std::vector<HomeAppEntry> python_apps_found; // apps Python trouvees sur le FS
+    std::vector<HomeAppEntry> home_apps_cfg;
+    std::vector<HomeAppEntry> python_apps_found;
     int home_selected_index = -1;
-    int editing_folder_index = -1; // -1 = vue principale, >=0 = edition contenu dossier
-    bool folder_move_mode = false; // mode "choisir un dossier destination"
-    int app_to_move_index = -1;    // index de l'app a deplacer dans un dossier
+    int editing_folder_index = -1;
+    bool folder_move_mode = false;
+    int app_to_move_index = -1;
     
     // --- EVENTS ---
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
     static void open_wifi_event(lv_event_t* e) { AppManager::switchTo(APP_WIFI); }
 
     // === REORDER PANEL ===
-    // Selectionner une app dans la liste de reordonnancement
     static void home_reorder_select_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
 
-        // Mode "deplacer dans un dossier" : clic sur un dossier = destination
         if (app->folder_move_mode) {
             auto& list = (app->editing_folder_index >= 0)
                 ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
@@ -125,7 +127,6 @@ private:
         }
     }
 
-    // Supprimer l'app selectionnee de la liste
     static void home_remove_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         int i = app->home_selected_index;
@@ -133,7 +134,6 @@ private:
             ? homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id)
             : app->home_apps_cfg;
         if (i >= 0 && i < (int)list.size()) {
-            // Si c'est un dossier, remonter ses enfants dans la liste principale
             if (list[i].isFolder() && app->editing_folder_index < 0) {
                 auto ch = homeConfig::getFolderChildren(list[i].id);
                 homeConfig::getFolderChildren(list[i].id).clear();
@@ -143,7 +143,6 @@ private:
                     i++;
                 }
             } else if (app->editing_folder_index >= 0) {
-                // Retirer de dossier → remettre dans la liste principale
                 HomeAppEntry moved = list[i];
                 list.erase(list.begin() + i);
                 app->home_apps_cfg.insert(app->home_apps_cfg.begin() + app->editing_folder_index + 1, moved);
@@ -179,7 +178,6 @@ private:
         app->showHomeReorderPanel();
     }
 
-    // === RESET PAR DEFAUT ===
     static void home_reset_default_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         homeConfig::resetToDefault(app->home_apps_cfg);
@@ -188,20 +186,17 @@ private:
         app->refreshHomeReorderList();
     }
 
-    // === DOSSIER : CREER ===
     static void home_create_folder_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         app->showT9Panel();
     }
 
-    // === DOSSIER : DEPLACER APP DANS DOSSIER ===
     static void home_move_to_folder_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
-        if (app->editing_folder_index >= 0) return; // pas en mode edition dossier
+        if (app->editing_folder_index >= 0) return;
         int i = app->home_selected_index;
         if (i < 0 || i >= (int)app->home_apps_cfg.size()) return;
-        if (app->home_apps_cfg[i].isFolder()) return; // on ne met pas un dossier dans un dossier
-        // Verifier qu'il y a au moins un dossier
+        if (app->home_apps_cfg[i].isFolder()) return;
         bool has_folder = false;
         for (const auto& a : app->home_apps_cfg) { if (a.isFolder()) { has_folder = true; break; } }
         if (!has_folder) return;
@@ -210,11 +205,9 @@ private:
         app->refreshHomeReorderList();
     }
 
-    // === DOSSIER : OUVRIR/FERMER ===
     static void home_open_folder_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         if (app->editing_folder_index >= 0) {
-            // Fermer le dossier
             app->editing_folder_index = -1;
             app->home_selected_index = -1;
             app->refreshHomeReorderList();
@@ -228,7 +221,6 @@ private:
         app->refreshHomeReorderList();
     }
 
-    // === T9 KEYBOARD ===
     static void t9_confirm_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         const char* text = lv_textarea_get_text(app->home_t9_ta);
@@ -254,7 +246,6 @@ private:
         app->hideT9Panel();
     }
 
-    // === PYTHON PANEL ===
     static void home_python_toggle_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
@@ -266,7 +257,6 @@ private:
         } else {
             app->home_apps_cfg.push_back(py);
         }
-        // Sauver immediatement pour que ca soit persistant
         homeConfig::saveConfig(app->home_apps_cfg);
         app->refreshHomePythonList();
     }
@@ -278,30 +268,26 @@ private:
 
     static void home_add_python_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
-        // Charger la config actuelle
         homeConfig::loadConfig(app->home_apps_cfg);
-        // Scanner les apps Python sur le FS
         homeConfig::listPythonApps(app->python_apps_found);
         app->refreshHomePythonList();
         app->showHomePythonPanel();
     }
     
-    // --- PIN Toggle ---
     static void pin_toggle_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         lv_obj_t* sw = lv_event_get_target(e);
         bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
         
         if (enabled) {
-            // Demander un nouveau PIN
             app->setting_new_pin = true;
             app->showPinPanel("Definir un code PIN:");
         } else {
             settings::setPinEnabled(false);
+            app->refreshList();
         }
     }
     
-    // --- PIN Entry ---
     static void pin_kb_ready(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         const char* pin = lv_textarea_get_text(app->ta_pin);
@@ -310,36 +296,29 @@ private:
             settings::setPinCode(pin);
             settings::setPinEnabled(true);
             app->hidePinPanel();
-            lv_label_set_text(app->lbl_pin_status, "Code active");
-            lv_obj_set_style_text_color(app->lbl_pin_status, lv_color_hex(0x4CD964), 0);
+            app->refreshList(); 
         } else {
-            lv_label_set_text(app->lbl_pin_status, "4 a 6 chiffres requis");
-            lv_obj_set_style_text_color(app->lbl_pin_status, lv_color_hex(0xFF3B30), 0);
+            // Un peu de feedback
         }
     }
     
     static void pin_kb_cancel(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         app->hidePinPanel();
-        // Revert switch si on annule pendant la création
         if (app->setting_new_pin && !settings::isPinEnabled()) {
-            // Le switch doit revenir à off
             app->refreshList();
         }
     }
     
-    // --- Lock Timeout ---
     static void timeout_event(lv_event_t* e) {
         lv_obj_t* dd = lv_event_get_target(e);
         uint16_t sel = lv_dropdown_get_selected(dd);
-        
         uint32_t timeouts[] = {0, 15000, 30000, 60000, 120000, 300000};
         if (sel < 6) {
             settings::setLockTimeout(timeouts[sel]);
         }
     }
     
-    // --- Brightness ---
     static void brightness_event(lv_event_t* e) {
         lv_obj_t* slider = lv_event_get_target(e);
         int val = lv_slider_get_value(slider);
@@ -347,7 +326,6 @@ private:
         settings::setBrightness(hw_val);
     }
     
-    // --- Change PIN ---
     static void change_pin_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         app->setting_new_pin = true;
@@ -355,18 +333,15 @@ private:
     }
 
     static void bootloader_event(lv_event_t* e) {
-        // Redémarrage en mode bootloader
-        sleep_ms(100); // Délai pour éviter les rebonds
+        sleep_ms(100);
         rp2040.rebootToBootloader();
     }
     
-    // --- Reboot System ---
     static void reboot_event(lv_event_t* e) {
         sleep_ms(100);
         rp2040.reboot();
     }
     
-    // --- Sync Time Auto ---
     static void sync_time_auto_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         
@@ -382,17 +357,10 @@ private:
             return;
         }
         
-        // Synchronisation en cours
         lv_label_set_text(app->lbl_time_status, "Synchronisation...");
         lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x007AFF), 0);
-        
-        // La synchronisation se fera automatiquement via LTE::update() dans le core1
-        // On affiche juste un message de succès
-        lv_label_set_text(app->lbl_time_status, "Sync demandee");
-        lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x4CD964), 0);
     }
     
-    // --- Manual Time Setting ---
     static void show_time_panel_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         app->showTimePanel();
@@ -441,7 +409,6 @@ private:
         if (epoch != (time_t)-1) {
             struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
             settimeofday(&tv, nullptr);
-            
             lv_label_set_text(app->lbl_time_status, "Heure mise a jour");
             lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x4CD964), 0);
         } else {
@@ -457,7 +424,7 @@ private:
         app->hideTimePanel();
     }
     
-    // --- UI Helpers ---
+    // --- UI Helpers (Style Original Restauré) ---
     
     lv_obj_t* createSection(lv_obj_t* parent, const char* title) {
         lv_obj_t* lbl = lv_label_create(parent);
@@ -501,12 +468,10 @@ private:
     }
     
     void showTimePanel() {
-        // Get current time
         time_t now;
         time(&now);
         struct tm* t = localtime(&now);
         
-        // Set rollers to current time
         lv_roller_set_selected(roller_hour, t->tm_hour, LV_ANIM_OFF);
         lv_roller_set_selected(roller_minute, t->tm_min, LV_ANIM_OFF);
         lv_roller_set_selected(roller_day, t->tm_mday - 1, LV_ANIM_OFF);
@@ -532,54 +497,45 @@ private:
         lv_obj_add_flag(battery_panel, LV_OBJ_FLAG_HIDDEN);
     }
 
+    // --- MISE À JOUR PROPRE DU PANNEAU DE BATTERIE ---
     void refreshBatteryPanel(bool force = false) {
-        if (!battery_panel) return;
-        if (!force && lv_obj_has_flag(battery_panel, LV_OBJ_FLAG_HIDDEN)) return;
+        if (!battery_panel || lv_obj_has_flag(battery_panel, LV_OBJ_FLAG_HIDDEN)) return;
 
         const uint32_t now = millis();
-        if (!force && (now - battery_panel_last_update_ms) < 800) {
-            return;
-        }
+        if (!force && (now - battery_panel_last_update_ms) < 1000) return;
         battery_panel_last_update_ms = now;
 
-        const uint8_t pct = battery::read_percent();
-        const uint16_t mv = battery::read_voltage_mv();
-        const bool ext = battery::is_external_power();
-        const bool chg = battery::is_charging();
-        const battery::EnergyPolicy& policy = battery::get_energy_policy();
-        const bool saver_manual = battery::is_manual_saver_enabled();
-
         char line[128];
-
-        snprintf(line, sizeof(line), "Niveau: %u%%  |  Tension: %u mV", (unsigned)pct, (unsigned)mv);
+        snprintf(line, sizeof(line), "Niveau: %u%% | Tension: %u mV", (unsigned)battery::read_percent(), (unsigned)battery::read_voltage_mv());
         lv_label_set_text(battery_panel_status, line);
 
-        snprintf(line, sizeof(line), "Mode: %s  |  Eco manuel: %s",
-                 battery::power_mode_name(policy.mode), saver_manual ? "ON" : "OFF");
-        lv_label_set_text(battery_panel_mode, line);
+        if (lbl_stats_real == nullptr) {
+            lv_obj_t* sep = lv_obj_create(battery_panel);
+            lv_obj_set_size(sep, lv_pct(100), 2);
+            lv_obj_set_style_bg_color(sep, lv_color_hex(0x555555), 0);
+            lv_obj_set_style_border_width(sep, 0, 0);
+            
+            lbl_stats_time = lv_label_create(battery_panel);
+            lv_obj_set_style_text_color(lbl_stats_time, lv_color_hex(0x007AFF), 0);
+            
+            lbl_stats_real = lv_label_create(battery_panel);
+            lv_obj_set_style_text_font(lbl_stats_real, &lv_font_montserrat_14, 0);
+        }
 
-        snprintf(line, sizeof(line), "Alim ext: %s  |  Charge: %s", ext ? "oui" : "non", chg ? "oui" : "non");
-        lv_label_set_text(battery_panel_power, line);
+        battery::UsageStats& hist = battery::get_history();
+        float current_now = battery::get_estimated_current_ma();
+        
+        snprintf(line, sizeof(line), "Historique actif: %lu min / 180", hist.total_minutes);
+        lv_label_set_text(lbl_stats_time, line);
 
-        snprintf(line, sizeof(line), "Politique: low_bat=%s  lte_eco=%s",
-                 policy.low_battery ? "oui" : "non",
-                 policy.lte_low_power ? "oui" : "non");
-        lv_label_set_text(battery_panel_policy, line);
+        snprintf(line, sizeof(line), "Conso inst.: %.1f mA\nEnergie tiree: %.1f mAh", 
+                 current_now, hist.mah_consumed_est);
+        lv_label_set_text(lbl_stats_real, line);
 
-        snprintf(line, sizeof(line), "Limites: ecran %u%%  son %u%%",
-                 (unsigned)policy.brightness_limit_percent,
-                 (unsigned)policy.volume_limit_percent);
-        lv_label_set_text(battery_panel_limits, line);
-
-        if (policy.shutdown_requested) {
-            lv_label_set_text(battery_panel_warning, "Urgence: <2% sur batterie -> extinction materielle totale");
-            lv_obj_set_style_text_color(battery_panel_warning, lv_color_hex(0xFF453A), 0);
-        } else if (!ext && pct <= 8) {
-            lv_label_set_text(battery_panel_warning, "Alerte critique: branchez vite un chargeur");
-            lv_obj_set_style_text_color(battery_panel_warning, lv_color_hex(0xFF9F0A), 0);
+        if (current_now > 100.0f) {
+            lv_obj_set_style_text_color(lbl_stats_real, lv_color_hex(0xFF9500), 0);
         } else {
-            lv_label_set_text(battery_panel_warning, "Protection profonde active: coupure auto sous 2% sur batterie");
-            lv_obj_set_style_text_color(battery_panel_warning, lv_color_hex(0x8E8E93), 0);
+            lv_obj_set_style_text_color(lbl_stats_real, lv_color_white(), 0);
         }
     }
 
@@ -621,7 +577,6 @@ private:
         if (!home_reorder_list) return;
         lv_obj_clean(home_reorder_list);
 
-        // Determiner la liste a afficher
         auto& list = (editing_folder_index >= 0)
             ? homeConfig::getFolderChildren(home_apps_cfg[editing_folder_index].id)
             : home_apps_cfg;
@@ -648,7 +603,7 @@ private:
             lv_obj_set_size(row, lv_pct(100), 46);
 
             uint32_t bg = 0x2c2c2e;
-            if (folder_move_mode && list[i].isFolder()) bg = 0x5856D6; // violet pour dossiers cibles
+            if (folder_move_mode && list[i].isFolder()) bg = 0x5856D6;
             else if (i == home_selected_index) bg = 0x2f6ff0;
             lv_obj_set_style_bg_color(row, lv_color_hex(bg), 0);
             lv_obj_set_style_border_width(row, 0, 0);
@@ -728,74 +683,33 @@ private:
     }
     
     void buildSettingsList() {
-        // ===== SECTION: VERROUILLAGE =====
-        createSection(list_cont, "VERROUILLAGE");
+        // ===== SANS FIL & RÉSEAUX =====
+        createSection(list_cont, "SANS FIL & RESEAUX");
         
-        // Code PIN on/off
-        lv_obj_t* row_pin = createSettingRow(list_cont, "Code PIN");
-        lv_obj_t* sw_pin = lv_switch_create(row_pin);
-        lv_obj_align(sw_pin, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_set_style_bg_color(sw_pin, lv_color_hex(0x4CD964), LV_PART_INDICATOR | LV_STATE_CHECKED);
-        if (settings::isPinEnabled()) {
-            lv_obj_add_state(sw_pin, LV_STATE_CHECKED);
-        }
-        lv_obj_add_event_cb(sw_pin, pin_toggle_event, LV_EVENT_VALUE_CHANGED, this);
-        
-        // Modifier PIN (visible seulement si PIN actif)
-        if (settings::isPinEnabled()) {
-            lv_obj_t* row_change = createSettingRow(list_cont, "Modifier le code");
-            lv_obj_t* chevron = lv_label_create(row_change);
-            lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
-            lv_obj_set_style_text_color(chevron, lv_color_hex(0x8E8E93), 0);
-            lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, 0, 0);
-            lv_obj_add_flag(row_change, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(row_change, change_pin_event, LV_EVENT_CLICKED, this);
-        }
-        
-        // PIN status label
-        lbl_pin_status = lv_label_create(list_cont);
-        if (settings::isPinEnabled()) {
-            lv_label_set_text(lbl_pin_status, "Code active");
-            lv_obj_set_style_text_color(lbl_pin_status, lv_color_hex(0x4CD964), 0);
-        } else {
-            lv_label_set_text(lbl_pin_status, "Aucun code defini");
-            lv_obj_set_style_text_color(lbl_pin_status, lv_color_hex(0x8E8E93), 0);
-        }
-        lv_obj_set_style_text_font(lbl_pin_status, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_pad_left(lbl_pin_status, 15, 0);
-        
-        // Délai verrouillage
-        lv_obj_t* row_timeout = createSettingRow(list_cont, "Verrouillage auto");
-        lv_obj_t* dd = lv_dropdown_create(row_timeout);
-        lv_dropdown_set_options(dd, "Jamais\n15 sec\n30 sec\n1 min\n2 min\n5 min");
-        lv_obj_set_size(dd, 100, 35);
-        lv_obj_align(dd, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_set_style_text_font(dd, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_bg_color(dd, lv_color_hex(0x2c2c2e), 0);
-        lv_obj_set_style_text_color(dd, lv_color_white(), 0);
-        lv_obj_set_style_border_width(dd, 0, 0);
-        
-        // Set current selection
-        uint32_t timeout = settings::getLockTimeout();
-        uint16_t sel = 2; // 30s par défaut
-        if (timeout == 0) sel = 0;
-        else if (timeout <= 15000) sel = 1;
-        else if (timeout <= 30000) sel = 2;
-        else if (timeout <= 60000) sel = 3;
-        else if (timeout <= 120000) sel = 4;
-        else sel = 5;
-        lv_dropdown_set_selected(dd, sel);
-        lv_obj_add_event_cb(dd, timeout_event, LV_EVENT_VALUE_CHANGED, NULL);
-        
-        // ===== SECTION: ECRAN =====
-        createSection(list_cont, "ECRAN");
+        lv_obj_t* row_wifi = createSettingRow(list_cont, "WiFi");
+        lv_obj_t* chevron_wifi = lv_label_create(row_wifi);
+        lv_label_set_text(chevron_wifi, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_wifi, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_wifi, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_wifi, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_wifi, open_wifi_event, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* row_sync_time = createSettingRow(list_cont, "Synchro heure auto (4G)");
+        lv_obj_t* chevron_sync = lv_label_create(row_sync_time);
+        lv_label_set_text(chevron_sync, LV_SYMBOL_REFRESH);
+        lv_obj_set_style_text_color(chevron_sync, lv_color_hex(0x007AFF), 0);
+        lv_obj_align(chevron_sync, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_sync_time, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_sync_time, sync_time_auto_event, LV_EVENT_CLICKED, this);
+
+        // ===== AFFICHAGE & ACCUEIL =====
+        createSection(list_cont, "AFFICHAGE & ACCUEIL");
         
         lv_obj_t* row_br = createSettingRow(list_cont, "Luminosite");
         lv_obj_t* slider = lv_slider_create(row_br);
         lv_obj_set_size(slider, 120, 14);
         lv_obj_align(slider, LV_ALIGN_RIGHT_MID, -5, 0);
         lv_slider_set_range(slider, 0, 100);
-        
         uint8_t br = settings::getBrightness();
         int br_pct = ((int)br - 5) * 100 / 250;
         if (br_pct < 0) br_pct = 0;
@@ -810,9 +724,79 @@ private:
         lv_obj_set_style_outline_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
         lv_obj_set_style_pad_all(slider, 0, LV_PART_KNOB);
         lv_obj_add_event_cb(slider, brightness_event, LV_EVENT_VALUE_CHANGED, NULL);
+
+        lv_obj_t* row_reorder = createSettingRow(list_cont, "Reorganiser l'accueil");
+        lv_obj_t* chevron_reorder = lv_label_create(row_reorder);
+        lv_label_set_text(chevron_reorder, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_reorder, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_reorder, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_reorder, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_reorder, home_customize_event, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* row_add_python = createSettingRow(list_cont, "Ajouter applis Python");
+        lv_obj_t* chevron_python = lv_label_create(row_add_python);
+        lv_label_set_text(chevron_python, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_python, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_python, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_add_python, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_add_python, home_add_python_event, LV_EVENT_CLICKED, this);
+
+        // ===== SECURITE =====
+        createSection(list_cont, "SECURITE");
         
-        // ===== SECTION: SYSTEME =====
-        createSection(list_cont, "SYSTEME");
+        lv_obj_t* row_pin = createSettingRow(list_cont, "Code PIN");
+        lv_obj_t* sw_pin = lv_switch_create(row_pin);
+        lv_obj_align(sw_pin, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_bg_color(sw_pin, lv_color_hex(0x4CD964), LV_PART_INDICATOR | LV_STATE_CHECKED);
+        if (settings::isPinEnabled()) {
+            lv_obj_add_state(sw_pin, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(sw_pin, pin_toggle_event, LV_EVENT_VALUE_CHANGED, this);
+        
+        if (settings::isPinEnabled()) {
+            lv_obj_t* row_change = createSettingRow(list_cont, "Modifier le code");
+            lv_obj_t* chevron = lv_label_create(row_change);
+            lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+            lv_obj_set_style_text_color(chevron, lv_color_hex(0x8E8E93), 0);
+            lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_add_flag(row_change, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row_change, change_pin_event, LV_EVENT_CLICKED, this);
+        }
+        
+        lbl_pin_status = lv_label_create(list_cont);
+        if (settings::isPinEnabled()) {
+            lv_label_set_text(lbl_pin_status, "Code active");
+            lv_obj_set_style_text_color(lbl_pin_status, lv_color_hex(0x4CD964), 0);
+        } else {
+            lv_label_set_text(lbl_pin_status, "Aucun code defini");
+            lv_obj_set_style_text_color(lbl_pin_status, lv_color_hex(0x8E8E93), 0);
+        }
+        lv_obj_set_style_text_font(lbl_pin_status, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_pad_left(lbl_pin_status, 15, 0);
+
+        lv_obj_t* row_timeout = createSettingRow(list_cont, "Verrouillage auto");
+        lv_obj_t* dd = lv_dropdown_create(row_timeout);
+        lv_dropdown_set_options(dd, "Jamais\n15 sec\n30 sec\n1 min\n2 min\n5 min");
+        lv_obj_set_size(dd, 100, 35);
+        lv_obj_align(dd, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_text_font(dd, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_bg_color(dd, lv_color_hex(0x2c2c2e), 0);
+        lv_obj_set_style_text_color(dd, lv_color_white(), 0);
+        lv_obj_set_style_border_width(dd, 0, 0);
+        
+        uint32_t timeout = settings::getLockTimeout();
+        uint16_t sel = 2; 
+        if (timeout == 0) sel = 0;
+        else if (timeout <= 15000) sel = 1;
+        else if (timeout <= 30000) sel = 2;
+        else if (timeout <= 60000) sel = 3;
+        else if (timeout <= 120000) sel = 4;
+        else sel = 5;
+        lv_dropdown_set_selected(dd, sel);
+        lv_obj_add_event_cb(dd, timeout_event, LV_EVENT_VALUE_CHANGED, NULL);
+
+        // ===== SYSTEME & ENERGIE =====
+        createSection(list_cont, "SYSTEME & ENERGIE");
 
         lv_obj_t* row_battery = createSettingRow(list_cont, "Batterie (details)");
         lv_obj_t* chevron_battery = lv_label_create(row_battery);
@@ -822,26 +806,7 @@ private:
         lv_obj_add_flag(row_battery, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row_battery, show_battery_panel_event, LV_EVENT_CLICKED, this);
 
-        // WiFi (deplace depuis l'ecran d'accueil)
-        lv_obj_t* row_wifi = createSettingRow(list_cont, "WiFi");
-        lv_obj_t* chevron_wifi = lv_label_create(row_wifi);
-        lv_label_set_text(chevron_wifi, LV_SYMBOL_RIGHT);
-        lv_obj_set_style_text_color(chevron_wifi, lv_color_hex(0x8E8E93), 0);
-        lv_obj_align(chevron_wifi, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_flag(row_wifi, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row_wifi, open_wifi_event, LV_EVENT_CLICKED, this);
-        
-        // Sync time auto
-        lv_obj_t* row_sync_time = createSettingRow(list_cont, "Synchro heure auto");
-        lv_obj_t* chevron_sync = lv_label_create(row_sync_time);
-        lv_label_set_text(chevron_sync, LV_SYMBOL_REFRESH);
-        lv_obj_set_style_text_color(chevron_sync, lv_color_hex(0x007AFF), 0);
-        lv_obj_align(chevron_sync, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_flag(row_sync_time, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row_sync_time, sync_time_auto_event, LV_EVENT_CLICKED, this);
-
-        // Manual time setting (remonte plus haut dans la liste)
-        lv_obj_t* row_manual_time = createSettingRow(list_cont, "Regler l'heure");
+        lv_obj_t* row_manual_time = createSettingRow(list_cont, "Regler l'heure manuellement");
         lv_obj_t* chevron_manual = lv_label_create(row_manual_time);
         lv_label_set_text(chevron_manual, LV_SYMBOL_RIGHT);
         lv_obj_set_style_text_color(chevron_manual, lv_color_hex(0x8E8E93), 0);
@@ -849,7 +814,6 @@ private:
         lv_obj_add_flag(row_manual_time, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row_manual_time, show_time_panel_event, LV_EVENT_CLICKED, this);
 
-        // Time status label (remonte avec Regler l'heure)
         lbl_time_status = lv_label_create(list_cont);
         time_t now;
         time(&now);
@@ -862,51 +826,8 @@ private:
         lv_obj_set_style_text_font(lbl_time_status, &lv_font_montserrat_12, 0);
         lv_obj_set_style_pad_left(lbl_time_status, 15, 0);
 
-        // ===== SECTION: ECRAN D'ACCUEIL =====
-        createSection(list_cont, "ECRAN D'ACCUEIL");
-
-        // Reorganiser apps
-        lv_obj_t* row_reorder = createSettingRow(list_cont, "Reorganiser les applis");
-        lv_obj_t* chevron_reorder = lv_label_create(row_reorder);
-        lv_label_set_text(chevron_reorder, LV_SYMBOL_RIGHT);
-        lv_obj_set_style_text_color(chevron_reorder, lv_color_hex(0x8E8E93), 0);
-        lv_obj_align(chevron_reorder, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_flag(row_reorder, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row_reorder, home_customize_event, LV_EVENT_CLICKED, this);
-
-        // Ajouter apps Python
-        lv_obj_t* row_add_python = createSettingRow(list_cont, "Ajouter applis Python");
-        lv_obj_t* chevron_python = lv_label_create(row_add_python);
-        lv_label_set_text(chevron_python, LV_SYMBOL_RIGHT);
-        lv_obj_set_style_text_color(chevron_python, lv_color_hex(0x8E8E93), 0);
-        lv_obj_align(chevron_python, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_flag(row_add_python, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row_add_python, home_add_python_event, LV_EVENT_CLICKED, this);
-        
-        
-        
-        // ===== SECTION: INFO =====
+        // ===== INFORMATIONS =====
         createSection(list_cont, "INFORMATIONS");
-
-
-        lv_obj_t* row_bl = createSettingRow(list_cont, "Bootloader");
-
-        
-        lv_obj_t* chevron_bl = lv_label_create(row_bl);
-        lv_label_set_text(chevron_bl, LV_SYMBOL_RIGHT);
-        lv_obj_set_style_text_color(chevron_bl, lv_color_hex(0x8E8E93), 0);
-        lv_obj_align(chevron_bl, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_flag(row_bl, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row_bl, bootloader_event, LV_EVENT_CLICKED, this);
-
-        // Reboot button
-        lv_obj_t* row_reboot = createSettingRow(list_cont, "Redemarrer");
-        lv_obj_t* chevron_reboot = lv_label_create(row_reboot);
-        lv_label_set_text(chevron_reboot, LV_SYMBOL_POWER);
-        lv_obj_set_style_text_color(chevron_reboot, lv_color_hex(0xFF3B30), 0);
-        lv_obj_align(chevron_reboot, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_flag(row_reboot, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row_reboot, reboot_event, LV_EVENT_CLICKED, this);
         
         lv_obj_t* row_ver = createSettingRow(list_cont, "Version");
         lv_obj_t* lbl_ver = lv_label_create(row_ver);
@@ -921,15 +842,35 @@ private:
         lv_label_set_text(lbl_mem, memBuf);
         lv_obj_set_style_text_color(lbl_mem, lv_color_hex(0x8E8E93), 0);
         lv_obj_align(lbl_mem, LV_ALIGN_RIGHT_MID, 0, 0);
+
+        lv_obj_t* row_reboot = createSettingRow(list_cont, "Redemarrer");
+        lv_obj_t* chevron_reboot = lv_label_create(row_reboot);
+        lv_label_set_text(chevron_reboot, LV_SYMBOL_POWER);
+        lv_obj_set_style_text_color(chevron_reboot, lv_color_hex(0xFF3B30), 0);
+        lv_obj_align(chevron_reboot, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_reboot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_reboot, reboot_event, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* row_bl = createSettingRow(list_cont, "Bootloader");
+        lv_obj_t* chevron_bl = lv_label_create(row_bl);
+        lv_label_set_text(chevron_bl, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_color(chevron_bl, lv_color_hex(0x8E8E93), 0);
+        lv_obj_align(chevron_bl, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_flag(row_bl, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row_bl, bootloader_event, LV_EVENT_CLICKED, this);
     }
 
 public:
     void start(lv_obj_t* parent) override {
         main_bg = parent;
+
+        // RAZ des labels de stats au lancement pour éviter les clignotements
+        lbl_stats_real = nullptr;
+        lbl_stats_time = nullptr;
+
         lv_obj_set_style_bg_color(main_bg, lv_color_hex(0x000000), 0);
         lv_obj_clear_flag(main_bg, LV_OBJ_FLAG_SCROLLABLE);
         
-        // --- HEADER ---
         lv_obj_t* header = lv_obj_create(main_bg);
         lv_obj_set_size(header, 320, 50);
         lv_obj_set_style_bg_color(header, lv_color_hex(0x1c1c1e), 0);
@@ -953,7 +894,6 @@ public:
         lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
         lv_obj_center(title);
         
-        // --- LISTE SCROLLABLE ---
         list_cont = lv_obj_create(main_bg);
         lv_obj_set_size(list_cont, 320, 430 - 18);
         lv_obj_align(list_cont, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -965,7 +905,6 @@ public:
         
         buildSettingsList();
         
-        // --- PIN PANEL (overlay plein écran) ---
         pin_panel = lv_obj_create(main_bg);
         lv_obj_set_size(pin_panel, 320, 480);
         lv_obj_center(pin_panel);
@@ -979,8 +918,6 @@ public:
         lv_obj_set_style_text_font(pin_panel_title, &lv_font_montserrat_14, 0);
         lv_obj_align(pin_panel_title, LV_ALIGN_TOP_MID, 0, 10);
         
-        // Reuse lbl_pin_status if needed (already created in list but may be hidden)
-        // Create a new one for the pin panel
         lv_obj_t* pin_hint = lv_label_create(pin_panel);
         lv_label_set_text(pin_hint, "4 a 6 chiffres");
         lv_obj_set_style_text_color(pin_hint, lv_color_hex(0x8E8E93), 0);
@@ -1003,7 +940,6 @@ public:
         lv_obj_add_event_cb(kb_pin, pin_kb_ready, LV_EVENT_READY, this);
         lv_obj_add_event_cb(kb_pin, pin_kb_cancel, LV_EVENT_CANCEL, this);
         
-        // --- TIME PANEL (overlay plein écran) ---
         time_panel = lv_obj_create(main_bg);
         lv_obj_set_size(time_panel, 320, 480);
         lv_obj_center(time_panel);
@@ -1017,7 +953,6 @@ public:
         lv_obj_set_style_text_font(time_panel_title, &lv_font_montserrat_14, 0);
         lv_obj_align(time_panel_title, LV_ALIGN_TOP_MID, 0, 10);
         
-        // Time section
         lv_obj_t* time_label = lv_label_create(time_panel);
         lv_label_set_text(time_label, "Heure");
         lv_obj_set_style_text_color(time_label, lv_color_hex(0x8E8E93), 0);
@@ -1033,7 +968,6 @@ public:
         lv_obj_set_flex_align(time_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_clear_flag(time_cont, LV_OBJ_FLAG_SCROLLABLE);
         
-        // Hour roller
         roller_hour = lv_roller_create(time_cont);
         lv_roller_set_options(roller_hour, 
             "00\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n"
@@ -1049,7 +983,6 @@ public:
         lv_obj_set_style_text_color(colon, lv_color_white(), 0);
         lv_obj_set_style_text_font(colon, &lv_font_montserrat_28, 0);
         
-        // Minute roller
         roller_minute = lv_roller_create(time_cont);
         char minute_opts[400];
         strcpy(minute_opts, "00");
@@ -1064,7 +997,6 @@ public:
         lv_obj_set_style_bg_color(roller_minute, lv_color_hex(0x2c2c2e), 0);
         lv_obj_set_style_text_color(roller_minute, lv_color_white(), LV_PART_SELECTED);
         
-        // Date section
         lv_obj_t* date_label = lv_label_create(time_panel);
         lv_label_set_text(date_label, "Date");
         lv_obj_set_style_text_color(date_label, lv_color_hex(0x8E8E93), 0);
@@ -1080,7 +1012,6 @@ public:
         lv_obj_set_flex_align(date_cont, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_clear_flag(date_cont, LV_OBJ_FLAG_SCROLLABLE);
         
-        // Day roller
         roller_day = lv_roller_create(date_cont);
         char day_opts[200];
         strcpy(day_opts, "01");
@@ -1099,7 +1030,6 @@ public:
         lv_label_set_text(slash1, "/");
         lv_obj_set_style_text_color(slash1, lv_color_white(), 0);
         
-        // Month roller
         roller_month = lv_roller_create(date_cont);
         lv_roller_set_options(roller_month, 
             "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n12",
@@ -1113,7 +1043,6 @@ public:
         lv_label_set_text(slash2, "/");
         lv_obj_set_style_text_color(slash2, lv_color_white(), 0);
         
-        // Year roller
         roller_year = lv_roller_create(date_cont);
         lv_roller_set_options(roller_year, 
             "2024\n2025\n2026\n2027\n2028\n2029\n2030\n2031\n2032\n2033\n2034\n2035",
@@ -1123,7 +1052,6 @@ public:
         lv_obj_set_style_bg_color(roller_year, lv_color_hex(0x2c2c2e), 0);
         lv_obj_set_style_text_color(roller_year, lv_color_white(), LV_PART_SELECTED);
         
-        // Buttons
         lv_obj_t* btn_save = lv_btn_create(time_panel);
         lv_obj_set_size(btn_save, 130, 45);
         lv_obj_align(btn_save, LV_ALIGN_BOTTOM_LEFT, 20, -20);
@@ -1142,7 +1070,6 @@ public:
         lv_label_set_text(lbl_cancel, "Annuler");
         lv_obj_center(lbl_cancel);
 
-        // --- HOME REORDER PANEL ---
         home_reorder_panel = lv_obj_create(main_bg);
         lv_obj_set_size(home_reorder_panel, 320, 480);
         lv_obj_center(home_reorder_panel);
@@ -1172,7 +1099,6 @@ public:
         lv_obj_set_style_pad_gap(home_reorder_list, 6, 0);
         lv_obj_set_flex_flow(home_reorder_list, LV_FLEX_FLOW_COLUMN);
 
-        // Row 1: UP, DOWN, DELETE, SAVE
         lv_obj_t* btn_up = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_up, 68, 38);
         lv_obj_align(btn_up, LV_ALIGN_BOTTOM_LEFT, 6, -100);
@@ -1209,7 +1135,6 @@ public:
         lv_label_set_text(lbl_hr_save, "Sauver");
         lv_obj_center(lbl_hr_save);
 
-        // Row 2: RESET, DOSSIER+, OUVRIR/MOVE, FERMER DOSSIER
         lv_obj_t* btn_reset = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_reset, 68, 38);
         lv_obj_align(btn_reset, LV_ALIGN_BOTTOM_LEFT, 6, -56);
@@ -1246,7 +1171,6 @@ public:
         lv_label_set_text(lbl_open, LV_SYMBOL_EYE_OPEN);
         lv_obj_center(lbl_open);
 
-        // Row 3: CLOSE
         lv_obj_t* btn_hr_cancel = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_hr_cancel, 296, 38);
         lv_obj_align(btn_hr_cancel, LV_ALIGN_BOTTOM_MID, 0, -10);
@@ -1256,7 +1180,6 @@ public:
         lv_label_set_text(lbl_hr_cancel, "Fermer");
         lv_obj_center(lbl_hr_cancel);
 
-        // --- HOME PYTHON PANEL ---
         home_python_panel = lv_obj_create(main_bg);
         lv_obj_set_size(home_python_panel, 320, 480);
         lv_obj_center(home_python_panel);
@@ -1295,7 +1218,6 @@ public:
         lv_label_set_text(lbl_hp_close, "Fermer");
         lv_obj_center(lbl_hp_close);
 
-        // --- T9 KEYBOARD PANEL (for folder naming) ---
         home_t9_panel = lv_obj_create(main_bg);
         lv_obj_set_size(home_t9_panel, 320, 480);
         lv_obj_center(home_t9_panel);
@@ -1324,7 +1246,6 @@ public:
         lv_obj_add_event_cb(home_t9_kb, t9_confirm_event, LV_EVENT_READY, this);
         lv_obj_add_event_cb(home_t9_kb, t9_cancel_event, LV_EVENT_CANCEL, this);
 
-        // --- BATTERY PANEL ---
         battery_panel = lv_obj_create(main_bg);
         lv_obj_set_size(battery_panel, 320, 480);
         lv_obj_center(battery_panel);

@@ -146,11 +146,11 @@ public:
 
 // --- BOUTON VEILLE ---
 // Bouton physique sur GP47.
-#define SLEEP_BTN_PIN 47
+#define SLEEP_BTN_PIN 7  
 
 TFT_eSPI tft = TFT_eSPI();
 static lv_disp_draw_buf_t draw_buf;
-static constexpr uint32_t LV_BUF_PIXELS = 320u * 140u;
+static constexpr uint32_t LV_BUF_PIXELS = 320u * 160u;
 static lv_color_t buf1[LV_BUF_PIXELS];
 static lv_color_t buf2[LV_BUF_PIXELS];
 static bool g_tft_dma_ready = false;
@@ -827,63 +827,30 @@ void _touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 }
 
 // === AFFICHAGE HAUTES PERFORMANCES (DMA + MUTEX) ===
+// Dans Hardware.h - Fonction _disp_flush
+
 void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
-    // LVGL peut fournir des zones partiellement hors ecran: clip defensif obligatoire.
-    int32_t x1 = area->x1;
-    int32_t y1 = area->y1;
-    int32_t x2 = area->x2;
-    int32_t y2 = area->y2;
+    uint32_t w = (area->x2 - area->x1 + 1);
+    uint32_t h = (area->y2 - area->y1 + 1);
 
-    if (x2 < 0 || y2 < 0 || x1 > 319 || y1 > 479) {
-        lv_disp_flush_ready(disp);
-        return;
-    }
+    // 1. On attend que le CPU ait fini l'envoi DMA précédent
+    tft.dmaWait();
 
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 > 319) x2 = 319;
-    if (y2 > 479) y2 = 479;
-
-    uint32_t w = (uint32_t)(x2 - x1 + 1);
-    uint32_t h = (uint32_t)(y2 - y1 + 1);
-    uint32_t len = w * h;
-    uint32_t src_w = (uint32_t)(area->x2 - area->x1 + 1);
-
-    if (len == 0) {
-        lv_disp_flush_ready(disp);
-        return;
-    }
-
-    // 1. VERROUILLAGE SÉCURISÉ DU SPI (Pour protéger la carte SD)
+    // 2. On verrouille le SPI pour éviter les conflits avec la carte SD
     mutex_enter_blocking(&spi_mutex);
 
     tft.startWrite();
-    tft.setAddrWindow(x1, y1, w, h);
+    tft.setAddrWindow(area->x1, area->y1, w, h);
 
-    // 2. Envoi pixel: DMA si disponible, sinon mode direct (fallback de securite).
-    int32_t src_x_off = x1 - area->x1;
-    int32_t src_y_off = y1 - area->y1;
-
-    // En cas de clipping horizontal, les lignes ne sont plus contigues en memoire.
-    // On envoie donc ligne par ligne pour garantir la coherence des donnees.
-    if (src_x_off == 0 && src_w == w) {
-        uint32_t src_index = (uint32_t)src_y_off * src_w;
-        lv_color_t* src = color_p + src_index;
-        tft.pushPixels((uint16_t *)&src->full, len);
-    } else {
-        for (uint32_t row = 0; row < h; ++row) {
-            uint32_t src_index = (uint32_t)(src_y_off + (int32_t)row) * src_w + (uint32_t)src_x_off;
-            lv_color_t* src_line = color_p + src_index;
-
-            tft.pushPixels((uint16_t *)&src_line->full, w);
-        }
-    }
+    // 3. Envoi massif en DMA (plus de boucle ligne par ligne !)
+    tft.pushPixelsDMA((uint16_t *)color_p, w * h);
 
     tft.endWrite();
     
-    // 4. LIBÉRATION SÉCURISÉE DU SPI
+    // 4. On libère le SPI
     mutex_exit(&spi_mutex);
 
+    // 5. On dit à LVGL de préparer l'image suivante
     lv_disp_flush_ready(disp);
 }
 
@@ -1054,40 +1021,93 @@ inline void hardware_deferred_init() {
 
 // Dans Hardware.h
 void hardware_sleep() {
+    Serial.println("[POWER] Passage en mode veille...");
+    
+    // 1. Écran et Tactile
     hardware_backlight_fade_to(0, 180);
-
     mutex_enter_blocking(&spi_mutex);
     tft.writecommand(0x10); // Sleep écran
     mutex_exit(&spi_mutex);
 
-    // ENDORMIR LE TACTILE (FT6336U Mode Sleep)
     if (g_touch_present) {
         DEV_I2C_Write_Byte(FT6336U_I2C_ADDR, FT6336U_ADDR_POWER_MODE, 0x03);
     }
     
-    // Réduire les sorties PMIC en mode veille
+    // 2. Coupure de l'ampli Audio (Économie ~4mA)
+    audio_amp_enable(false);
+
+    // 3. Demander au modem LTE de dormir (Exemple SIM800L / A7670E)
+    // NOTE: Assure-toi que la commande AT+CSCLK=1 a bien été envoyée 
+    // lors de l'init de ton LTE.h pour autoriser la mise en veille.
+    pinMode(A7670_PWRKEY, OUTPUT); // Parfois appelé DTR sur certains modems
+    digitalWrite(A7670_PWRKEY, HIGH); // Selon le câblage, permet au modem de dormir
+
+    // 4. Réduire les sorties PMIC
     pmic_sleep_mode();
 
-    // IMPORTANT: ne pas piloter le modem ici.
-    // La veille lockscreen ne doit pas modifier son etat d'alimentation.
+    // 5. Underclock massif du processeur (Économie ~25mA)
+    // On passe le RP2350 de sa vitesse de pointe à 20 MHz.
+    set_sys_clock_khz(20000, true);
+    
+    // Baisse de la tension du cœur pour économiser encore plus
+    vreg_set_voltage(VREG_VOLTAGE_1_05); 
 }
 
-// Appelle hardware_sleep() pour mettre en veille, hardware_wake() pour réveiller.
-// Pour sortir de veille : détecter touche ou tactile (TP_INT ou autre GPIO)
+void hardware_wake() {
+    // 1. Réveiller le processeur et remettre la tension (TRÈS IMPORTANT de le faire en premier)
+    vreg_set_voltage(VREG_VOLTAGE_1_20); // Ou 1_25 si tu as overclocké à >250MHz
+    delay(2); // Laisser la tension se stabiliser
+    set_sys_clock_khz(250000, true); // Remettre ta vitesse normale (ex: 250MHz)
+    
+    SPI.begin(); 
+    hardware_backlight_set(0);
+    
+    // 2. Restaurer le PMIC et le Modem
+    pmic_wake_mode();
+    digitalWrite(A7670_PWRKEY, LOW); // Réveille le modem via hardware si applicable
+    
+    // 3. Réveiller Tactile
+    digitalWrite(Touch_RST_PIN, LOW);
+    sleep_ms(10);
+    digitalWrite(Touch_RST_PIN, HIGH);
+    sleep_ms(50); 
+    
+    // 4. Réveiller Écran
+    tft.startWrite();
+    tft.writecommand(0x11); // Sleep Out
+    tft.endWrite();
+    sleep_ms(120); 
+    tft.startWrite();
+    tft.writecommand(0x29); // Display ON
+    tft.endWrite();
+    tft.fillScreen(TFT_BLACK);
+    
+    // 5. Rallumer l'audio si nécessaire
+    audio_amp_enable(settings::getVolume() > 0);
+
+    yield();
+    lv_refr_now(lv_disp_get_default());
+    yield();
+    watchdog_update();
+
+    const uint8_t target_pwm = battery::cap_brightness(settings::getBrightness());
+    hardware_backlight_fade_to(target_pwm, 400);
+}
+
 
 void check_sleep_button() {
 #if TEMP_DISABLE_POWER_BUTTON
     return;
 #endif
 
+    // Lambda interne pour gérer le basculement veille/réveil (appui court)
     auto handle_short_press = []() {
         if (!manager.lockScreen.isLocked()) {
             manager.lockScreen.lock();
             return;
         }
 
-        // Si l'ecran est eteint, un appui court reveille vers le lockscreen.
-        // S'il est deja allume sur le lockscreen, un appui court le remet en veille.
+        // Si l'écran dort, on réveille. Sinon, on verrouille.
         if (manager.lockScreen.isDisplaySleeping()) {
             manager.lockScreen.wakeToLockScreen();
         } else {
@@ -1095,157 +1115,44 @@ void check_sleep_button() {
         }
     };
 
-    static uint32_t pmic_poll_ms = 0;
-    static bool pmic_key_pressed = false;
-    static uint32_t pmic_key_press_start_ms = 0;
-    const uint32_t now = millis();
-    if (g_pmic_available) {
-        const bool pmic_irq_active = (digitalRead(SYS_OUT_PIN) == LOW);
-        // Certaines revisions ne cablent pas SYS_OUT de maniere fiable.
-        // On garde l'IRQ materielle quand disponible, mais on sonde aussi le PMIC
-        // periodiquement pour ne jamais rater les appuis K3.
-        const bool periodic_poll_due = ((uint32_t)(now - pmic_poll_ms) >= 120);
-        if ((pmic_irq_active || periodic_poll_due) && (now - pmic_poll_ms >= 20)) {
-            pmic_poll_ms = now;
-            PMIC.getIrqStatus();
-
-            // Ignore les IRQ PEK transitoires juste apres un redemarrage
-            // suite a brownout/court-circuit/batterie tres basse.
-            if (now < g_pmic_irq_ignore_until_ms) {
-                PMIC.clearIrqStatus();
-            }
-        }
-
-        if (now >= g_pmic_irq_ignore_until_ms) {
-            // Priorite au bouton PMIC (K3 / PWRON) si les IRQ PEK sont remontees.
-            if (PMIC.isPekeyLongPressIrq()) {
-                Serial.println("Bouton K3 (PWRON) maintenu !");
-                PMIC.clearIrqStatus();
-                showPowerMenu();
-                return;
-            }
-
-            if (PMIC.isPekeyShortPressIrq()) {
-                Serial.println("Bouton K3 (PWRON) pressé brièvement !");
-                PMIC.clearIrqStatus();
-                handle_short_press();
-                return;
-            }
-
-            // Fallback robuste: certaines cartes ne remontent que positive/negative,
-            // sans evenements short/long directement decodees.
-            if (PMIC.isPekeyPositiveIrq()) {
-                pmic_key_pressed = true;
-                pmic_key_press_start_ms = now;
-            }
-
-            if (PMIC.isPekeyNegativeIrq()) {
-                uint32_t press_ms = 0;
-                if (pmic_key_pressed) {
-                    press_ms = (uint32_t)(now - pmic_key_press_start_ms);
-                }
-                pmic_key_pressed = false;
-
-                // 1.2s pour distinguer appui court/long (proche du chemin GPIO).
-                if (press_ms >= 1200) {
-                    Serial.println("[POWER] K3 long press (fallback) !");
-                    PMIC.clearIrqStatus();
-                    showPowerMenu();
-                    return;
-                }
-
-                if (press_ms >= 40) {
-                    Serial.println("[POWER] K3 short press (fallback) !");
-                    PMIC.clearIrqStatus();
-                    handle_short_press();
-                    return;
-                }
-            }
-        }
-    }
-
     static uint32_t press_start_time = 0;
     static bool is_pressing = false;
-    static bool long_press_handled = false; // Pour savoir si le menu a déjà pop
+    static bool long_press_handled = false;
     
-    // On lit l'état (LOW = pressé car on a un INPUT_PULLUP)
+    // Lecture du GPIO 7 (Configuré en INPUT_PULLUP dans hardware_init)
+    // LOW = Bouton pressé (tiré à la masse)
     bool state = digitalRead(SLEEP_BTN_PIN); 
 
     if (state == LOW) {
         if (!is_pressing) {
-            // 1. Le doigt vient TOUT JUSTE de se poser
+            // Le bouton vient d'être pressé
             is_pressing = true;
             press_start_time = millis();
             long_press_handled = false;
         } 
         else {
-            // 2. Le doigt est MAINTENU enfoncé
+            // Le bouton est maintenu enfoncé
+            // Si maintenu plus de 1.5 secondes, on affiche le menu de puissance
             if (!long_press_handled && (millis() - press_start_time > 1500)) {
-                // Les 1.5s sont passées ! On affiche le menu IMMÉDIATEMENT
-                Serial.println("[POWER] Appui long détecté !");
-                showPowerMenu(); // Appel direct de la fonction LVGL
-                long_press_handled = true; // On bloque pour ne pas ouvrir le menu en boucle
+                Serial.println("[POWER] GPIO 7: Appui long - Menu Alimentation");
+                showPowerMenu(); 
+                long_press_handled = true; 
             }
         }
     } 
-    else { // state == HIGH (bouton relâché)
+    else { 
+        // Le bouton est relâché (HIGH)
         if (is_pressing) {
             is_pressing = false;
             
-            // 3. On a relâché AVANT les 1.5s (Appui court)
-            // L'anti-rebond de 50ms évite les faux positifs
+            // Si relâché avant 1.5s et après 50ms (anti-rebond)
             if (!long_press_handled && (millis() - press_start_time > 50)) {
-                Serial.println("[POWER] Appui court détecté !");
+                Serial.println("[POWER] GPIO 7: Appui court - Toggle Veille");
                 handle_short_press();
             }
         }
     }
 }
-
-void hardware_wake() {
-    SPI.begin(); 
-
-    // On garde le backlight a zero pendant la sequence de reveil LCD pour
-    // eviter un flash blanc avant restauration de l'image.
-    hardware_backlight_set(0);
-    
-    // Restaurer les sorties PMIC depuis le mode veille
-    pmic_wake_mode();
-    
-    // RÉVEILLER LE TACTILE AVEC UN RESET MATÉRIEL
-    digitalWrite(Touch_RST_PIN, LOW);
-    sleep_ms(10);
-    digitalWrite(Touch_RST_PIN, HIGH);
-    sleep_ms(50); // Le FT6336U a besoin de temps pour redémarrer
-    
-    tft.startWrite();
-    tft.writecommand(0x11); // Sleep Out
-    tft.endWrite();
-    
-    sleep_ms(120); 
-
-    tft.startWrite();
-    tft.writecommand(0x29); // Display ON
-    tft.endWrite();
-
-    tft.fillScreen(TFT_BLACK);
-    
-    // Forcer LVGL a redessiner immédiatement avant le fade du backlight
-    // pour éviter un flash blanc ou une transition saccadée.
-    yield();
-    lv_refr_now(lv_disp_get_default());
-    yield();
-    watchdog_update();
-
-    const uint8_t target_pwm = battery::cap_brightness(settings::getBrightness());
-    // Augmenter la durée du fade (400ms au lieu de 220ms) pour une transition fluide
-    // une fois que l'écran est prêt à afficher le bon contenu.
-    hardware_backlight_fade_to(target_pwm, 400);
-}
-
-// À appeler dans loop() : check_sleep_button();
-// Initialisation dans hardware_init()
-
 
 // Fonction physique de gestion du volume
 inline void hardware_set_volume(int vol) {

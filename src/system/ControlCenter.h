@@ -2,7 +2,7 @@
 extern "C" {
 #endif
 extern void i2s_play_test_tone(int freq, int duration_ms, float gain);
-extern void hardware_set_volume(int vol);  // Déclaration forward pour ControlCenter
+extern void hardware_set_volume(int vol);  
 #ifdef __cplusplus
 }
 #endif
@@ -18,7 +18,6 @@ extern void hardware_set_volume(int vol);  // Déclaration forward pour ControlC
 #include "Settings.h"
 #include "../Hardware.h"
 #include "NotificationCenter.h"
-// IMPORTANT : N'oublie pas d'ajuster ce chemin selon la structure de tes dossiers
 #include "../services/CastService.h" 
 
 class ControlCenter
@@ -26,6 +25,9 @@ class ControlCenter
 private:
     lv_obj_t *layer = nullptr;
     lv_obj_t *overlay = nullptr;
+    
+    // Le conteneur maître qui glisse
+    lv_obj_t *main_sheet = nullptr; 
 
     lv_obj_t *panel_top = nullptr;
 
@@ -67,10 +69,19 @@ private:
     bool animating = false;
     int last_preview_volume = -1;
     int last_preview_brightness = -1;
-    lv_coord_t sheet_offset_y = -430;
-    static constexpr lv_coord_t sheet_hidden_y = -430;
+    lv_coord_t sheet_offset_y = -450; 
+    static constexpr lv_coord_t sheet_hidden_y = -450;
     static constexpr lv_opa_t overlay_hidden_opa = LV_OPA_0;
     static constexpr lv_opa_t overlay_visible_opa = LV_OPA_60;
+
+    // --- ANIMATIONS ---
+    lv_style_transition_dsc_t btn_trans;
+
+    void apply_btn_style(lv_obj_t* btn) {
+        lv_obj_set_style_translate_y(btn, 4, LV_STATE_PRESSED);
+        lv_obj_set_style_transition(btn, &btn_trans, 0);
+        lv_obj_set_style_transition(btn, &btn_trans, LV_STATE_PRESSED);
+    }
 
     static void set_btn_state(lv_obj_t *btn, bool active, uint32_t active_color)
     {
@@ -128,8 +139,7 @@ private:
             self->last_preview_volume = val;
             float gain = (float)val / 100.0f;
             if (gain < 0.03f) gain = 0.03f;
-            // Petit délai pour laisser le codec se stabiliser, puis jouer un beep audio
-            delayMicroseconds(20000);  // 20ms pour stabilisation
+            delayMicroseconds(20000);  
             i2s_play_test_tone(350 + val * 7, 140, gain);
         }
     }
@@ -178,20 +188,26 @@ private:
         }
     }
 
-    static void close_event(lv_event_t *e)
+    // Gère le clic sur l'arrière-plan ET le swipe vers le haut
+    static void background_event_cb(lv_event_t *e)
     {
         ControlCenter *self = (ControlCenter *)lv_event_get_user_data(e);
-        self->close();
+        lv_event_code_t code = lv_event_get_code(e);
+
+        if (code == LV_EVENT_CLICKED) {
+            self->close();
+        } else if (code == LV_EVENT_GESTURE) {
+            lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+            if (dir == LV_DIR_TOP) {
+                self->close();
+            }
+        }
     }
 
     void applySheetOffset(lv_coord_t offset)
     {
         sheet_offset_y = offset;
-        if (panel_top) lv_obj_set_style_translate_y(panel_top, offset, 0);
-        if (panel_media) lv_obj_set_style_translate_y(panel_media, offset, 0);
-        if (panel_notif1) lv_obj_set_style_translate_y(panel_notif1, offset, 0);
-        if (panel_notif2) lv_obj_set_style_translate_y(panel_notif2, offset, 0);
-        if (handle) lv_obj_set_style_translate_y(handle, offset, 0);
+        if (main_sheet) lv_obj_set_style_translate_y(main_sheet, offset, 0);
     }
 
     static void sheet_anim_exec(void *var, int32_t v)
@@ -229,13 +245,10 @@ private:
 
         self->animating = false;
         if (self->is_open) {
-            self->animateOverlayTo(overlay_visible_opa, 120);
-        } else if (self->overlay) {
+            self->animateOverlayTo(overlay_visible_opa, 150); 
+        } else if (self->main_sheet) {
+            lv_obj_add_flag(self->main_sheet, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(self->overlay, LV_OBJ_FLAG_HIDDEN);
-            if (self->panel_top) lv_obj_add_flag(self->panel_top, LV_OBJ_FLAG_HIDDEN);
-            if (self->panel_media) lv_obj_add_flag(self->panel_media, LV_OBJ_FLAG_HIDDEN);
-            if (self->panel_notif1) lv_obj_add_flag(self->panel_notif1, LV_OBJ_FLAG_HIDDEN);
-            if (self->panel_notif2) lv_obj_add_flag(self->panel_notif2, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -244,18 +257,14 @@ private:
         if (!ui_created) return;
 
         animating = true;
-        lv_anim_del(panel_top, (lv_anim_exec_xcb_t)sheet_anim_exec);
-        lv_anim_del(panel_media, (lv_anim_exec_xcb_t)sheet_anim_exec);
-        lv_anim_del(panel_notif1, (lv_anim_exec_xcb_t)sheet_anim_exec);
-        lv_anim_del(panel_notif2, (lv_anim_exec_xcb_t)sheet_anim_exec);
-        lv_anim_del(handle, (lv_anim_exec_xcb_t)sheet_anim_exec);
+        lv_anim_del(main_sheet, (lv_anim_exec_xcb_t)sheet_anim_exec);
 
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, this);
         lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)sheet_anim_exec);
         lv_anim_set_values(&a, sheet_offset_y, target_y);
-        lv_anim_set_time(&a, 280);  // Augmenté: 280ms pour plus de fluidité
+        lv_anim_set_time(&a, 300); 
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_set_user_data(&a, this);
         lv_anim_set_ready_cb(&a, sheet_anim_ready);
@@ -267,7 +276,6 @@ private:
     static void media_next_event(lv_event_t *e) { cast_service::instance().next(); }
     static void media_toggle_event(lv_event_t *e) { 
         cast_service::instance().toggle(); 
-        // Mise à jour visuelle optimiste du bouton Play/Pause
         lv_obj_t *btn = lv_event_get_target(e);
         lv_obj_t *lbl = lv_obj_get_child(btn, 0);
         if (lbl) {
@@ -281,14 +289,16 @@ private:
 
     lv_obj_t *createRoundBtn(lv_obj_t *parent, const char *icon, lv_event_cb_t cb, int x, int y, bool is_active, uint32_t active_color)
     {
-        lv_obj_t *btn = lv_obj_create(parent);
+        lv_obj_t *btn = lv_btn_create(parent);
         lv_obj_set_size(btn, 60, 60);
         lv_obj_set_pos(btn, x, y);
         lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0); 
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, this);
+
+        apply_btn_style(btn);
 
         lv_obj_t *l_icon = lv_label_create(btn);
         lv_label_set_text(l_icon, icon);
@@ -338,15 +348,17 @@ private:
 
     lv_obj_t *createMediaBtn(lv_obj_t *parent, const char *icon, lv_event_cb_t cb, int x, int y) 
     {
-        lv_obj_t *btn = lv_obj_create(parent);
+        lv_obj_t *btn = lv_btn_create(parent);
         lv_obj_set_size(btn, 40, 40);
         lv_obj_align(btn, LV_ALIGN_LEFT_MID, x, y);
         lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x007AFF), 0); 
         lv_obj_set_style_border_width(btn, 0, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, this);
+
+        apply_btn_style(btn); 
 
         lv_obj_t *l_icon = lv_label_create(btn);
         lv_label_set_text(l_icon, icon);
@@ -357,13 +369,15 @@ private:
 
     void createUI()
     {
-        if (ui_created)
-            return;
+        if (ui_created) return;
         ui_created = true;
 
         layer = lv_layer_top();
 
-        // 1. Overlay
+        static const lv_style_prop_t props[] = {LV_STYLE_TRANSLATE_Y, (lv_style_prop_t)0};
+        lv_style_transition_dsc_init(&btn_trans, props, lv_anim_path_ease_out, 100, 0, NULL);
+
+        // 1. Overlay Noir Transparent
         overlay = lv_obj_create(layer);
         lv_obj_set_size(overlay, 320, 480);
         lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
@@ -372,18 +386,38 @@ private:
         lv_obj_set_style_radius(overlay, 0, 0);
         lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(overlay, close_event, LV_EVENT_CLICKED, this);
+        
+        // On permet au fond noir d'accepter les clics et le balayage
+        lv_obj_add_event_cb(overlay, background_event_cb, LV_EVENT_ALL, this);
 
-        // 2. Panneau Principal (Haut)
-        panel_top = lv_obj_create(layer);
+        // 2. MASTER SHEET (Conteneur principal qui porte tout)
+        main_sheet = lv_obj_create(layer);
+        lv_obj_set_size(main_sheet, 320, 480);
+        lv_obj_align(main_sheet, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_bg_opa(main_sheet, LV_OPA_TRANSP, 0); 
+        lv_obj_set_style_border_width(main_sheet, 0, 0);
+        lv_obj_set_style_pad_all(main_sheet, 0, 0);
+        lv_obj_clear_flag(main_sheet, LV_OBJ_FLAG_SCROLLABLE);
+        
+        // --- LA CORRECTION MAGIQUE ---
+        // Empêche le conteneur global d'avaler les clics ! 
+        // Les clics dans le "vide" passent au travers et atteignent l'overlay.
+        lv_obj_clear_flag(main_sheet, LV_OBJ_FLAG_CLICKABLE); 
+        
+        lv_obj_add_flag(main_sheet, LV_OBJ_FLAG_HIDDEN); 
+        
+        // 3. Panneau Principal (Haut)
+        panel_top = lv_obj_create(main_sheet);
         lv_obj_set_size(panel_top, 300, 255);
         lv_obj_align(panel_top, LV_ALIGN_TOP_MID, 0, 10);
-        lv_obj_set_style_bg_color(panel_top, lv_color_hex(0xD9D9D9), 0);
-        lv_obj_set_style_bg_opa(panel_top, LV_OPA_90, 0);
+        lv_obj_set_style_bg_color(panel_top, lv_color_hex(0xE0E0E0), 0); 
+        lv_obj_set_style_bg_opa(panel_top, LV_OPA_COVER, 0); 
         lv_obj_set_style_radius(panel_top, 10, 0);
         lv_obj_set_style_border_width(panel_top, 0, 0);
         lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
+        
+        // Ajout du Swipe-to-close sur le panneau du haut
+        lv_obj_add_event_cb(panel_top, background_event_cb, LV_EVENT_GESTURE, this);
 
         bool eco_on = battery::is_manual_saver_enabled();
         uint8_t cur_vol = settings::getVolume();
@@ -407,20 +441,20 @@ private:
         slider_brightness = createHorizontalSlider(panel_top, LV_SYMBOL_CHARGE, 0, 100, br_pct, brightness_event, &lbl_brightness_val, 7, 98);
         slider_volume = createHorizontalSlider(panel_top, LV_SYMBOL_AUDIO, 0, 100, cur_vol, volume_event, &lbl_volume_val, 7, 168 );
 
-        // --- NOUVEAU : PANNEAU MEDIA ---
-        panel_media = lv_obj_create(layer);
+        // --- PANNEAU MEDIA ---
+        panel_media = lv_obj_create(main_sheet);
         lv_obj_set_size(panel_media, 300, 80);
-        lv_obj_set_style_bg_color(panel_media, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_bg_opa(panel_media, LV_OPA_80, 0);
+        lv_obj_set_style_bg_color(panel_media, lv_color_hex(0x2C2C2E), 0); 
+        lv_obj_set_style_bg_opa(panel_media, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(panel_media, 10, 0);
         lv_obj_set_style_border_width(panel_media, 0, 0);
         lv_obj_clear_flag(panel_media, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(panel_media, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(panel_media, background_event_cb, LV_EVENT_GESTURE, this);
 
         lbl_media_title = lv_label_create(panel_media);
         lv_obj_set_width(lbl_media_title, 135); 
         lv_label_set_long_mode(lbl_media_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-        lv_obj_set_style_text_color(lbl_media_title, lv_color_hex(0xd6d6d6), 0);
+        lv_obj_set_style_text_color(lbl_media_title, lv_color_white(), 0);
         lv_obj_set_style_text_font(lbl_media_title, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_media_title, LV_ALIGN_TOP_LEFT, 5, 10);
 
@@ -435,16 +469,15 @@ private:
         btn_media_toggle = createMediaBtn(panel_media, LV_SYMBOL_PLAY, media_toggle_event, 185, 0);
         btn_media_next = createMediaBtn(panel_media, LV_SYMBOL_NEXT, media_next_event, 235, 0);
 
-
-        // 3. Panneau Notif 1
-        panel_notif1 = lv_obj_create(layer);
+        // 4. Panneau Notif 1
+        panel_notif1 = lv_obj_create(main_sheet);
         lv_obj_set_size(panel_notif1, 300, 80);
-        lv_obj_set_style_bg_color(panel_notif1, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(panel_notif1, LV_OPA_80, 0);
+        lv_obj_set_style_bg_color(panel_notif1, lv_color_hex(0xF2F2F2), 0); 
+        lv_obj_set_style_bg_opa(panel_notif1, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(panel_notif1, 10, 0);
         lv_obj_set_style_border_width(panel_notif1, 0, 0);
         lv_obj_clear_flag(panel_notif1, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(panel_notif1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(panel_notif1, background_event_cb, LV_EVENT_GESTURE, this);
 
         lbl_n1_app = lv_label_create(panel_notif1);
         lv_obj_set_style_text_color(lbl_n1_app, lv_color_hex(0x007AFF), 0);
@@ -463,15 +496,15 @@ private:
         lv_obj_set_style_text_font(lbl_n1_body, &lv_font_montserrat_12, 0);
         lv_obj_align(lbl_n1_body, LV_ALIGN_TOP_LEFT, 4, 42);
 
-        // 4. Panneau Notif 2
-        panel_notif2 = lv_obj_create(layer);
+        // 5. Panneau Notif 2
+        panel_notif2 = lv_obj_create(main_sheet);
         lv_obj_set_size(panel_notif2, 300, 80);
-        lv_obj_set_style_bg_color(panel_notif2, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(panel_notif2, LV_OPA_80, 0);
+        lv_obj_set_style_bg_color(panel_notif2, lv_color_hex(0xF2F2F2), 0);
+        lv_obj_set_style_bg_opa(panel_notif2, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(panel_notif2, 10, 0);
         lv_obj_set_style_border_width(panel_notif2, 0, 0);
         lv_obj_clear_flag(panel_notif2, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(panel_notif2, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(panel_notif2, background_event_cb, LV_EVENT_GESTURE, this);
 
         lbl_n2_app = lv_label_create(panel_notif2);
         lv_obj_set_style_text_color(lbl_n2_app, lv_color_hex(0x007AFF), 0);
@@ -490,9 +523,8 @@ private:
         lv_obj_set_style_text_font(lbl_n2_body, &lv_font_montserrat_12, 0);
         lv_obj_align(lbl_n2_body, LV_ALIGN_TOP_LEFT, 5, 42);
 
-        // 5. Poignée en bas (Handle)
-        lv_obj_t *handle = lv_obj_create(overlay);
-        this->handle = handle;
+        // 6. Poignée en bas (Handle)
+        handle = lv_obj_create(main_sheet); 
         lv_obj_set_size(handle, 36, 4);
         lv_obj_align(handle, LV_ALIGN_BOTTOM_MID, 0, -10);
         lv_obj_set_style_bg_color(handle, lv_color_hex(0xA0A0A0), 0);
@@ -519,14 +551,11 @@ public:
 
         lv_obj_clear_flag(overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_opa(overlay, overlay_hidden_opa, 0);
-        lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(panel_media, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(panel_notif1, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(panel_notif2, LV_OBJ_FLAG_HIDDEN);
+        
+        lv_obj_clear_flag(main_sheet, LV_OBJ_FLAG_HIDDEN);
 
         applySheetOffset(sheet_hidden_y);
 
-        // Rafraichir les sliders
         uint8_t br = settings::getBrightness();
         int br_pct = ((int)br - 5) * 100 / 250;
         if (br_pct < 0) br_pct = 0;
@@ -550,7 +579,6 @@ public:
         bool media_active = cast_service::instance().isMediaActive();
 
         if (media_active) {
-            // Le Lecteur Media prend la place de Notif 1 (Y=274)
             lv_obj_align(panel_media, LV_ALIGN_TOP_MID, 0, 274);
             lv_obj_clear_flag(panel_media, LV_OBJ_FLAG_HIDDEN);
             
@@ -561,7 +589,6 @@ public:
             lv_obj_t* toggle_lbl = lv_obj_get_child(btn_media_toggle, 0);
             if (toggle_lbl) lv_label_set_text(toggle_lbl, icon);
 
-            // La Notif 1 est repoussée dans le Slot 2 (Y=364)
             if (notifications::center().get_latest(0, n_app, n_title, n_body)) {
                 lv_label_set_text(lbl_n1_app, n_app[0] ? n_app : "Systeme");
                 lv_label_set_text(lbl_n1_title, n_title);
@@ -572,14 +599,11 @@ public:
                 lv_obj_add_flag(panel_notif1, LV_OBJ_FLAG_HIDDEN);
             }
 
-            // On cache complètement le panneau Notif 2
             lv_obj_add_flag(panel_notif2, LV_OBJ_FLAG_HIDDEN);
 
         } else {
-            // Pas de musique, on cache le lecteur
             lv_obj_add_flag(panel_media, LV_OBJ_FLAG_HIDDEN);
 
-            // La Notif 1 reprend le Slot 1 (Y=274)
             lv_obj_align(panel_notif1, LV_ALIGN_TOP_MID, 0, 274);
             lv_obj_clear_flag(panel_notif1, LV_OBJ_FLAG_HIDDEN);
             if (notifications::center().get_latest(0, n_app, n_title, n_body)) {
@@ -592,7 +616,6 @@ public:
                 lv_label_set_text(lbl_n1_body, "Vous etes a jour.");
             }
 
-            // La Notif 2 reprend le Slot 2 (Y=364)
             lv_obj_align(panel_notif2, LV_ALIGN_TOP_MID, 0, 364);
             if (notifications::center().get_latest(1, n_app, n_title, n_body)) {
                 lv_label_set_text(lbl_n2_app, n_app[0] ? n_app : "Systeme");
@@ -604,8 +627,6 @@ public:
             }
         }
 
-        lv_obj_clear_flag(overlay, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(panel_top, LV_OBJ_FLAG_HIDDEN);
         animateSheetTo(0);
     }
 

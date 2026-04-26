@@ -51,8 +51,6 @@ private:
         out_y = 215 - (lv_coord_t)((target_lat - cam_lat) * zoom * 1.5f);
     }
 
-    // --- LE MOTEUR DE DESSIN VECTORIEL (OPTIMISÉ) ---
-// --- LE MOTEUR DE DESSIN VECTORIEL (ULTRA-OPTIMISÉ) ---
     // --- LE MOTEUR VECTORIEL ULTRA-RAPIDE (INLINE MATHS) ---
     static void map_draw_event_cb(lv_event_t* e) {
         lv_obj_t* obj = lv_event_get_target(e);
@@ -67,78 +65,72 @@ private:
         float zoom = app->current_zoom;
 
         // 1. L.O.D AGRESSIF (Disparition rapide)
-        // Les parcs (nature) disparaissent dès qu'on dézoome un tout petit peu
         bool hide_nature        = (zoom < 14000.0f); 
         bool hide_small_streets = (zoom < 10000.0f);
         bool hide_water         = (zoom < 4000.0f);
 
-        // 2. PRÉ-CALCULS MATHÉMATIQUES (Le secret de la fluidité)
-        // On calcule ces facteurs UNE SEULE FOIS par image, au lieu de 10 000 fois !
+        // 2. PRÉ-CALCULS MATHÉMATIQUES
         float zoom_x = zoom;
         float zoom_y = zoom * 1.5f;
         float offset_x = 160.0f - (cam_lon * zoom_x);
         float offset_y = 215.0f + (cam_lat * zoom_y);
 
-        // Boîte englobante
+        // Boîte englobante stricte (Bounding Box)
+        // On ne calcule rien pour ce qui sort de ce cadre
         float view_width_deg = 320.0f / zoom_x;
         float view_height_deg = 430.0f / zoom_y;
-        float min_lat = cam_lat - (view_height_deg / 2.0f) - 0.005f;
-        float max_lat = cam_lat + (view_height_deg / 2.0f) + 0.005f;
-        float min_lon = cam_lon - (view_width_deg / 2.0f) - 0.005f;
-        float max_lon = cam_lon + (view_width_deg / 2.0f) + 0.005f;
+        float min_lat = cam_lat - (view_height_deg / 2.0f);
+        float max_lat = cam_lat + (view_height_deg / 2.0f);
+        float min_lon = cam_lon - (view_width_deg / 2.0f);
+        float max_lon = cam_lon + (view_width_deg / 2.0f);
 
-        // 3. PINCEAUX
+        // 3. PINCEAUX (Initialisation rapide)
         lv_draw_line_dsc_t line_dsc[5];
         for(int i=0; i<5; i++) {
             lv_draw_line_dsc_init(&line_dsc[i]);
-            // line_dsc[i].round_start = 1;
-            // line_dsc[i].round_end = 1;
         }
 
         line_dsc[1].color = lv_color_hex(0xFFA500); line_dsc[1].width = 4; // Gros axes
         line_dsc[2].color = lv_color_hex(0xFFFFFF); line_dsc[2].width = 2; // Petites rues
-        line_dsc[3].color = lv_color_hex(0x74B9FF); line_dsc[3].width = 6; // Eau (Très épais)
-        line_dsc[4].color = lv_color_hex(0x55EFC4); line_dsc[4].width = 5; // Parcs (Très épais pour simuler un remplissage)
+        line_dsc[3].color = lv_color_hex(0x74B9FF); line_dsc[3].width = 6; // Eau
+        line_dsc[4].color = lv_color_hex(0x55EFC4); line_dsc[4].width = 5; // Parcs
 
         // Position de la fenêtre sur l'écran physique
         lv_coord_t base_x = obj->coords.x1;
         lv_coord_t base_y = obj->coords.y1;
 
-        // 4. BOUCLE D'AFFICHAGE EN 2 PASSES
-        for (int pass = 0; pass < 2; pass++) {
-            for (int i = 0; i < NUM_ROADS; i++) {
-                const VectorRoad& road = map_database[i];
+        // 4. BOUCLE D'AFFICHAGE UNIQUE (La grosse magie est ici)
+        for (int i = 0; i < NUM_ROADS; i++) {
+            const VectorRoad& road = map_database[i];
+            uint8_t type = road.type;
 
-                if (pass == 0 && road.type == 1) continue;
-                if (pass == 1 && road.type != 1) continue;
+            // A. Rejet de niveau de détail (LOD) - Fait en PREMIER pour éviter des calculs
+            if (type == 4 && hide_nature) continue;
+            if (type == 2 && hide_small_streets) continue;
+            if (type == 3 && hide_water) continue;
 
-                // Rejet de niveau de détail (LOD)
-                if (hide_nature && road.type == 4) continue;
-                if (hide_small_streets && road.type == 2) continue;
-                if (hide_water && road.type == 3) continue;
+            // B. Rejet spatial ultra-rapide (Bounding Box)
+            if (road.lat1 < min_lat && road.lat2 < min_lat) continue;
+            if (road.lat1 > max_lat && road.lat2 > max_lat) continue;
+            if (road.lon1 < min_lon && road.lon2 < min_lon) continue;
+            if (road.lon1 > max_lon && road.lon2 > max_lon) continue;
 
-                // Rejet spatial ultra-rapide
-                if ((road.lat1 < min_lat && road.lat2 < min_lat) ||
-                    (road.lat1 > max_lat && road.lat2 > max_lat) ||
-                    (road.lon1 < min_lon && road.lon2 < min_lon) ||
-                    (road.lon1 > max_lon && road.lon2 > max_lon)) {
-                    continue;
-                }
+            // C. Projection Mathématique
+            lv_coord_t x1 = (lv_coord_t)(offset_x + road.lon1 * zoom_x);
+            lv_coord_t y1 = (lv_coord_t)(offset_y - road.lat1 * zoom_y);
+            lv_coord_t x2 = (lv_coord_t)(offset_x + road.lon2 * zoom_x);
+            lv_coord_t y2 = (lv_coord_t)(offset_y - road.lat2 * zoom_y);
 
-                // Projection Mathématique INLINE (Aucun appel de fonction, rapidité maximale)
-                lv_coord_t x1 = (lv_coord_t)(offset_x + road.lon1 * zoom_x);
-                lv_coord_t y1 = (lv_coord_t)(offset_y - road.lat1 * zoom_y);
-                lv_coord_t x2 = (lv_coord_t)(offset_x + road.lon2 * zoom_x);
-                lv_coord_t y2 = (lv_coord_t)(offset_y - road.lat2 * zoom_y);
+            // D. Anti-Lag sub-pixel (calcul via entiers sans fonction `abs()` pour gagner des cycles)
+            lv_coord_t dx = x2 - x1;
+            lv_coord_t dy = y2 - y1;
+            if (dx > -3 && dx < 3 && dy > -3 && dy < 3) continue; 
 
-                // Anti-Lag sub-pixel
-                if (abs(x1 - x2) <= 4 && abs(y1 - y2) <= 4) continue;
+            // E. On dessine !
+            lv_point_t p1 = { (lv_coord_t)(base_x + x1), (lv_coord_t)(base_y + y1) };
+            lv_point_t p2 = { (lv_coord_t)(base_x + x2), (lv_coord_t)(base_y + y2) };
 
-                lv_point_t p1 = { (lv_coord_t)(base_x + x1), (lv_coord_t)(base_y + y1) };
-                lv_point_t p2 = { (lv_coord_t)(base_x + x2), (lv_coord_t)(base_y + y2) };
-
-                lv_draw_line(draw_ctx, &line_dsc[road.type], &p1, &p2);
-            }
+            lv_draw_line(draw_ctx, &line_dsc[type], &p1, &p2);
         }
 
         // --- DESSIN DU JOUEUR ---
@@ -161,6 +153,7 @@ private:
             lv_draw_rect(draw_ctx, &player_dsc, &player_area);
         }
     }
+    
     // Le glissement du doigt (Pan)
     static void map_drag_event_cb(lv_event_t* e) {
         VectorMapApp* app = (VectorMapApp*)lv_event_get_user_data(e);
@@ -185,7 +178,7 @@ private:
 
             // 🚀 LE LIMITEUR : On ne redessine l'écran que toutes les 35ms (~28 FPS)
             // Le doigt peut bouger très vite, la carte suivra avec des sauts calculés, sans figer le CPU
-            if (millis() - app->last_drag_draw > 35) {
+            if (millis() - app->last_drag_draw > 50) {
                 app->last_drag_draw = millis();
                 lv_obj_invalidate(app->map_canvas);
             }

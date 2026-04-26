@@ -17,8 +17,7 @@ LV_IMG_DECLARE(fondecran);
 class NewHomeApp : public App {
 private:
     lv_obj_t* main_bg = nullptr;
-    lv_obj_t* glow_top = nullptr;
-    lv_obj_t* glow_bottom = nullptr;
+    // Note: glow_top et glow_bottom supprimés pour la fluidité absolue
     lv_obj_t* bg_img = nullptr;
     
     lv_obj_t* top_bar_cont = nullptr; 
@@ -142,12 +141,15 @@ private:
         if (offset < 0) offset = 0;
         if (offset > drawer_hidden_ty) offset = drawer_hidden_ty;
 
+        // On déplace physiquement le tiroir
         lv_obj_set_style_translate_y(app_list_cont, offset, 0);
 
         if (quick_actions_cont) {
             if (!lv_obj_has_flag(quick_actions_cont, LV_OBJ_FLAG_HIDDEN)) {
-                uint8_t opa = (uint8_t)((255L * offset) / drawer_hidden_ty);
-                lv_obj_set_style_opa(quick_actions_cont, opa, 0);
+                // OPTIMISATION MAJEURE : On fait glisser le panneau vers le bas au lieu
+                // de changer son opacité. Le CPU adore les translations !
+                lv_coord_t qa_offset = drawer_hidden_ty - offset;
+                lv_obj_set_style_translate_y(quick_actions_cont, qa_offset, 0);
             }
         }
     }
@@ -296,6 +298,7 @@ private:
             return;
         }
 
+        // Surcouche assombrie (celle-ci ne bouge pas, on peut garder un peu d'opacité)
         color_selector_overlay = lv_obj_create(main_bg);
         lv_obj_set_size(color_selector_overlay, 320, 480);
         lv_obj_set_pos(color_selector_overlay, 0, 0);
@@ -311,15 +314,13 @@ private:
         lv_obj_set_size(color_selector_sheet, 296, 240);
         lv_obj_align(color_selector_sheet, LV_ALIGN_BOTTOM_MID, 0, -14);
         
-        // Rendu LockScreen (Modern Dark) pour le Color Picker
+        // Rendu plein et opaque pour le menu de sélection
         lv_obj_set_style_bg_color(color_selector_sheet, lv_color_hex(0x121A29), 0);
-        lv_obj_set_style_bg_opa(color_selector_sheet, LV_OPA_90, 0);
+        lv_obj_set_style_bg_opa(color_selector_sheet, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(color_selector_sheet, 1, 0);
         lv_obj_set_style_border_color(color_selector_sheet, lv_color_hex(0x2F4369), 0);
         lv_obj_set_style_radius(color_selector_sheet, 22, 0);
-        lv_obj_set_style_shadow_width(color_selector_sheet, 16, 0);
-        lv_obj_set_style_shadow_color(color_selector_sheet, lv_color_hex(0x050A14), 0);
-        lv_obj_set_style_shadow_opa(color_selector_sheet, LV_OPA_40, 0);
+        lv_obj_set_style_shadow_width(color_selector_sheet, 0, 0); // Pas d'ombre !
 
         lv_obj_set_style_pad_all(color_selector_sheet, 14, 0);
         lv_obj_set_style_pad_row(color_selector_sheet, 10, 0);
@@ -593,15 +594,14 @@ private:
         lv_obj_set_pos(app_list_cont, 10, 73); 
         lv_obj_set_style_translate_y(app_list_cont, drawer_hidden_ty, 0); 
         
-        // Rendu LockScreen (Modern Dark) pour le tiroir d'applications
+        // --- OPTIMISATION FLUIDITE GIGA ---
+        // Fond 100% OPAQUE, pas d'ombre, flat design propre et léger
         lv_obj_set_style_bg_color(app_list_cont, lv_color_hex(0x121A29), 0);
-        lv_obj_set_style_bg_opa(app_list_cont, LV_OPA_80, 0); 
+        lv_obj_set_style_bg_opa(app_list_cont, LV_OPA_COVER, 0); // COVER au lieu de 80
         lv_obj_set_style_border_width(app_list_cont, 1, 0);
         lv_obj_set_style_border_color(app_list_cont, lv_color_hex(0x2F4369), 0);
-        lv_obj_set_style_border_opa(app_list_cont, LV_OPA_70, 0);
-        lv_obj_set_style_shadow_width(app_list_cont, 16, 0);
-        lv_obj_set_style_shadow_color(app_list_cont, lv_color_hex(0x050A14), 0);
-        lv_obj_set_style_shadow_opa(app_list_cont, LV_OPA_40, 0);
+        lv_obj_set_style_border_opa(app_list_cont, LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_width(app_list_cont, 0, 0); // Ombre SUPPRIMEE
         lv_obj_set_style_radius(app_list_cont, 16, 0); 
 
         lv_obj_set_scrollbar_mode(app_list_cont, LV_SCROLLBAR_MODE_OFF);
@@ -612,10 +612,10 @@ private:
         lv_obj_set_size(header_btn, 280, 36);
         lv_obj_align(header_btn, LV_ALIGN_TOP_MID, 0, 0);
         lv_obj_set_style_bg_color(header_btn, lv_color_hex(0x1C2639), 0);
-        lv_obj_set_style_bg_opa(header_btn, LV_OPA_60, 0);
+        lv_obj_set_style_bg_opa(header_btn, LV_OPA_COVER, 0); // Opaque pour la vitesse
         lv_obj_set_style_border_width(header_btn, 1, 0);
         lv_obj_set_style_border_color(header_btn, lv_color_hex(0x3B4D70), 0);
-        lv_obj_set_style_border_opa(header_btn, LV_OPA_50, 0);
+        lv_obj_set_style_border_opa(header_btn, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(header_btn, 10, 0);
         lv_obj_add_event_cb(header_btn, close_app_list_cb, LV_EVENT_CLICKED, this);
         apply_btn_style(header_btn);
@@ -649,7 +649,7 @@ private:
         lv_obj_set_size(btn_prev, 60, 50);
         lv_obj_align(btn_prev, LV_ALIGN_LEFT_MID, 0, 0);
         lv_obj_set_style_bg_color(btn_prev, lv_color_hex(0x1C2639), 0);
-        lv_obj_set_style_bg_opa(btn_prev, LV_OPA_70, 0);
+        lv_obj_set_style_bg_opa(btn_prev, LV_OPA_COVER, 0); // Opaque
         lv_obj_set_style_border_width(btn_prev, 1, 0);
         lv_obj_set_style_border_color(btn_prev, lv_color_hex(0x3B4D70), 0);
         lv_obj_set_style_radius(btn_prev, 15, 0);
@@ -669,7 +669,7 @@ private:
         lv_obj_set_size(btn_next, 60, 50);
         lv_obj_align(btn_next, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_set_style_bg_color(btn_next, lv_color_hex(0x1C2639), 0);
-        lv_obj_set_style_bg_opa(btn_next, LV_OPA_70, 0);
+        lv_obj_set_style_bg_opa(btn_next, LV_OPA_COVER, 0); // Opaque
         lv_obj_set_style_border_width(btn_next, 1, 0);
         lv_obj_set_style_border_color(btn_next, lv_color_hex(0x3B4D70), 0);
         lv_obj_set_style_radius(btn_next, 15, 0);
@@ -766,13 +766,13 @@ private:
         top_bar_cont = lv_obj_create(parent);
         lv_obj_set_size(top_bar_cont, 300, 40);
         
-        // Rendu LockScreen (Badge batterie)
+        // --- OPTIMISATION FLUIDITE GIGA ---
         lv_obj_set_style_bg_color(top_bar_cont, lv_color_hex(0x1C2639), 0);
-        lv_obj_set_style_bg_opa(top_bar_cont, LV_OPA_60, 0);
+        lv_obj_set_style_bg_opa(top_bar_cont, LV_OPA_COVER, 0); // Opaque 
         lv_obj_set_style_radius(top_bar_cont, 15, 0);
         lv_obj_set_style_border_width(top_bar_cont, 1, 0);
         lv_obj_set_style_border_color(top_bar_cont, lv_color_hex(0x3B4D70), 0);
-        lv_obj_set_style_border_opa(top_bar_cont, LV_OPA_70, 0);
+        lv_obj_set_style_border_opa(top_bar_cont, LV_OPA_COVER, 0);
         
         lv_obj_align(top_bar_cont, LV_ALIGN_TOP_MID, 0, 15);
         lv_obj_clear_flag(top_bar_cont, LV_OBJ_FLAG_SCROLLABLE);
@@ -811,17 +811,14 @@ private:
         quick_actions_cont = lv_obj_create(parent);
         lv_obj_set_size(quick_actions_cont, 300, 74);
         
-        // Rendu LockScreen (Panel notifications)
+        // --- OPTIMISATION FLUIDITE GIGA ---
         lv_obj_set_style_bg_color(quick_actions_cont, lv_color_hex(0x121A29), 0);
-        lv_obj_set_style_bg_opa(quick_actions_cont, LV_OPA_60, 0);
+        lv_obj_set_style_bg_opa(quick_actions_cont, LV_OPA_COVER, 0); // Opaque
         lv_obj_set_style_radius(quick_actions_cont, 16, 0);
         lv_obj_set_style_border_width(quick_actions_cont, 1, 0);
         lv_obj_set_style_border_color(quick_actions_cont, lv_color_hex(0x2F4369), 0);
-        lv_obj_set_style_border_opa(quick_actions_cont, LV_OPA_70, 0);
-        lv_obj_set_style_shadow_width(quick_actions_cont, 16, 0);
-        lv_obj_set_style_shadow_color(quick_actions_cont, lv_color_hex(0x050A14), 0);
-        lv_obj_set_style_shadow_opa(quick_actions_cont, LV_OPA_40, 0);
-        lv_obj_set_style_shadow_ofs_y(quick_actions_cont, 3, 0);
+        lv_obj_set_style_border_opa(quick_actions_cont, LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_width(quick_actions_cont, 0, 0); // Ombre SUPPRIMEE
 
         lv_obj_align(quick_actions_cont, LV_ALIGN_BOTTOM_MID, 0, -10);
         lv_obj_clear_flag(quick_actions_cont, LV_OBJ_FLAG_SCROLLABLE);
@@ -867,26 +864,7 @@ public:
         current_bg_color = homeConfig::getBackgroundColor();
         applyBackgroundColor(current_bg_color, false);
 
-        // --- Halos pour la profondeur visuelle ---
-        glow_top = lv_obj_create(main_bg);
-        lv_obj_set_size(glow_top, 440, 440);
-        lv_obj_align(glow_top, LV_ALIGN_TOP_MID, 0, -160);
-        lv_obj_set_style_radius(glow_top, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(glow_top, lv_color_hex(0x2F80ED), 0);
-        lv_obj_set_style_bg_opa(glow_top, LV_OPA_20, 0);
-        lv_obj_set_style_border_width(glow_top, 0, 0);
-        lv_obj_clear_flag(glow_top, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(glow_top, LV_OBJ_FLAG_CLICKABLE);
-
-        glow_bottom = lv_obj_create(main_bg);
-        lv_obj_set_size(glow_bottom, 410, 410);
-        lv_obj_align(glow_bottom, LV_ALIGN_BOTTOM_MID, 0, 100);
-        lv_obj_set_style_radius(glow_bottom, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(glow_bottom, lv_color_hex(0x4D6FB0), 0);
-        lv_obj_set_style_bg_opa(glow_bottom, LV_OPA_10, 0);
-        lv_obj_set_style_border_width(glow_bottom, 0, 0);
-        lv_obj_clear_flag(glow_bottom, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(glow_bottom, LV_OBJ_FLAG_CLICKABLE);
+        // NOTE: Halos translucides supprimés ici car ils détruisaient les FPS.
 
         lv_obj_add_flag(main_bg, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_event_cb(main_bg, screen_touch_event);
@@ -931,7 +909,6 @@ public:
             snprintf(batt_buf, sizeof(batt_buf), "%s%s", charging ? LV_SYMBOL_CHARGE : "", icon);
             lv_label_set_text(batt_icon, batt_buf);
 
-            // Couleurs de batterie synchronisées avec le LockScreen
             if (charging) {
                 lv_obj_set_style_text_color(batt_icon, lv_color_hex(0x77E4A1), 0); // Vert
             } else if (p <= 20 || eco_manual) {
@@ -992,8 +969,6 @@ public:
         time_label = nullptr;
         batt_icon = nullptr;
         bg_img = nullptr;
-        glow_top = nullptr;
-        glow_bottom = nullptr;
     }
 };
 

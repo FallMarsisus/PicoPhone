@@ -402,57 +402,35 @@ void setup() {
 
 void loop() {
     check_sleep_button();
-    
     if (!__atomic_load_n(&g_system_ready, __ATOMIC_ACQUIRE)) {
         sleep_ms(1);
         return;
     }
 
-    // --- ANTI-FREEZE : nourrir le watchdog à chaque tour ---
     feed_watchdog();
     core0_heartbeat = millis();
 
-    lv_timer_handler();
-    yield();
-
-    // Auto-connexion WiFi (non bloquant, respecte les paramètres)
-    
-
-    feed_watchdog(); // Nourrir aussi après WiFi (peut être lent)
+    // Laisse LVGL gérer le timing optimal
+    uint32_t time_till_next = lv_timer_handler();
 
     manager.update();
-    apply_battery_energy_policy();
     background_services::manager().update();
     notifications::center().update();
-    
+
     AppID requestedApp;
     if (AppManager::consumeSwitchRequest(requestedApp)) {
         loadApp(requestedApp);
     }
 
-    // Update de l'app courante
     if (currentApp) {
         currentApp->update();
     }
-
-    yield();
     
-    // En lockscreen, on adapte le duty-cycle CPU selon etat ecran.
-    if (manager.lockScreen.isLocked()) {
-        if (manager.lockScreen.isDisplaySleeping()) {
-            sleep_ms(40);
-        } else {
-            sleep_ms(10);
-        }
-        return;
-    }
-
-    // Throttling léger: laisser LVGL respirer (cible ~100 FPS = 10ms min par frame)
-    static unsigned long last_loop = 0;
-    unsigned long now = millis();
-    unsigned long elapsed = (now >= last_loop) ? (now - last_loop) : 0;
-    if (elapsed < 2) sleep_ms(2 - elapsed);  // 2ms de respiration = ~500 FPS max CPU, mais LVGL throttle à 100 FPS
-    last_loop = millis();
+    // Assure un minimum de 2ms et respecte la demande de LVGL
+    if (time_till_next < 2) time_till_next = 2;
+    if (time_till_next > 10) time_till_next = 10; // Pas de dodo trop long !
+    
+    sleep_ms(time_till_next);
 }
 
 void setup1() {
