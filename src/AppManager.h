@@ -85,6 +85,13 @@ private:
         return "-";
     }
 
+    static void status_swipe_cb(lv_event_t* e) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        if (dir == LV_DIR_BOTTOM) {
+            AppManager::openControlCenter();
+        }
+    }
+
     void createStatusBar() {
         if (statusBar) return;
 
@@ -94,66 +101,94 @@ private:
         statusBar = lv_obj_create(lv_layer_top());
         lv_obj_set_size(statusBar, screen_w, status_bar_height);
         lv_obj_align(statusBar, LV_ALIGN_TOP_MID, 0, 0);
-        lv_obj_set_style_bg_grad_dir(statusBar, LV_GRAD_DIR_VER, 0);
-        lv_obj_set_style_bg_color(statusBar, lv_color_hex(0x0B1220), 0);
-        lv_obj_set_style_bg_grad_color(statusBar, lv_color_hex(0x162338), 0);
-        lv_obj_set_style_bg_opa(statusBar, LV_OPA_80, 0);
-        lv_obj_set_style_border_width(statusBar, 1, 0);
-        lv_obj_set_style_border_color(statusBar, lv_color_hex(0x26344F), 0);
-        lv_obj_set_style_border_side(statusBar, LV_BORDER_SIDE_BOTTOM, 0);
-        lv_obj_set_style_border_opa(statusBar, LV_OPA_80, 0);
-        lv_obj_set_style_radius(statusBar, 0, 0);
-        lv_obj_set_style_pad_left(statusBar, 6, 0);
-        lv_obj_set_style_pad_right(statusBar, 6, 0);
-        lv_obj_set_style_pad_top(statusBar, 0, 0);
-        lv_obj_set_style_pad_bottom(statusBar, 0, 0);
+        lv_obj_set_style_bg_opa(statusBar, LV_OPA_TRANSP, 0); // Transparent au départ
+        lv_obj_set_style_border_width(statusBar, 0, 0);
+        lv_obj_set_style_radius(statusBar, 0, 0); // Pas de coins arrondis
+        lv_obj_set_style_pad_left(statusBar, 10, 0);
+        lv_obj_set_style_pad_right(statusBar, 10, 0);
         lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_GESTURE_BUBBLE);
-
-        statusTime = lv_label_create(statusBar);
-        lv_obj_set_style_text_color(statusTime, lv_color_hex(0xDCE7FF), 0);
-        lv_obj_set_style_text_font(statusTime, &lv_font_montserrat_12, 0);
-        lv_obj_align(statusTime, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_GESTURE_BUBBLE); // Capturer swipe si besoin
+        lv_obj_add_event_cb(statusBar, status_swipe_cb, LV_EVENT_GESTURE, nullptr);
+        lv_obj_add_flag(statusBar, LV_OBJ_FLAG_CLICKABLE);
+        // Un gestionnaire pour Swipe Center ? AppManager a t il top_swipe_cb ? Non, on fera appel a controlCenter
 
         statusNotif = lv_label_create(statusBar);
-        lv_label_set_text(statusNotif, "");
-        lv_obj_set_style_text_color(statusNotif, lv_color_hex(0x67B6FF), 0);
+        lv_label_set_text(statusNotif, "Recherche...");
+        lv_obj_set_style_text_color(statusNotif, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusNotif, &lv_font_montserrat_12, 0);
-        lv_obj_align(statusNotif, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_align(statusNotif, LV_ALIGN_LEFT_MID, 0, 0);
 
-        statusNetwork = lv_label_create(statusBar);
+        statusTime = lv_label_create(statusBar);
+        lv_obj_set_style_text_color(statusTime, lv_color_white(), 0);
+        lv_obj_set_style_text_font(statusTime, &lv_font_montserrat_12, 0);
+        lv_obj_align(statusTime, LV_ALIGN_CENTER, 0, 0);
+
+        // Container right
+        lv_obj_t* icon_zone = lv_obj_create(statusBar);
+        lv_obj_set_size(icon_zone, 80, 20); 
+        lv_obj_align(icon_zone, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_border_width(icon_zone, 0, 0);
+        lv_obj_set_style_bg_opa(icon_zone, LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(icon_zone, LV_OBJ_FLAG_SCROLLABLE);
+
+        statusNetwork = lv_label_create(icon_zone);
+        lv_label_set_text(statusNetwork, "||||");
         lv_obj_set_style_text_color(statusNetwork, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusNetwork, &lv_font_montserrat_12, 0);
-        lv_obj_set_width(statusNetwork, 42);
-        lv_label_set_long_mode(statusNetwork, LV_LABEL_LONG_CLIP);
-        lv_obj_align(statusNetwork, LV_ALIGN_RIGHT_MID, -70, 0);
+        lv_obj_align(statusNetwork, LV_ALIGN_LEFT_MID, 0, 0);
 
-        statusBattery = lv_label_create(statusBar);
+        statusBattery = lv_label_create(icon_zone);
         lv_obj_set_style_text_color(statusBattery, lv_color_white(), 0);
         lv_obj_set_style_text_font(statusBattery, &lv_font_montserrat_12, 0);
-        lv_obj_set_width(statusBattery, 64);
-        lv_label_set_long_mode(statusBattery, LV_LABEL_LONG_CLIP);
-        lv_obj_align(statusBattery, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_align(statusBattery, LV_ALIGN_RIGHT_MID, -5, 0);
 
         lv_obj_move_foreground(statusBar);
     }
 
     void updateStatusBar() {
         if (!statusBar) return;
-
         lv_obj_move_foreground(statusBar);
 
-        const bool show_on_screen = (currentAppID != APP_HOME && currentAppID != APP_OLD_HOME);
+        const bool show_on_screen = (currentAppID != APP_OLD_HOME); // Toujours visible, sauf vieux home
         const bool hide_for_lock = lockScreen.isLocked();
         if (!show_on_screen || hide_for_lock) {
             lv_obj_add_flag(statusBar, LV_OBJ_FLAG_HIDDEN);
             status_was_visible = false;
             return;
         }
-
         lv_obj_clear_flag(statusBar, LV_OBJ_FLAG_HIDDEN);
+        
+        // Style de la topbar (Transparent sur HOME, semi-opaque ailleurs)
+        // Style de la topbar
+        if (currentAppID == APP_HOME) {
+            lv_obj_set_style_bg_opa(statusBar, LV_OPA_TRANSP, 0);
+        } else {
+            // Prendre la couleur de fond de l'écran actif
+            lv_color_t bg_color = lv_obj_get_style_bg_color(lv_scr_act(), 0);
+            // Vérifier s'il y a un composant principal prenant tout l'écran pour piocher sa couleur
+            if (lv_obj_get_child_cnt(lv_scr_act()) > 0) {
+                lv_obj_t* first_child = lv_obj_get_child(lv_scr_act(), 0);
+                if (first_child) {
+                    bg_color = lv_obj_get_style_bg_color(first_child, 0);
+                }
+            }
+            lv_obj_set_style_bg_color(statusBar, bg_color, 0);
+            lv_obj_set_style_bg_opa(statusBar, LV_OPA_COVER, 0); // Opaque
+        }
 
+        // Ajuster la couleur du texte en fonction de la couleur de fond
+        lv_color_t current_bg = lv_obj_get_style_bg_color(statusBar, 0);
+        uint8_t brightness = lv_color_brightness(current_bg);
+        
+        lv_color_t text_color = (brightness > 180 || currentAppID == APP_HOME) ? lv_color_white() : lv_color_white(); // wait, APP_HOME text is white. So if not home and brightness > 128 -> black.
+        if (currentAppID != APP_HOME && brightness > 150) {
+            text_color = lv_color_black();
+        }
+        
+        lv_obj_set_style_text_color(statusTime, text_color, 0);
+        lv_obj_set_style_text_color(statusNetwork, text_color, 0);
+        lv_obj_set_style_text_color(statusBattery, text_color, 0);
+        lv_obj_set_style_text_color(statusNotif, text_color, 0);
         const uint32_t now_ms = millis();
         const uint32_t refresh_interval_ms = lockScreen.isLocked() ? 2500 : 1000;
         if (status_was_visible && (uint32_t)(now_ms - status_last_update_ms) < refresh_interval_ms) {
@@ -173,37 +208,31 @@ private:
         lv_label_set_text(statusTime, time_buf);
 
         const String net = network_status();
-        lv_label_set_text(statusNetwork, net.c_str());
         if (net == "X") {
+            lv_label_set_text(statusNetwork, "No S.");
             lv_obj_set_style_text_color(statusNetwork, lv_color_hex(0xFFB15A), 0);
         } else if (net == "-") {
+            lv_label_set_text(statusNetwork, "...");
             lv_obj_set_style_text_color(statusNetwork, lv_color_hex(0xA0AEC8), 0);
         } else {
-            lv_obj_set_style_text_color(statusNetwork, lv_color_hex(0xCFE4FF), 0);
+            lv_label_set_text(statusNetwork, net.c_str());
+            lv_obj_set_style_text_color(statusNetwork, lv_color_white(), 0);
         }
 
         const uint8_t batt = battery::read_percent();
         const bool charging = battery::is_charging() || battery::is_external_power();
         const bool eco_manual = battery::is_manual_saver_enabled() && !charging;
-
-        lv_obj_set_style_text_color(statusBattery,
-                        eco_manual ? lv_color_hex(0xF2C94C) : lv_color_white(),
-                        0);
-
+        lv_obj_set_style_text_color(statusBattery, eco_manual ? lv_color_hex(0xF2C94C) : lv_color_white(), 0);
         char batt_buf[20];
-        snprintf(batt_buf, sizeof(batt_buf), "%s%s %u%%",
-                 charging ? LV_SYMBOL_CHARGE : "",
-                 battery_icon(batt),
-                 batt);
+        snprintf(batt_buf, sizeof(batt_buf), "%s%s", charging ? LV_SYMBOL_CHARGE : "", battery_icon(batt));
         lv_label_set_text(statusBattery, batt_buf);
 
-        char app[20] = {0};
-        char title[36] = {0};
-        char body[96] = {0};
+        // statusNotif left as operator placeholder, e.g. Free
+        char app[20] = {0}; char title[36] = {0}; char body[96] = {0};
         if (notifications::center().get_latest(0, app, title, body)) {
-            lv_label_set_text(statusNotif, LV_SYMBOL_BELL);
+            lv_label_set_text(statusNotif, "New" LV_SYMBOL_BELL);
         } else {
-            lv_label_set_text(statusNotif, "");
+            lv_label_set_text(statusNotif, LTE::isAirplaneMode() ? "Mode Avion" : "Free");
         }
     }
 

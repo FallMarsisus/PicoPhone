@@ -14,6 +14,8 @@ struct HomeAppEntry {
     uint32_t color;
     int appId;          // AppID enum, -1 pour Python, -2 pour dossier
     String pythonPath;
+    int width = 1; // 1 par défaut, 2+ pour les widgets
+    bool isWidget() const { return width > 1; }
 
     bool isFolder() const { return appId == -2; }
 };
