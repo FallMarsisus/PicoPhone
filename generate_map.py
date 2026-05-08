@@ -1,40 +1,46 @@
 import requests
 import time
 
-# --- TOUT PARIS (Intra-muros + Bois) ---
-GLOBAL_LAT_MIN = 48.8155
-GLOBAL_LON_MIN = 2.2241
-GLOBAL_LAT_MAX = 48.9021
-GLOBAL_LON_MAX = 2.4699
+# --- CONFIGURATION ---
+GLOBAL_LAT_MIN, GLOBAL_LON_MIN = 48.8155, 2.2241
+GLOBAL_LAT_MAX, GLOBAL_LON_MAX = 48.9021, 2.4699
 
-# On garde la grille de 3x3 (9 requêtes)
-GRID_STEPS = 5
+# 100 zones pour que le serveur Overpass puisse respirer
+GRID_STEPS = 10
 lat_step = (GLOBAL_LAT_MAX - GLOBAL_LAT_MIN) / GRID_STEPS
 lon_step = (GLOBAL_LON_MAX - GLOBAL_LON_MIN) / GRID_STEPS
 
-OVERPASS_URL = "http://overpass-api.de/api/interpreter"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+
+HEADERS = {
+    'User-Agent': 'PicoPhoneMapDownloader/1.0 (contact: test@example.com)',
+    'Accept-Encoding': 'gzip, deflate',
+    'Content-Type': 'application/x-www-form-urlencoded'
+}
 
 processed_way_ids = set()
 all_segments_c_code = []
-
+chunks_c_code = []
+global_start_index = 0
 chunk_number = 1
 total_chunks = GRID_STEPS * GRID_STEPS
 
-print(f"🌍 Mode FORCE BRUTE activé. Découpage en {total_chunks} zones...")
+# Ordre d'affichage (Tri) : 3 (Eau), 4 (Parcs), 2 (Petites rues), 1 (Gros axes)
+sort_order = {3: 0, 4: 1, 2: 2, 1: 3}
 
-# --- BOUCLE SUR LA GRILLE ---
+print(f"🌍 Initialisation du téléchargement de Paris ({GRID_STEPS}x{GRID_STEPS} zones)...")
+
 for x in range(GRID_STEPS):
     for y in range(GRID_STEPS):
-        
         lat_min = GLOBAL_LAT_MIN + (x * lat_step)
         lat_max = lat_min + lat_step
         lon_min = GLOBAL_LON_MIN + (y * lon_step)
         lon_max = lon_min + lon_step
         
-        print(f"\n🔄 Traitement de la zone {chunk_number}/{total_chunks}...")
+        print(f"🔄 Zone {chunk_number}/{total_chunks}...", end=" ", flush=True)
 
-        query = f"""
-        [out:json][timeout:90];
+        query = f"""[out:json][timeout:30];
         (
           way["highway"~"motorway|trunk|primary|secondary|tertiary|residential"]({lat_min},{lon_min},{lat_max},{lon_max});
           way["waterway"~"river|canal"]({lat_min},{lon_min},{lat_max},{lon_max});
@@ -42,98 +48,112 @@ for x in range(GRID_STEPS):
           way["leisure"="park"]({lat_min},{lon_min},{lat_max},{lon_max});
           way["landuse"~"forest|grass|recreation_ground"]({lat_min},{lon_min},{lat_max},{lon_max});
         );
-        out geom;
-        """
+        out geom;"""
 
-        # 🛡️ LA BOUCLE DE RETRY INFINIE
         success = False
-        attempt = 1
-        
         while not success:
             try:
-                # Timeout un peu plus long pour laisser au serveur le temps de respirer
-                response = requests.get(OVERPASS_URL, params={'data': query}, timeout=120)
+                # 🚀 On utilise POST au lieu de GET
+                response = requests.post(OVERPASS_URL, data={'data': query}, headers=HEADERS, timeout=40)
                 
-                if response.status_code == 429:
-                    print(f"  ⚠️ [Essai {attempt}] Trop de requêtes (429). On force une pause de 10s et on retente...")
-                    time.sleep(10)
-                    attempt += 1
-                    continue
-
-                if "application/json" not in response.headers.get("Content-Type", ""):
-                    print(f"  ❌ [Essai {attempt}] Le serveur a craqué (Code {response.status_code}). Pause de 5s et on retente...")
+                if response.status_code == 200:
+                    data = response.json()
+                    success = True
+                    print("✅ OK")
+                elif response.status_code == 429:
+                    print("⌛ Trop rapide, pause 5s...")
                     time.sleep(5)
-                    attempt += 1
-                    continue
-                
-                # Si on arrive ici, c'est que la requête a fonctionné !
-                data = response.json()
-                success = True 
-
+                else:
+                    print(f"❌ Erreur {response.status_code}, nouvel essai dans 5s...")
+                    time.sleep(5)
             except Exception as e:
-                print(f"  🔌 [Essai {attempt}] Coupure réseau ou Timeout ({e}). Pause de 5s et on retente...")
-                time.sleep(5)
-                attempt += 1
+                print(f"🔌 Erreur réseau, nouvel essai...")
+                time.sleep(3)
 
-        # --- TRAITEMENT DU CARRÉ ---
-        print("  ✅ Données téléchargées ! Extraction...")
+        # Extraction et simplification des segments
+        chunk_segments = []
         for element in data.get('elements', []):
             way_id = element.get('id')
-            
             if way_id in processed_way_ids:
                 continue
             processed_way_ids.add(way_id)
             
             if element['type'] == 'way' and 'geometry' in element:
-                geom = element['geometry']
                 tags = element.get('tags', {})
-                element_type = 2 
+                e_type = 2 # Rues classiques par défaut
                 
-                if 'highway' in tags:
-                    if tags['highway'] in ['primary', 'secondary', 'trunk', 'motorway']:
-                        element_type = 1
-                elif 'waterway' in tags or 'natural' in tags:
-                    element_type = 3 # EAU
-                elif 'leisure' in tags or 'landuse' in tags:
-                    element_type = 4 # NATURE
+                # Détection du type
+                if 'highway' in tags and tags['highway'] in ['primary', 'secondary', 'trunk', 'motorway']: 
+                    e_type = 1
+                elif 'waterway' in tags or 'natural' in tags: 
+                    e_type = 3
+                elif 'leisure' in tags or 'landuse' in tags: 
+                    e_type = 4
 
+                geom = element['geometry']
                 if len(geom) < 2: continue
-                    
-                last_p = geom[0] 
+
+                last_p = geom[0]
                 for i in range(1, len(geom)):
                     curr_p = geom[i]
                     diff_lat = abs(curr_p['lat'] - last_p['lat'])
                     diff_lon = abs(curr_p['lon'] - last_p['lon'])
                     
-                    if diff_lat < 0.00040 and diff_lon < 0.00040:
-                        if i != len(geom) - 1:
-                            continue
+                    # On ignore les points trop proches pour alléger la mémoire du Pico
+                    if diff_lat < 0.00040 and diff_lon < 0.00040 and i != len(geom) - 1:
+                        continue
                     
-                    all_segments_c_code.append(f"    {{{last_p['lat']}f, {last_p['lon']}f, {curr_p['lat']}f, {curr_p['lon']}f, {element_type}}},")
-                    last_p = curr_p 
+                    chunk_segments.append({
+                        'lat1': last_p['lat'], 'lon1': last_p['lon'], 
+                        'lat2': curr_p['lat'], 'lon2': curr_p['lon'], 
+                        'type': e_type
+                    })
+                    last_p = curr_p
 
-        chunk_number += 1
+        # On trie pour que les grosses routes soient par-dessus
+        chunk_segments.sort(key=lambda s: sort_order.get(s['type'], 99))
         
-        # Le Cooldown drastiquement réduit (2 secondes)
-        time.sleep(2)
+        # Indexation pour la Tuile
+        num_roads = len(chunk_segments)
+        chunks_c_code.append(f"    {{{lat_min}f, {lat_max}f, {lon_min}f, {lon_max}f, {global_start_index}, {num_roads}}},")
+        
+        for s in chunk_segments:
+            all_segments_c_code.append(f"    {{{s['lat1']}f, {s['lon1']}f, {s['lat2']}f, {s['lon2']}f, {s['type']}}},")
+        
+        global_start_index += num_roads
+        chunk_number += 1
+        time.sleep(1) # Petite pause de sécurité pour ne pas spammer le serveur
 
 # --- SAUVEGARDE FINALE ---
-print("\n✅ TOUTES LES ZONES SONT TÉLÉCHARGÉES !")
+print("\n✅ TOUTES LES ZONES SONT TÉLÉCHARGÉES ! Génération de map_data.h...")
 
 with open("map_data.h", "w") as f:
-    f.write("// Fichier généré : TOUT PARIS (Force Brute - Quadrillage 3x3)\n")
+    f.write("// Fichier généré : TOUT PARIS (Système de Tuiles Spatial 10x10)\n")
     f.write("#include <Arduino.h>\n\n")
+    
+    f.write("struct MapChunk {\n")
+    f.write("    float min_lat, max_lat;\n")
+    f.write("    float min_lon, max_lon;\n")
+    f.write("    int start_index;\n")
+    f.write("    int num_roads;\n")
+    f.write("};\n\n")
+    
     f.write("struct VectorRoad {\n")
     f.write("    float lat1, lon1;\n")
     f.write("    float lat2, lon2;\n")
     f.write("    uint8_t type;\n") 
     f.write("};\n\n")
-    f.write("const VectorRoad map_database[] = {\n")
     
+    f.write(f"const int NUM_CHUNKS = {total_chunks};\n")
+    f.write("const MapChunk map_chunks[] = {\n")
+    for line in chunks_c_code:
+        f.write(line + "\n")
+    f.write("};\n\n")
+
+    f.write(f"const int NUM_ROADS = {len(all_segments_c_code)};\n")
+    f.write("const VectorRoad map_database[] = {\n")
     for line in all_segments_c_code:
         f.write(line + "\n")
-        
     f.write("};\n")
-    f.write(f"const int NUM_ROADS = {len(all_segments_c_code)};\n")
 
-print(f"🚀 VICTOIRE ABSOLUE ! {len(all_segments_c_code)} segments exportés dans 'map_data.h'.")
+print(f"🚀 VICTOIRE ABSOLUE ! {len(all_segments_c_code)} segments et {total_chunks} tuiles exportés dans 'map_data.h'.")

@@ -8,14 +8,14 @@
 #include "../system/LTE.h"
 
 // 1. ON INCLUT TA VRAIE CARTE !
-// Ce fichier contient le tableau map_database[] et NUM_ROADS
+// Ce fichier contient le tableau map_database[], map_chunks[], NUM_ROADS et NUM_CHUNKS
 #include "../assets/map_data.h" 
 
 // --- DONNÉES PARTAGÉES ---
 struct GpsData {
-    float player_lat = 48.8575f; // Position réelle du GPS
+    float player_lat = 48.8575f; 
     float player_lon = 2.3525f;
-    float camera_lat = 48.8575f; // Position que l'écran regarde
+    float camera_lat = 48.8575f; 
     float camera_lon = 2.3525f;
     bool is_fixed = false;
 };
@@ -36,22 +36,12 @@ private:
 
     GpsData sharedGpsData;
     float current_zoom = 20000.0f; 
-    bool is_following_player = true; // Si "true", la caméra suit le GPS automatiquement
+    bool is_following_player = true;
     unsigned long last_gps_poll = 0;
 
     static void go_home(lv_event_t* e) { AppManager::switchTo(APP_HOME); }
 
-    // --- MATHÉMATIQUES : GPS vers PIXEL ---
-    static void gps_to_pixel(float target_lat, float target_lon, 
-                             float cam_lat, float cam_lon, float zoom, 
-                             lv_coord_t& out_x, lv_coord_t& out_y) 
-    {
-        // 160 et 215 sont le centre de la zone de dessin (320x430)
-        out_x = 160 + (lv_coord_t)((target_lon - cam_lon) * zoom);
-        out_y = 215 - (lv_coord_t)((target_lat - cam_lat) * zoom * 1.5f);
-    }
-
-    // --- LE MOTEUR VECTORIEL ULTRA-RAPIDE (INLINE MATHS) ---
+    // --- LE MOTEUR VECTORIEL ULTRA-RAPIDE (AVEC TUILES) ---
     static void map_draw_event_cb(lv_event_t* e) {
         lv_obj_t* obj = lv_event_get_target(e);
         lv_draw_ctx_t* draw_ctx = lv_event_get_draw_ctx(e);
@@ -64,7 +54,7 @@ private:
         float p_lon = app->sharedGpsData.player_lon;
         float zoom = app->current_zoom;
 
-        // 1. L.O.D AGRESSIF (Disparition rapide)
+        // 1. L.O.D AGRESSIF
         bool hide_nature        = (zoom < 14000.0f); 
         bool hide_small_streets = (zoom < 10000.0f);
         bool hide_water         = (zoom < 4000.0f);
@@ -75,8 +65,7 @@ private:
         float offset_x = 160.0f - (cam_lon * zoom_x);
         float offset_y = 215.0f + (cam_lat * zoom_y);
 
-        // Boîte englobante stricte (Bounding Box)
-        // On ne calcule rien pour ce qui sort de ce cadre
+        // Boîte englobante de l'écran 
         float view_width_deg = 320.0f / zoom_x;
         float view_height_deg = 430.0f / zoom_y;
         float min_lat = cam_lat - (view_height_deg / 2.0f);
@@ -84,7 +73,7 @@ private:
         float min_lon = cam_lon - (view_width_deg / 2.0f);
         float max_lon = cam_lon + (view_width_deg / 2.0f);
 
-        // 3. PINCEAUX (Initialisation rapide)
+        // 3. PINCEAUX 
         lv_draw_line_dsc_t line_dsc[5];
         for(int i=0; i<5; i++) {
             lv_draw_line_dsc_init(&line_dsc[i]);
@@ -95,42 +84,53 @@ private:
         line_dsc[3].color = lv_color_hex(0x74B9FF); line_dsc[3].width = 6; // Eau
         line_dsc[4].color = lv_color_hex(0x55EFC4); line_dsc[4].width = 5; // Parcs
 
-        // Position de la fenêtre sur l'écran physique
         lv_coord_t base_x = obj->coords.x1;
         lv_coord_t base_y = obj->coords.y1;
 
-        // 4. BOUCLE D'AFFICHAGE UNIQUE (La grosse magie est ici)
-        for (int i = 0; i < NUM_ROADS; i++) {
-            const VectorRoad& road = map_database[i];
-            uint8_t type = road.type;
+        // 4. BOUCLE D'AFFICHAGE PAR TUILES SPATIALES
+        for (int chunk_idx = 0; chunk_idx < NUM_CHUNKS; chunk_idx++) {
+            const MapChunk& chunk = map_chunks[chunk_idx];
 
-            // A. Rejet de niveau de détail (LOD) - Fait en PREMIER pour éviter des calculs
-            if (type == 4 && hide_nature) continue;
-            if (type == 2 && hide_small_streets) continue;
-            if (type == 3 && hide_water) continue;
+            // 🚀 REJET DE TUILE : Si le carré géographique de la tuile n'est pas à l'écran, on saute TOUTES ses routes !
+            // On ajoute une marge de 0.005° au cas où une route de la tuile déborderait légèrement sur l'écran.
+            if (chunk.max_lat < min_lat - 0.005f || chunk.min_lat > max_lat + 0.005f || 
+                chunk.max_lon < min_lon - 0.005f || chunk.min_lon > max_lon + 0.005f) {
+                continue; 
+            }
 
-            // B. Rejet spatial ultra-rapide (Bounding Box)
-            if (road.lat1 < min_lat && road.lat2 < min_lat) continue;
-            if (road.lat1 > max_lat && road.lat2 > max_lat) continue;
-            if (road.lon1 < min_lon && road.lon2 < min_lon) continue;
-            if (road.lon1 > max_lon && road.lon2 > max_lon) continue;
+            // Si on est là, c'est que la tuile est visible ! On dessine ses routes.
+            int end_index = chunk.start_index + chunk.num_roads;
+            for (int i = chunk.start_index; i < end_index; i++) {
+                const VectorRoad& road = map_database[i];
+                uint8_t type = road.type;
 
-            // C. Projection Mathématique
-            lv_coord_t x1 = (lv_coord_t)(offset_x + road.lon1 * zoom_x);
-            lv_coord_t y1 = (lv_coord_t)(offset_y - road.lat1 * zoom_y);
-            lv_coord_t x2 = (lv_coord_t)(offset_x + road.lon2 * zoom_x);
-            lv_coord_t y2 = (lv_coord_t)(offset_y - road.lat2 * zoom_y);
+                // Rejets rapides
+                if (type == 4 && hide_nature) continue;
+                if (type == 2 && hide_small_streets) continue;
+                if (type == 3 && hide_water) continue;
 
-            // D. Anti-Lag sub-pixel (calcul via entiers sans fonction `abs()` pour gagner des cycles)
-            lv_coord_t dx = x2 - x1;
-            lv_coord_t dy = y2 - y1;
-            if (dx > -3 && dx < 3 && dy > -3 && dy < 3) continue; 
+                if (road.lat1 < min_lat && road.lat2 < min_lat) continue;
+                if (road.lat1 > max_lat && road.lat2 > max_lat) continue;
+                if (road.lon1 < min_lon && road.lon2 < min_lon) continue;
+                if (road.lon1 > max_lon && road.lon2 > max_lon) continue;
 
-            // E. On dessine !
-            lv_point_t p1 = { (lv_coord_t)(base_x + x1), (lv_coord_t)(base_y + y1) };
-            lv_point_t p2 = { (lv_coord_t)(base_x + x2), (lv_coord_t)(base_y + y2) };
+                // Projection Mathématique
+                lv_coord_t x1 = (lv_coord_t)(offset_x + road.lon1 * zoom_x);
+                lv_coord_t y1 = (lv_coord_t)(offset_y - road.lat1 * zoom_y);
+                lv_coord_t x2 = (lv_coord_t)(offset_x + road.lon2 * zoom_x);
+                lv_coord_t y2 = (lv_coord_t)(offset_y - road.lat2 * zoom_y);
 
-            lv_draw_line(draw_ctx, &line_dsc[type], &p1, &p2);
+                // Anti-Lag
+                lv_coord_t dx = x2 - x1;
+                lv_coord_t dy = y2 - y1;
+                if (dx > -3 && dx < 3 && dy > -3 && dy < 3) continue; 
+
+                // Dessin
+                lv_point_t p1 = { (lv_coord_t)(base_x + x1), (lv_coord_t)(base_y + y1) };
+                lv_point_t p2 = { (lv_coord_t)(base_x + x2), (lv_coord_t)(base_y + y2) };
+
+                lv_draw_line(draw_ctx, &line_dsc[type], &p1, &p2);
+            }
         }
 
         // --- DESSIN DU JOUEUR ---
@@ -154,7 +154,6 @@ private:
         }
     }
     
-    // Le glissement du doigt (Pan)
     static void map_drag_event_cb(lv_event_t* e) {
         VectorMapApp* app = (VectorMapApp*)lv_event_get_user_data(e);
         lv_indev_t * indev = lv_indev_get_act();
@@ -176,8 +175,6 @@ private:
                 mutex_exit(&gpsMutex);
             }
 
-            // 🚀 LE LIMITEUR : On ne redessine l'écran que toutes les 35ms (~28 FPS)
-            // Le doigt peut bouger très vite, la carte suivra avec des sauts calculés, sans figer le CPU
             if (millis() - app->last_drag_draw > 50) {
                 app->last_drag_draw = millis();
                 lv_obj_invalidate(app->map_canvas);
@@ -187,13 +184,13 @@ private:
 
     static void zoom_in_cb(lv_event_t* e) {
         VectorMapApp* app = (VectorMapApp*)lv_event_get_user_data(e);
-        app->current_zoom *= 1.5f; // Augmente le zoom de 50%
+        app->current_zoom *= 1.5f; 
         lv_obj_invalidate(app->map_canvas);
     }
 
     static void zoom_out_cb(lv_event_t* e) {
         VectorMapApp* app = (VectorMapApp*)lv_event_get_user_data(e);
-        app->current_zoom /= 1.5f; // Diminue le zoom
+        app->current_zoom /= 1.5f; 
         lv_obj_invalidate(app->map_canvas);
     }
 
@@ -201,20 +198,18 @@ private:
         VectorMapApp* app = (VectorMapApp*)lv_event_get_user_data(e);
         
         if (mutex_try_enter(&gpsMutex, nullptr)) {
-            // On ramène la caméra sur le joueur
             app->sharedGpsData.camera_lat = app->sharedGpsData.player_lat;
             app->sharedGpsData.camera_lon = app->sharedGpsData.player_lon;
             mutex_exit(&gpsMutex);
         }
         
         app->is_following_player = true;
-        lv_obj_add_flag(app->btn_recenter, LV_OBJ_FLAG_HIDDEN); // Cache le bouton
+        lv_obj_add_flag(app->btn_recenter, LV_OBJ_FLAG_HIDDEN); 
         lv_obj_invalidate(app->map_canvas);
     }
 
 public:
     void start(lv_obj_t* parent) override {
-        // Allume la puce GPS du modem 4G
         LTE::enableGPS();
 
         main_bg = parent;
@@ -250,12 +245,11 @@ public:
         lv_obj_set_style_bg_opa(map_canvas, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(map_canvas, 0, 0);
         
-        // On rend la carte "cliquable" pour écouter les glissements
         lv_obj_add_flag(map_canvas, LV_OBJ_FLAG_CLICKABLE); 
         lv_obj_add_event_cb(map_canvas, map_draw_event_cb, LV_EVENT_DRAW_MAIN, this);
         lv_obj_add_event_cb(map_canvas, map_drag_event_cb, LV_EVENT_PRESSING, this);
 
-        // --- BOUTONS FLOTTANTS (ZOOM & RECENTRER) ---
+        // --- BOUTONS ---
         btn_zoom_in = lv_btn_create(main_bg);
         lv_obj_set_size(btn_zoom_in, 40, 40);
         lv_obj_align(btn_zoom_in, LV_ALIGN_BOTTOM_RIGHT, -10, -60);
@@ -285,26 +279,22 @@ public:
         lv_obj_set_style_bg_color(btn_recenter, lv_color_white(), 0);
         lv_obj_set_style_text_color(btn_recenter, lv_color_hex(0x007AFF), 0);
         lv_obj_add_event_cb(btn_recenter, recenter_cb, LV_EVENT_CLICKED, this);
-        lv_obj_add_flag(btn_recenter, LV_OBJ_FLAG_HIDDEN); // Caché par défaut
+        lv_obj_add_flag(btn_recenter, LV_OBJ_FLAG_HIDDEN); 
         lv_obj_t* l_rec = lv_label_create(btn_recenter);
         lv_label_set_text(l_rec, LV_SYMBOL_GPS);
         lv_obj_center(l_rec);
     }
 
-    void update() override {
-        // Optionnel : tu pourrais animer le point bleu ici si tu veux qu'il clignote !
-        // lv_obj_invalidate(map_canvas);
-    }
+    void update() override { }
 
     void update1() override {
         watchdog_update();
 
-        // 1. Lecture du GPS toutes les secondes
         if (millis() - last_gps_poll > 1000) {
             last_gps_poll = millis();
 
             float lat = 0.0f, lon = 0.0f;
-            bool got_fix = LTE::getGPSLocation(lat, lon); // Utilise la 4G/GPS !
+            bool got_fix = LTE::getGPSLocation(lat, lon); 
 
             if (mutex_try_enter(&gpsMutex, nullptr)) {
                 sharedGpsData.is_fixed = got_fix;
@@ -312,11 +302,10 @@ public:
                     sharedGpsData.player_lat = lat;
                     sharedGpsData.player_lon = lon;
 
-                    // Si on n'a pas touché l'écran, la caméra suit le joueur
                     if (is_following_player) {
                         sharedGpsData.camera_lat = lat;
                         sharedGpsData.camera_lon = lon;
-                        lv_obj_invalidate(map_canvas); // On redessine parce que ça a bougé !
+                        lv_obj_invalidate(map_canvas); 
                     }
                 }
                 mutex_exit(&gpsMutex);
@@ -333,7 +322,7 @@ public:
     }
 
     void stop() override {
-        LTE::disableGPS(); // On éteint l'antenne pour sauver la batterie !
+        LTE::disableGPS(); 
     }
 };
 

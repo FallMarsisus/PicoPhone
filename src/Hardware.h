@@ -833,24 +833,26 @@ void _disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
 
-    // 1. On attend que le CPU ait fini l'envoi DMA précédent
-    tft.dmaWait();
-
-    // 2. On verrouille le SPI pour éviter les conflits avec la carte SD
+    // 1. On verrouille le SPI pour éviter les conflits avec la carte SD
     mutex_enter_blocking(&spi_mutex);
 
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
 
-    // 3. Envoi massif en DMA (plus de boucle ligne par ligne !)
+    // 2. Envoi massif en DMA
     tft.pushPixelsDMA((uint16_t *)color_p, w * h);
+
+    // 🚀 LA CORRECTION EST ICI : 
+    // On DOIT attendre que le DMA ait fini de peindre l'écran 
+    // AVANT de couper la communication et de rendre le bus SPI.
+    tft.dmaWait(); 
 
     tft.endWrite();
     
-    // 4. On libère le SPI
+    // 3. On libère le SPI en toute sécurité
     mutex_exit(&spi_mutex);
 
-    // 5. On dit à LVGL de préparer l'image suivante
+    // 4. On dit à LVGL qu'il peut préparer la frame suivante
     lv_disp_flush_ready(disp);
 }
 
