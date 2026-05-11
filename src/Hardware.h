@@ -165,6 +165,8 @@ static constexpr uint32_t kSleepClockKhz = 48000u;
 static constexpr uint32_t kWakeClockKhz = (uint32_t)(F_CPU / 1000u);
 static constexpr uint16_t kPmicRetryDelayMs = 2;
 static constexpr uint16_t kPmicShutdownRetryDelayMs = 20;
+static constexpr uint8_t kPmicCommandRetries = 2;
+static constexpr uint8_t kPmicShutdownRetries = 3;
 
 // Mutex global
 auto_init_mutex(spi_mutex);
@@ -457,7 +459,7 @@ static inline void pmic_power_down_all_channels() {
     Serial.println("[PMIC] Coupure des canaux non-essentiels...");
 
     // Double passe: améliore la robustesse en cas de glitch I2C juste avant extinction.
-    for (uint8_t pass = 0; pass < 2; ++pass) {
+    for (uint8_t pass = 0; pass < kPmicCommandRetries; ++pass) {
         // Désactiver les DCDC supplémentaires (garder DC1/DC2 si essentiels)
         PMIC.disableDC3();
         PMIC.disableDC4();
@@ -493,7 +495,7 @@ static inline void pmic_sleep_mode() {
 
     Serial.println("[PMIC] Passage en mode veille (réduction des sorties)...");
     
-    for (uint8_t pass = 0; pass < 2; ++pass) {
+    for (uint8_t pass = 0; pass < kPmicCommandRetries; ++pass) {
         // Couper uniquement les canaux clairement non-essentiels en veille.
         // Garder ALDO2/DC2 actifs pour preserver la marge d'alimentation systeme.
         PMIC.disableALDO3();
@@ -529,7 +531,7 @@ static inline void pmic_wake_mode() {
 
     Serial.println("[PMIC] Sortie de mode veille (restauration des sorties)...");
 
-    for (uint8_t pass = 0; pass < 2; ++pass) {
+    for (uint8_t pass = 0; pass < kPmicCommandRetries; ++pass) {
         PMIC.disableSleep();
         PMIC.disableWakeup();
         
@@ -617,7 +619,7 @@ void system_power_off() {
     if (g_pmic_available) {
         Serial.println("[PMIC] Shutdown matériel demandé");
         Serial.flush();
-        for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+        for (uint8_t attempt = 0; attempt < kPmicShutdownRetries; ++attempt) {
             PMIC.shutdown();
             sleep_ms(kPmicShutdownRetryDelayMs);
         }

@@ -94,7 +94,8 @@ static constexpr uint8_t PMIC_SAMPLE_COUNT = 3;
 static constexpr uint16_t PMIC_DEFAULT_VOLTAGE_MV = 4000;
 static constexpr uint8_t PMIC_DEFAULT_PERCENT = 100;
 static constexpr uint16_t PMIC_SAMPLE_INTERVAL_US = 900;
-static constexpr uint8_t SHUTDOWN_STREAK_MAX = 0xFF;
+static constexpr uint16_t SHUTDOWN_STREAK_MAX = 1024;
+static_assert(PMIC_SAMPLE_COUNT == 3, "PMIC median filter currently expects exactly 3 samples.");
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -126,7 +127,7 @@ inline bool    g_has_good_v = false;
 inline uint8_t g_last_percent = 0;
 inline bool    g_has_percent = false;
 inline uint8_t g_invalid_adc_streak = 0;
-inline uint8_t g_shutdown_critical_streak = 0;
+inline uint16_t g_shutdown_critical_streak = 0;
 inline bool g_shutdown_latched = false;
 inline Telemetry g_last_sample = {100, 4.0f, true, false, false};
 inline bool g_has_sample = false;
@@ -277,10 +278,17 @@ static inline uint8_t percent_from_lipo_volts(float v) {
 static inline bool read_from_pmic(Telemetry& out) {
     if (!g_pmic_ready || g_pmic == nullptr) return false;
 
-    int percent_samples[PMIC_SAMPLE_COUNT] = {PMIC_DEFAULT_PERCENT, PMIC_DEFAULT_PERCENT, PMIC_DEFAULT_PERCENT};
-    uint16_t mv_samples[PMIC_SAMPLE_COUNT] = {PMIC_DEFAULT_VOLTAGE_MV, PMIC_DEFAULT_VOLTAGE_MV, PMIC_DEFAULT_VOLTAGE_MV};
-    bool vbus_samples[PMIC_SAMPLE_COUNT] = {false, false, false};
-    bool charging_samples[PMIC_SAMPLE_COUNT] = {false, false, false};
+    int percent_samples[PMIC_SAMPLE_COUNT];
+    uint16_t mv_samples[PMIC_SAMPLE_COUNT];
+    bool vbus_samples[PMIC_SAMPLE_COUNT];
+    bool charging_samples[PMIC_SAMPLE_COUNT];
+
+    for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
+        percent_samples[i] = PMIC_DEFAULT_PERCENT;
+        mv_samples[i] = PMIC_DEFAULT_VOLTAGE_MV;
+        vbus_samples[i] = false;
+        charging_samples[i] = false;
+    }
 
     for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
         percent_samples[i] = g_pmic->getBatteryPercent();
