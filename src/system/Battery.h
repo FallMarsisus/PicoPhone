@@ -91,11 +91,13 @@ static constexpr float EMERGENCY_SHUTDOWN_V = 3.40f;
 static constexpr float ULTRA_EMERGENCY_SHUTDOWN_V = 3.34f;
 static constexpr uint8_t EMERGENCY_SHUTDOWN_CONFIRM_STREAK = 3;
 static constexpr uint8_t PMIC_SAMPLE_COUNT = 3;
-static constexpr uint16_t PMIC_DEFAULT_VOLTAGE_MV = 4000;
-static constexpr uint8_t PMIC_DEFAULT_PERCENT = 100;
 static constexpr uint16_t PMIC_SAMPLE_INTERVAL_US = 900;
 static constexpr uint16_t SHUTDOWN_STREAK_MAX = 1024;
-static_assert(PMIC_SAMPLE_COUNT == 3, "PMIC median filter currently expects exactly 3 samples.");
+static constexpr int PMIC_PERCENT_MIN = 0;
+static constexpr int PMIC_PERCENT_MAX = 100;
+static constexpr uint16_t PMIC_VOLTAGE_MIN_MV = 2800;
+static constexpr uint16_t PMIC_VOLTAGE_MAX_MV = 4600;
+static_assert(PMIC_SAMPLE_COUNT == 3, "PMIC median and majority filters currently expect exactly 3 samples.");
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -151,13 +153,8 @@ static inline bool is_voltage_valid_for_policy(float v) {
     return (v >= 2.8f && v <= 4.5f);
 }
 
-static inline uint16_t median3_u16(uint16_t a, uint16_t b, uint16_t c) {
-    if ((a <= b && b <= c) || (c <= b && b <= a)) return b;
-    if ((b <= a && a <= c) || (c <= a && a <= b)) return a;
-    return c;
-}
-
-static inline int median3_i32(int a, int b, int c) {
+template <typename T>
+static inline T median3(T a, T b, T c) {
     if ((a <= b && b <= c) || (c <= b && b <= a)) return b;
     if ((b <= a && a <= c) || (c <= a && a <= b)) return a;
     return c;
@@ -284,31 +281,24 @@ static inline bool read_from_pmic(Telemetry& out) {
     bool charging_samples[PMIC_SAMPLE_COUNT];
 
     for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
-        percent_samples[i] = PMIC_DEFAULT_PERCENT;
-        mv_samples[i] = PMIC_DEFAULT_VOLTAGE_MV;
-        vbus_samples[i] = false;
-        charging_samples[i] = false;
-    }
-
-    for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
         percent_samples[i] = g_pmic->getBatteryPercent();
         mv_samples[i] = g_pmic->getBattVoltage();
         vbus_samples[i] = g_pmic->isVbusIn();
         charging_samples[i] = g_pmic->isCharging();
-        if (i + 1 < PMIC_SAMPLE_COUNT) delayMicroseconds(PMIC_SAMPLE_INTERVAL_US);
+        if (i < PMIC_SAMPLE_COUNT - 1) delayMicroseconds(PMIC_SAMPLE_INTERVAL_US);
     }
 
-    int pmic_percent = median3_i32(percent_samples[0], percent_samples[1], percent_samples[2]);
-    uint16_t pmic_mv = median3_u16(mv_samples[0], mv_samples[1], mv_samples[2]);
+    int pmic_percent = median3<int>(percent_samples[0], percent_samples[1], percent_samples[2]);
+    uint16_t pmic_mv = median3<uint16_t>(mv_samples[0], mv_samples[1], mv_samples[2]);
     const bool external_power = majority3_bool(vbus_samples[0], vbus_samples[1], vbus_samples[2]);
     const bool charging = majority3_bool(charging_samples[0], charging_samples[1], charging_samples[2]);
 
-    bool percent_valid = (pmic_percent >= 0 && pmic_percent <= 100);
-    bool voltage_valid = (pmic_mv >= 2800 && pmic_mv <= 4600);
+    bool percent_valid = (pmic_percent >= PMIC_PERCENT_MIN && pmic_percent <= PMIC_PERCENT_MAX);
+    bool voltage_valid = (pmic_mv >= PMIC_VOLTAGE_MIN_MV && pmic_mv <= PMIC_VOLTAGE_MAX_MV);
 
     if (!percent_valid) {
         for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
-            if (percent_samples[i] >= 0 && percent_samples[i] <= 100) {
+            if (percent_samples[i] >= PMIC_PERCENT_MIN && percent_samples[i] <= PMIC_PERCENT_MAX) {
                 pmic_percent = percent_samples[i];
                 percent_valid = true;
                 break;
@@ -317,7 +307,7 @@ static inline bool read_from_pmic(Telemetry& out) {
     }
     if (!voltage_valid) {
         for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
-            if (mv_samples[i] >= 2800 && mv_samples[i] <= 4600) {
+            if (mv_samples[i] >= PMIC_VOLTAGE_MIN_MV && mv_samples[i] <= PMIC_VOLTAGE_MAX_MV) {
                 pmic_mv = mv_samples[i];
                 voltage_valid = true;
                 break;
@@ -514,7 +504,9 @@ static inline bool evaluate_shutdown_request(const Telemetry& t) {
     }
 
     if (emergency_now) {
-        if (g_shutdown_critical_streak < SHUTDOWN_STREAK_MAX) g_shutdown_critical_streak++;
+        if (g_shutdown_critical_streak < SHUTDOWN_STREAK_MAX) {
+            g_shutdown_critical_streak++;
+        }
     } else {
         g_shutdown_critical_streak = 0;
     }
