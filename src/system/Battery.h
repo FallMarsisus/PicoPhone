@@ -90,6 +90,11 @@ static constexpr float CRITICAL_EXIT_V = 3.64f;
 static constexpr float EMERGENCY_SHUTDOWN_V = 3.40f;
 static constexpr float ULTRA_EMERGENCY_SHUTDOWN_V = 3.34f;
 static constexpr uint8_t EMERGENCY_SHUTDOWN_CONFIRM_STREAK = 3;
+static constexpr uint8_t PMIC_SAMPLE_COUNT = 3;
+static constexpr uint16_t PMIC_DEFAULT_VOLTAGE_MV = 4000;
+static constexpr uint8_t PMIC_DEFAULT_PERCENT = 100;
+static constexpr uint16_t PMIC_SAMPLE_INTERVAL_US = 900;
+static constexpr uint8_t SHUTDOWN_STREAK_MAX = 0xFF;
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -272,17 +277,17 @@ static inline uint8_t percent_from_lipo_volts(float v) {
 static inline bool read_from_pmic(Telemetry& out) {
     if (!g_pmic_ready || g_pmic == nullptr) return false;
 
-    int percent_samples[3] = {100, 100, 100};
-    uint16_t mv_samples[3] = {4000, 4000, 4000};
-    bool vbus_samples[3] = {false, false, false};
-    bool charging_samples[3] = {false, false, false};
+    int percent_samples[PMIC_SAMPLE_COUNT] = {PMIC_DEFAULT_PERCENT, PMIC_DEFAULT_PERCENT, PMIC_DEFAULT_PERCENT};
+    uint16_t mv_samples[PMIC_SAMPLE_COUNT] = {PMIC_DEFAULT_VOLTAGE_MV, PMIC_DEFAULT_VOLTAGE_MV, PMIC_DEFAULT_VOLTAGE_MV};
+    bool vbus_samples[PMIC_SAMPLE_COUNT] = {false, false, false};
+    bool charging_samples[PMIC_SAMPLE_COUNT] = {false, false, false};
 
-    for (uint8_t i = 0; i < 3; ++i) {
+    for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
         percent_samples[i] = g_pmic->getBatteryPercent();
         mv_samples[i] = g_pmic->getBattVoltage();
         vbus_samples[i] = g_pmic->isVbusIn();
         charging_samples[i] = g_pmic->isCharging();
-        if (i < 2) delayMicroseconds(900);
+        if (i + 1 < PMIC_SAMPLE_COUNT) delayMicroseconds(PMIC_SAMPLE_INTERVAL_US);
     }
 
     int pmic_percent = median3_i32(percent_samples[0], percent_samples[1], percent_samples[2]);
@@ -294,7 +299,7 @@ static inline bool read_from_pmic(Telemetry& out) {
     bool voltage_valid = (pmic_mv >= 2800 && pmic_mv <= 4600);
 
     if (!percent_valid) {
-        for (uint8_t i = 0; i < 3; ++i) {
+        for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
             if (percent_samples[i] >= 0 && percent_samples[i] <= 100) {
                 pmic_percent = percent_samples[i];
                 percent_valid = true;
@@ -303,7 +308,7 @@ static inline bool read_from_pmic(Telemetry& out) {
         }
     }
     if (!voltage_valid) {
-        for (uint8_t i = 0; i < 3; ++i) {
+        for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
             if (mv_samples[i] >= 2800 && mv_samples[i] <= 4600) {
                 pmic_mv = mv_samples[i];
                 voltage_valid = true;
@@ -501,7 +506,7 @@ static inline bool evaluate_shutdown_request(const Telemetry& t) {
     }
 
     if (emergency_now) {
-        if (g_shutdown_critical_streak < 255) g_shutdown_critical_streak++;
+        if (g_shutdown_critical_streak < SHUTDOWN_STREAK_MAX) g_shutdown_critical_streak++;
     } else {
         g_shutdown_critical_streak = 0;
     }

@@ -163,6 +163,8 @@ static volatile uint8_t g_backlight_pwm = 255;
 static bool g_backlight_known = false;
 static constexpr uint32_t kSleepClockKhz = 48000u;
 static constexpr uint32_t kWakeClockKhz = (uint32_t)(F_CPU / 1000u);
+static constexpr uint16_t kPmicRetryDelayMs = 2;
+static constexpr uint16_t kPmicShutdownRetryDelayMs = 20;
 
 // Mutex global
 auto_init_mutex(spi_mutex);
@@ -476,7 +478,7 @@ static inline void pmic_power_down_all_channels() {
         // En extinction logicielle, on coupe aussi ALDO1 pour eviter tout rail residuel.
         PMIC.disableALDO1();
         if (pass == 0) {
-            sleep_ms(2);
+            sleep_ms(kPmicRetryDelayMs);
         }
     }
     
@@ -512,7 +514,7 @@ static inline void pmic_sleep_mode() {
         // Garder une marge energie maximale en veille pour eviter les ratés modem.
         PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
         if (pass == 0) {
-            sleep_ms(2);
+            sleep_ms(kPmicRetryDelayMs);
         }
     }
     
@@ -539,7 +541,7 @@ static inline void pmic_wake_mode() {
         // Restaurer le courant de charge normal
         PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
         if (pass == 0) {
-            sleep_ms(2);
+            sleep_ms(kPmicRetryDelayMs);
         }
     }
     
@@ -617,7 +619,7 @@ void system_power_off() {
         Serial.flush();
         for (uint8_t attempt = 0; attempt < 3; ++attempt) {
             PMIC.shutdown();
-            sleep_ms(20);
+            sleep_ms(kPmicShutdownRetryDelayMs);
         }
         sleep_ms(50);
     }
