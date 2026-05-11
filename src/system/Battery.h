@@ -97,7 +97,7 @@ static constexpr int PMIC_PERCENT_MIN = 0;
 static constexpr int PMIC_PERCENT_MAX = 100;
 static constexpr uint16_t PMIC_VOLTAGE_MIN_MV = 2800;
 static constexpr uint16_t PMIC_VOLTAGE_MAX_MV = 4600;
-static_assert(PMIC_SAMPLE_COUNT == 3, "PMIC median and majority filters currently expect exactly 3 samples.");
+static_assert(PMIC_SAMPLE_COUNT == 3, "PMIC median and majority filters currently expect PMIC_SAMPLE_COUNT to be 3.");
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -285,6 +285,7 @@ static inline bool read_from_pmic(Telemetry& out) {
         mv_samples[i] = g_pmic->getBattVoltage();
         vbus_samples[i] = g_pmic->isVbusIn();
         charging_samples[i] = g_pmic->isCharging();
+        // Delai uniquement entre echantillons consecutifs d'une meme lecture.
         if (i < PMIC_SAMPLE_COUNT - 1) delayMicroseconds(PMIC_SAMPLE_INTERVAL_US);
     }
 
@@ -297,6 +298,8 @@ static inline bool read_from_pmic(Telemetry& out) {
     bool voltage_valid = (pmic_mv >= PMIC_VOLTAGE_MIN_MV && pmic_mv <= PMIC_VOLTAGE_MAX_MV);
 
     if (!percent_valid) {
+        // Si la mediane sort invalide (pic I2C), on retient le premier echantillon valide.
+        // Ce fallback est volontairement deterministe et favorise la disponibilite de mesure.
         for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
             if (percent_samples[i] >= PMIC_PERCENT_MIN && percent_samples[i] <= PMIC_PERCENT_MAX) {
                 pmic_percent = percent_samples[i];
@@ -306,6 +309,7 @@ static inline bool read_from_pmic(Telemetry& out) {
         }
     }
     if (!voltage_valid) {
+        // Meme logique deterministe que pour le pourcentage.
         for (uint8_t i = 0; i < PMIC_SAMPLE_COUNT; ++i) {
             if (mv_samples[i] >= PMIC_VOLTAGE_MIN_MV && mv_samples[i] <= PMIC_VOLTAGE_MAX_MV) {
                 pmic_mv = mv_samples[i];
