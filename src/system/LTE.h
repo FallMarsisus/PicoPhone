@@ -902,20 +902,23 @@ public:
     {
         if (enable)
         {
-            // Mode economie sans couper la radio: CSCLK avec verification.
-            sendAT("AT", 800);
-            sendAT("AT+CFUN=1", 2000);
-
-            bool ok = false;
+            // Le mode CSCLK=1 s'est revele instable en usage long (freeze MCU + crash modem).
+            // On conserve donc un profil "eco stable": limitations UI/audio uniquement,
+            // modem garde reveil UART actif.
+            bool wake_ok = false;
             for (uint8_t i = 0; i < 3; ++i) {
-                String resp = sendAT("AT+CSCLK=1", 1200);
+                String resp = sendAT("AT+CSCLK=0", 1200);
                 if (resp.indexOf("OK") != -1) {
-                    ok = true;
+                    wake_ok = true;
                     break;
                 }
+                sendAT("AT", 800);
                 sleep_ms(120);
             }
-            Serial.println(ok ? "[LTE] Mode Eco: CSCLK=1 (radio conservee)" : "[LTE] Mode Eco: CSCLK=1 non confirme");
+            String cfun = sendAT("AT+CFUN=1", 2500);
+            String ping = sendAT("AT", 1000);
+            const bool ok = wake_ok && (cfun.indexOf("OK") != -1) && (ping.indexOf("OK") != -1);
+            Serial.println(ok ? "[LTE] Mode Eco: CSCLK desactive (profil stable)" : "[LTE] Mode Eco: reveil partiel, retry auto via loop");
         }
         else
         {
