@@ -137,6 +137,10 @@ static inline uint8_t min_u8(uint8_t a, uint8_t b) {
     return (a < b) ? a : b;
 }
 
+static inline bool is_voltage_valid_for_policy(float v) {
+    return (v >= 2.8f && v <= 4.5f);
+}
+
 static inline bool attach_pmic(XPowersAXP2101* pmic) {
     g_pmic = pmic;
     g_pmic_ready = (pmic != nullptr);
@@ -386,7 +390,7 @@ static inline PowerMode compute_mode(const Telemetry& t) {
     if (t.external_power || t.charging) return PowerMode::NORMAL;
 
     const float v = t.voltage_v;
-    if (v > 0.0f) {
+    if (is_voltage_valid_for_policy(v)) {
         switch (g_mode) {
             case PowerMode::NORMAL:
                 if (v <= CRITICAL_ENTER_V) return PowerMode::CRITICAL;
@@ -405,6 +409,8 @@ static inline PowerMode compute_mode(const Telemetry& t) {
                 break;
         }
     }
+    // Si la tension est invalide/non disponible, on bascule proprement sur les
+    // seuils en pourcentage pour garantir un comportement déterministe.
 
     if (g_manual_saver) {
         if (t.percent <= 8) return PowerMode::CRITICAL;
@@ -448,7 +454,7 @@ static inline void update_energy_policy(bool force = false) {
                 0,
                 true,
                 true,
-                (!t.external_power && (t.percent <= 2 || (t.voltage_v > 0.0f && t.voltage_v <= EMERGENCY_SHUTDOWN_V)))
+                (!t.external_power && (t.percent <= 2 || (is_voltage_valid_for_policy(t.voltage_v) && t.voltage_v <= EMERGENCY_SHUTDOWN_V)))
             };
             break;
     }
