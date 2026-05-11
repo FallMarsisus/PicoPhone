@@ -83,6 +83,11 @@ static constexpr float ADC_MAX = 4095.0f;
 static constexpr float VSYS_DIVIDER = 3.0f;
 static constexpr uint32_t SAMPLE_INTERVAL_MS = 1200;
 static constexpr uint32_t POLICY_INTERVAL_MS = 1000;
+static constexpr float SAVER_ENTER_V = 3.66f;
+static constexpr float SAVER_EXIT_V = 3.78f;
+static constexpr float CRITICAL_ENTER_V = 3.52f;
+static constexpr float CRITICAL_EXIT_V = 3.64f;
+static constexpr float EMERGENCY_SHUTDOWN_V = 3.40f;
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -379,6 +384,28 @@ static inline bool is_charging() { return read_sample(false).charging; }
 
 static inline PowerMode compute_mode(const Telemetry& t) {
     if (t.external_power || t.charging) return PowerMode::NORMAL;
+
+    const float v = t.voltage_v;
+    if (v > 0.0f) {
+        switch (g_mode) {
+            case PowerMode::NORMAL:
+                if (v <= CRITICAL_ENTER_V) return PowerMode::CRITICAL;
+                if (v <= SAVER_ENTER_V) return PowerMode::SAVER;
+                break;
+            case PowerMode::SAVER:
+                if (v <= CRITICAL_ENTER_V) return PowerMode::CRITICAL;
+                if (v >= SAVER_EXIT_V) return PowerMode::NORMAL;
+                break;
+            case PowerMode::CRITICAL:
+            default:
+                if (v >= CRITICAL_EXIT_V) {
+                    if (v >= SAVER_EXIT_V) return PowerMode::NORMAL;
+                    return PowerMode::SAVER;
+                }
+                break;
+        }
+    }
+
     if (g_manual_saver) {
         if (t.percent <= 8) return PowerMode::CRITICAL;
         return PowerMode::SAVER;
@@ -415,7 +442,14 @@ static inline void update_energy_policy(bool force = false) {
             break;
         case PowerMode::CRITICAL:
         default:
-            g_policy = {PowerMode::CRITICAL, 35, 0, true, true, (!t.external_power && t.percent <= 2)};
+            g_policy = {
+                PowerMode::CRITICAL,
+                35,
+                0,
+                true,
+                true,
+                (!t.external_power && (t.percent <= 2 || (t.voltage_v > 0.0f && t.voltage_v <= EMERGENCY_SHUTDOWN_V)))
+            };
             break;
     }
     g_last_policy_ms = now;

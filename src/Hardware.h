@@ -161,6 +161,8 @@ static uint16_t g_boot_stage_y = 24;
 static bool g_boot_stage_onscreen_enabled = true;
 static volatile uint8_t g_backlight_pwm = 255;
 static bool g_backlight_known = false;
+static constexpr uint32_t kSleepClockKhz = 48000u;
+static constexpr uint32_t kWakeClockKhz = (uint32_t)(F_CPU / 1000u);
 
 // Mutex global
 auto_init_mutex(spi_mutex);
@@ -1047,9 +1049,8 @@ void hardware_sleep() {
     // 4. Réduire les sorties PMIC
     pmic_sleep_mode();
 
-    // 5. Underclock massif du processeur (Économie ~25mA)
-    // On passe le RP2350 de sa vitesse de pointe à 20 MHz.
-    set_sys_clock_khz(20000, true);
+    // 5. Underclock du processeur pour reduire la conso sans casser les timings critiques.
+    set_sys_clock_khz(kSleepClockKhz, true);
     
     // Baisse de la tension du cœur pour économiser encore plus
     vreg_set_voltage(VREG_VOLTAGE_1_05); 
@@ -1059,7 +1060,7 @@ void hardware_wake() {
     // 1. Réveiller le processeur et remettre la tension (TRÈS IMPORTANT de le faire en premier)
     vreg_set_voltage(VREG_VOLTAGE_1_20); // Ou 1_25 si tu as overclocké à >250MHz
     delay(2); // Laisser la tension se stabiliser
-    set_sys_clock_khz(250000, true); // Remettre ta vitesse normale (ex: 250MHz)
+    set_sys_clock_khz(kWakeClockKhz, true);
     
     SPI.begin(); 
     hardware_backlight_set(0);

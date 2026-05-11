@@ -414,6 +414,7 @@ void loop() {
     uint32_t time_till_next = lv_timer_handler();
 
     manager.update();
+    apply_battery_energy_policy();
     background_services::manager().update();
     notifications::center().update();
 
