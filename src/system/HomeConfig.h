@@ -224,6 +224,8 @@ namespace homeConfig {
             obj["appId"] = e.appId;
             if (e.pythonPath.length() > 0)
                 obj["pythonPath"] = e.pythonPath;
+            if (e.width > 1)
+                obj["width"] = e.width;
             // Sauver les enfants si c'est un dossier
             if (e.isFolder()) {
                 auto& ch_items = getFolderChildren(e.id);
@@ -238,6 +240,8 @@ namespace homeConfig {
                         co["appId"] = c.appId;
                         if (c.pythonPath.length() > 0)
                             co["pythonPath"] = c.pythonPath;
+                        if (c.width > 1)
+                            co["width"] = c.width;
                     }
                 }
             }

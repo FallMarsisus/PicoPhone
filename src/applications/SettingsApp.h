@@ -56,6 +56,8 @@ private:
     lv_obj_t* home_reorder_hint = nullptr;
     lv_obj_t* home_python_panel = nullptr;
     lv_obj_t* home_python_list = nullptr;
+    lv_obj_t* home_widget_panel = nullptr;
+    lv_obj_t* home_widget_list = nullptr;
     // T9 folder naming panel
     lv_obj_t* home_t9_panel = nullptr;
     lv_obj_t* home_t9_ta = nullptr;
@@ -171,6 +173,11 @@ private:
     static void home_customize_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
         homeConfig::loadConfig(app->home_apps_cfg);
+
+        for (auto& entry : app->home_apps_cfg) {
+            if (entry.id == "weather" || entry.id == "clock" || entry.id == "system" || entry.id == "calendar" || entry.id == "wifi_w") entry.width = 2;
+        }
+
         app->home_selected_index = -1;
         app->editing_folder_index = -1;
         app->folder_move_mode = false;
@@ -273,6 +280,62 @@ private:
         app->refreshHomePythonList();
         app->showHomePythonPanel();
     }
+
+    static void home_add_widget_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        app->showHomeWidgetPanel();
+    }
+
+    static void home_widget_select_event(lv_event_t* e) {
+        SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+        int type = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+        
+        HomeAppEntry w;
+        if (type == 0) { // Weather
+            w.id = "weather";
+            w.name = "Meteo";
+            w.symbol = LV_SYMBOL_IMAGE;
+            w.color = 0x2B8F9E;
+            w.width = 2;
+            w.appId = APP_WEATHER;
+        } else if (type == 1) { // Clock
+            w.id = "clock";
+            w.name = "Horloge";
+            w.symbol = LV_SYMBOL_GPS;
+            w.color = 0x2C2C2E;
+            w.width = 2;
+            w.appId = APP_TIMER;
+        } else if (type == 2) { // System
+            w.id = "system";
+            w.name = "Systeme";
+            w.symbol = LV_SYMBOL_SETTINGS;
+            w.color = 0x4C4F59;
+            w.width = 2;
+            w.appId = APP_SETTINGS;
+        } else if (type == 3) { // Calendrier
+            w.id = "calendar";
+            w.name = "Calendrier";
+            w.symbol = LV_SYMBOL_LIST;
+            w.color = 0xFC3D39;
+            w.width = 2;
+            w.appId = APP_HOME;
+        } else if (type == 4) { // WiFi
+            w.id = "wifi_w";
+            w.name = "WiFi Info";
+            w.symbol = LV_SYMBOL_WIFI;
+            w.color = 0x00BCD4;
+            w.width = 2;
+            w.appId = APP_WIFI;
+        }
+        
+        if (app->editing_folder_index >= 0) {
+            homeConfig::getFolderChildren(app->home_apps_cfg[app->editing_folder_index].id).push_back(w);
+        } else {
+            app->home_apps_cfg.push_back(w);
+        }
+        app->refreshHomeReorderList();
+        app->hideHomeWidgetPanel();
+    }
     
     static void pin_toggle_event(lv_event_t* e) {
         SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
@@ -357,6 +420,7 @@ private:
             return;
         }
         
+        LTE::forceTimeSync();
         lv_label_set_text(app->lbl_time_status, "Synchronisation...");
         lv_obj_set_style_text_color(app->lbl_time_status, lv_color_hex(0x007AFF), 0);
     }
@@ -561,6 +625,17 @@ private:
         lv_obj_add_flag(home_python_panel, LV_OBJ_FLAG_HIDDEN);
     }
 
+    void showHomeWidgetPanel() {
+        if (!home_widget_panel) return;
+        lv_obj_clear_flag(home_widget_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(home_widget_panel);
+    }
+
+    void hideHomeWidgetPanel() {
+        if (!home_widget_panel) return;
+        lv_obj_add_flag(home_widget_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+
     void showT9Panel() {
         if (!home_t9_panel) return;
         lv_textarea_set_text(home_t9_ta, "");
@@ -599,6 +674,10 @@ private:
         }
 
         for (int i = 0; i < (int)list.size(); ++i) {
+            if (list[i].id == "weather" || list[i].id == "clock" || list[i].id == "system" || list[i].id == "calendar" || list[i].id == "wifi_w") {
+                list[i].width = 2; 
+            }
+
             lv_obj_t* row = lv_btn_create(home_reorder_list);
             lv_obj_set_size(row, lv_pct(100), 46);
 
@@ -614,10 +693,11 @@ private:
             lv_obj_t* lbl = lv_label_create(row);
             char line[96];
             if (list[i].isFolder()) {
-                snprintf(line, sizeof(line), "%02d " LV_SYMBOL_DIRECTORY " %s (%d)",
+                snprintf(line, sizeof(line), "%02d " LV_SYMBOL_DIRECTORY " %s (%d)", 
                     i + 1, list[i].name.c_str(), homeConfig::getFolderChildCount(list[i].id));
             } else {
-                snprintf(line, sizeof(line), "%02d  %s", i + 1, list[i].name.c_str());
+                snprintf(line, sizeof(line), "%02d  %s %s", i + 1, list[i].name.c_str(), 
+                    (list[i].width > 1 ? "(W)" : ""));
             }
             lv_label_set_text(lbl, line);
             lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
@@ -1091,7 +1171,7 @@ public:
         lv_obj_align(home_reorder_hint, LV_ALIGN_TOP_LEFT, 12, 36);
 
         home_reorder_list = lv_obj_create(home_reorder_panel);
-        lv_obj_set_size(home_reorder_list, 300, 270);
+        lv_obj_set_size(home_reorder_list, 300, 224);
         lv_obj_align(home_reorder_list, LV_ALIGN_TOP_MID, 0, 58);
         lv_obj_set_style_bg_color(home_reorder_list, lv_color_hex(0x161618), 0);
         lv_obj_set_style_border_width(home_reorder_list, 0, 0);
@@ -1101,7 +1181,7 @@ public:
 
         lv_obj_t* btn_up = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_up, 68, 38);
-        lv_obj_align(btn_up, LV_ALIGN_BOTTOM_LEFT, 6, -100);
+        lv_obj_align(btn_up, LV_ALIGN_BOTTOM_LEFT, 6, -146);
         lv_obj_set_style_bg_color(btn_up, lv_color_hex(0x2f6ff0), 0);
         lv_obj_add_event_cb(btn_up, home_move_up_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_up = lv_label_create(btn_up);
@@ -1110,7 +1190,7 @@ public:
 
         lv_obj_t* btn_down = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_down, 68, 38);
-        lv_obj_align(btn_down, LV_ALIGN_BOTTOM_LEFT, 80, -100);
+        lv_obj_align(btn_down, LV_ALIGN_BOTTOM_LEFT, 80, -146);
         lv_obj_set_style_bg_color(btn_down, lv_color_hex(0x2f6ff0), 0);
         lv_obj_add_event_cb(btn_down, home_move_down_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_down = lv_label_create(btn_down);
@@ -1119,7 +1199,7 @@ public:
 
         lv_obj_t* btn_del = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_del, 68, 38);
-        lv_obj_align(btn_del, LV_ALIGN_BOTTOM_RIGHT, -86, -100);
+        lv_obj_align(btn_del, LV_ALIGN_BOTTOM_RIGHT, -86, -146);
         lv_obj_set_style_bg_color(btn_del, lv_color_hex(0xFF3B30), 0);
         lv_obj_add_event_cb(btn_del, home_remove_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_del = lv_label_create(btn_del);
@@ -1128,7 +1208,7 @@ public:
 
         lv_obj_t* btn_hr_save = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_hr_save, 68, 38);
-        lv_obj_align(btn_hr_save, LV_ALIGN_BOTTOM_RIGHT, -12, -100);
+        lv_obj_align(btn_hr_save, LV_ALIGN_BOTTOM_RIGHT, -12, -146);
         lv_obj_set_style_bg_color(btn_hr_save, lv_color_hex(0x34C759), 0);
         lv_obj_add_event_cb(btn_hr_save, home_reorder_save_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_hr_save = lv_label_create(btn_hr_save);
@@ -1137,7 +1217,7 @@ public:
 
         lv_obj_t* btn_reset = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_reset, 68, 38);
-        lv_obj_align(btn_reset, LV_ALIGN_BOTTOM_LEFT, 6, -56);
+        lv_obj_align(btn_reset, LV_ALIGN_BOTTOM_LEFT, 6, -100);
         lv_obj_set_style_bg_color(btn_reset, lv_color_hex(0xFF9500), 0);
         lv_obj_add_event_cb(btn_reset, home_reset_default_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_reset = lv_label_create(btn_reset);
@@ -1146,7 +1226,7 @@ public:
 
         lv_obj_t* btn_folder = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_folder, 68, 38);
-        lv_obj_align(btn_folder, LV_ALIGN_BOTTOM_LEFT, 80, -56);
+        lv_obj_align(btn_folder, LV_ALIGN_BOTTOM_LEFT, 80, -100);
         lv_obj_set_style_bg_color(btn_folder, lv_color_hex(0x5856D6), 0);
         lv_obj_add_event_cb(btn_folder, home_create_folder_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_folder = lv_label_create(btn_folder);
@@ -1155,7 +1235,7 @@ public:
 
         lv_obj_t* btn_move_to = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_move_to, 68, 38);
-        lv_obj_align(btn_move_to, LV_ALIGN_BOTTOM_RIGHT, -86, -56);
+        lv_obj_align(btn_move_to, LV_ALIGN_BOTTOM_RIGHT, -86, -100);
         lv_obj_set_style_bg_color(btn_move_to, lv_color_hex(0x5856D6), 0);
         lv_obj_add_event_cb(btn_move_to, home_move_to_folder_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_move = lv_label_create(btn_move_to);
@@ -1164,12 +1244,21 @@ public:
 
         lv_obj_t* btn_open_folder = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_open_folder, 68, 38);
-        lv_obj_align(btn_open_folder, LV_ALIGN_BOTTOM_RIGHT, -12, -56);
+        lv_obj_align(btn_open_folder, LV_ALIGN_BOTTOM_RIGHT, -12, -100);
         lv_obj_set_style_bg_color(btn_open_folder, lv_color_hex(0x007AFF), 0);
         lv_obj_add_event_cb(btn_open_folder, home_open_folder_event, LV_EVENT_CLICKED, this);
         lv_obj_t* lbl_open = lv_label_create(btn_open_folder);
         lv_label_set_text(lbl_open, LV_SYMBOL_EYE_OPEN);
         lv_obj_center(lbl_open);
+
+        lv_obj_t* btn_add_widget = lv_btn_create(home_reorder_panel);
+        lv_obj_set_size(btn_add_widget, 296, 38);
+        lv_obj_align(btn_add_widget, LV_ALIGN_BOTTOM_MID, 0, -56);
+        lv_obj_set_style_bg_color(btn_add_widget, lv_color_hex(0x2B8F9E), 0);
+        lv_obj_add_event_cb(btn_add_widget, home_add_widget_event, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_add_w = lv_label_create(btn_add_widget);
+        lv_label_set_text(lbl_add_w, LV_SYMBOL_PLUS " Widget");
+        lv_obj_center(lbl_add_w);
 
         lv_obj_t* btn_hr_cancel = lv_btn_create(home_reorder_panel);
         lv_obj_set_size(btn_hr_cancel, 296, 38);
@@ -1217,6 +1306,59 @@ public:
         lv_obj_t* lbl_hp_close = lv_label_create(btn_hp_close);
         lv_label_set_text(lbl_hp_close, "Fermer");
         lv_obj_center(lbl_hp_close);
+
+        home_widget_panel = lv_obj_create(main_bg);
+        lv_obj_set_size(home_widget_panel, 320, 480);
+        lv_obj_center(home_widget_panel);
+        lv_obj_set_style_bg_color(home_widget_panel, lv_color_hex(0x1c1c1e), 0);
+        lv_obj_set_style_border_width(home_widget_panel, 0, 0);
+        lv_obj_clear_flag(home_widget_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(home_widget_panel, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t* hw_title = lv_label_create(home_widget_panel);
+        lv_label_set_text(hw_title, "Ajouter un Widget");
+        lv_obj_set_style_text_color(hw_title, lv_color_white(), 0);
+        lv_obj_set_style_text_font(hw_title, &lv_font_montserrat_14, 0);
+        lv_obj_align(hw_title, LV_ALIGN_TOP_MID, 0, 10);
+
+        home_widget_list = lv_obj_create(home_widget_panel);
+        lv_obj_set_size(home_widget_list, 300, 370);
+        lv_obj_align(home_widget_list, LV_ALIGN_TOP_MID, 0, 58);
+        lv_obj_set_style_bg_color(home_widget_list, lv_color_hex(0x161618), 0);
+        lv_obj_set_style_border_width(home_widget_list, 0, 0);
+        lv_obj_set_style_pad_all(home_widget_list, 10, 0);
+        lv_obj_set_flex_flow(home_widget_list, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_gap(home_widget_list, 10, 0);
+
+        static const struct { const char* n; int t; uint32_t c; } widgets[] = {
+            {"Meteo (2 slots)", 0, 0x1B88B5},
+            {"Horloge (2 slots)", 1, 0x2C2C2E},
+            {"Systeme (2 slots)", 2, 0x4C4F59},
+            {"Calendrier (2 slots)", 3, 0xFC3D39},
+            {"WiFi (2 slots)", 4, 0x00BCD4}
+        };
+        for(int i=0; i<5; i++) {
+            lv_obj_t* b = lv_btn_create(home_widget_list);
+            lv_obj_set_size(b, lv_pct(100), 50);
+            lv_obj_set_style_bg_color(b, lv_color_hex(widgets[i].c), 0);
+            lv_obj_set_user_data(b, (void*)(intptr_t)widgets[i].t);
+            lv_obj_add_event_cb(b, home_widget_select_event, LV_EVENT_CLICKED, this);
+            lv_obj_t* l = lv_label_create(b);
+            lv_label_set_text(l, widgets[i].n);
+            lv_obj_center(l);
+        }
+
+        lv_obj_t* btn_hw_close = lv_btn_create(home_widget_panel);
+        lv_obj_set_size(btn_hw_close, 296, 40);
+        lv_obj_align(btn_hw_close, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_set_style_bg_color(btn_hw_close, lv_color_hex(0x3a3a3c), 0);
+        lv_obj_add_event_cb(btn_hw_close, [](lv_event_t*e){
+            SettingsApp* app = (SettingsApp*)lv_event_get_user_data(e);
+            app->hideHomeWidgetPanel();
+        }, LV_EVENT_CLICKED, this);
+        lv_obj_t* lbl_hw_close = lv_label_create(btn_hw_close);
+        lv_label_set_text(lbl_hw_close, "Annuler");
+        lv_obj_center(lbl_hw_close);
 
         home_t9_panel = lv_obj_create(main_bg);
         lv_obj_set_size(home_t9_panel, 320, 480);

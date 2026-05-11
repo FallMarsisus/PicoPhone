@@ -804,8 +804,8 @@ public:
         state = 0;
         s_line_buf = "";
         s_cmd_resp = "";
-        last_check = millis();
-        next_time_sync_try = millis() + 5000UL;
+        last_check = 0;
+        next_time_sync_try = 0;
         time_sync_fail_count = 0;
         s_last_operator_poll = 0;
         s_registered = false;
@@ -897,7 +897,7 @@ public:
     static bool isAirplaneMode() { return s_airplane_mode; }
     static int getSignal() { return signal_level; }
     static String getOperator() { return operator_name; }
-    static bool isReadyForData() { return s_enabled && !s_airplane_mode && s_modem_confirmed && signal_level > 0; }
+    static bool isReadyForData() { return s_enabled && !s_airplane_mode && s_modem_confirmed && signal_level > 0 && (last_time_sync > 0 || time_sync_fail_count > 0); }
     static void setLowPower(bool enable)
     {
         if (enable)
@@ -995,6 +995,12 @@ public:
 
     static bool isSendDone() { return !s_sms_send_pending; }
     static bool getSendResult() { return s_sms_send_result; }
+
+    static void forceTimeSync() {
+        last_time_sync = 0;
+        next_time_sync_try = millis();
+        time_sync_fail_count = 0;
+    }
 
     static bool popIncomingSms(char *out_number, char *out_text, long *out_ts)
     {
@@ -1139,6 +1145,14 @@ public:
 
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed) return "";
 
+        // Donne la priorité absolue à la machine d'état AT (Heure et Signal)
+        if (last_check == 0 || millis() - last_check > 15000) update();
+        unsigned long sm_wait = millis();
+        while (state != 0 && millis() - sm_wait < 25000) {
+            update();
+            sleep_ms(10);
+        }
+
         s_http_busy = true;
 
         for (int attempt = 1; attempt <= 3; attempt++)
@@ -1161,6 +1175,7 @@ public:
             sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 2000);
             sendAT("AT+HTTPPARA=\"USERDATA\",\"User-Agent: Mozilla/5.0 (PicoPhone/1.0)\"", 1000);
 
+            Logger::println("[LTE->GSM] AT+HTTPACTION=0");
             Serial1.println("AT+HTTPACTION=0");
             
             unsigned long start = millis();
@@ -1172,13 +1187,16 @@ public:
                 while (Serial1.available()) action_resp += (char)Serial1.read();
                 int idx = action_resp.indexOf("+HTTPACTION:");
                 if (idx != -1) {
-                    String part = action_resp.substring(idx + 12);
-                    int c1 = part.indexOf(',');
-                    int c2 = part.indexOf(',', c1 + 1);
-                    if (c1 > 0 && c2 > c1) {
-                        http_code = part.substring(c1 + 1, c2).toInt();
-                        data_len = part.substring(c2 + 1).toInt();
-                        break;
+                    int end_idx = action_resp.indexOf('\n', idx);
+                    if (end_idx != -1) { // S'assure que la ligne est completement chargee
+                        String part = action_resp.substring(idx + 12, end_idx);
+                        int c1 = part.indexOf(',');
+                        int c2 = part.indexOf(',', c1 + 1);
+                        if (c1 > 0 && c2 > c1) {
+                            http_code = part.substring(c1 + 1, c2).toInt();
+                            data_len = part.substring(c2 + 1).toInt();
+                            break;
+                        }
                     }
                 }
                 sleep_ms(10);
@@ -1202,29 +1220,49 @@ public:
                 Serial1.print("AT+HTTPREAD=");
                 Serial1.println(to_read);
 
-                unsigned long t0 = millis();
+                String header = "";
                 bool header_found = false;
-                while (millis() - t0 < 3000) {
-                    if (Serial1.available()) {
-                        String h = Serial1.readStringUntil('\n');
-                        if (h.indexOf("+HTTPREAD:") != -1) { header_found = true; break; }
+                unsigned long t0 = millis();
+                while (millis() - t0 < 4000) {
+                    watchdog_update();
+                    while (Serial1.available()) {
+                        char c = Serial1.read();
+                        header += c;
+                        if (header.indexOf("ERROR") != -1) break;
+                        if (c == '\n' && header.indexOf("+HTTPREAD:") != -1) {
+                            header_found = true;
+                            break;
+                        }
                     }
+                    if (header_found || header.indexOf("ERROR") != -1) break;
+                    delayMicroseconds(500);
                 }
 
                 if (header_found) {
                     int chunk_received = 0;
                     unsigned long t1 = millis();
-                    while (chunk_received < to_read && millis() - t1 < 3000) {
-                        if (Serial1.available()) {
+                    while (chunk_received < to_read && millis() - t1 < 4000) {
+                        watchdog_update();
+                        while (Serial1.available() && chunk_received < to_read) {
                             body += (char)Serial1.read();
                             chunk_received++;
-                        } else {
-                            delayMicroseconds(150); // Sécurité buffer
                         }
+                        if (!Serial1.available()) delayMicroseconds(150);
                     }
                     total_read += chunk_received;
+                    
+                    // Consommer les fins de requetes residuelles (\r\nOK\r\n) pour le chunk suivant
+                    unsigned long t2 = millis();
+                    String tail = "";
+                    while (millis() - t2 < 1000) {
+                        watchdog_update();
+                        while (Serial1.available()) tail += (char)Serial1.read();
+                        if (tail.indexOf("OK\r\n") != -1 || tail.indexOf("ERROR") != -1) break;
+                        delayMicroseconds(200);
+                    }
+                } else {
+                    break; // Erreur de lecture, force le retry global
                 }
-                sleep_ms(20); 
             }
             sendAT("AT+HTTPTERM", 500);
 
@@ -1270,6 +1308,14 @@ public:
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed)
         {
             return "";
+        }
+
+        // Donne la priorité absolue à la machine d'état AT (Heure et Signal)
+        if (last_check == 0 || millis() - last_check > 15000) update();
+        unsigned long sm_wait = millis();
+        while (state != 0 && millis() - sm_wait < 25000) {
+            update();
+            sleep_ms(10);
         }
 
         s_http_busy = true;
@@ -1650,7 +1696,7 @@ public:
 
         if (state == 0)
         {
-            if (millis() - last_check > 15000)
+            if (last_check == 0 || millis() - last_check > 15000)
             {
                 s_cmd_resp = "";
                 bool need_op = (operator_name == "Recherche..." || operator_name == "Aucun service" || millis() - s_last_operator_poll > 120000UL);
@@ -1794,6 +1840,7 @@ public:
 
         if (state == 3)
         {
+            Logger::printf("[LTE CCLK] raw: %s\n", s_cmd_resp.c_str());
             if (!applyTimeFromCclkResponse(s_cmd_resp, "4G/NITZ"))
             {
                 // Heure invalide ! Le pylône ne nous l'a pas envoyée.
@@ -1801,6 +1848,9 @@ public:
                 if (s_enabled && s_registered && signal_level > 0)
                 {
                     s_cmd_resp = "";
+                    preparePacketDataContext(); // Active la data avant le NTP
+                    sendAT("AT+CNACT=0,1", 3000); // Activation réseau applicatif SIMCom (requis pour NTP sur A7670)
+                    
                     // 4 = Fuseau UTC+1 (Paris Hiver). Pour l'été, tu peux mettre 8 (UTC+2)
                     Serial1.println("AT+CNTP=\"pool.ntp.org\",4");
                     state = 4;

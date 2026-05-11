@@ -550,6 +550,8 @@ void system_power_off() {
     pinMode(A7670_PWRKEY, OUTPUT);
     digitalWrite(A7670_PWRKEY, HIGH);  // Pin inversé: HIGH pour éteindre
     sleep_ms(1500);
+        digitalWrite(A7670_PWRKEY, LOW);   // CRUCIAL: Relâcher la broche pour éviter les fuites !
+        sleep_ms(100);
 
     // 4. ANTI-ALIMENTATION PARASITE (CRUCIAL !)
     Serial1.end();
@@ -603,7 +605,7 @@ void system_power_off() {
 
     // 10. Fallback si le PMIC ne coupe pas (ou PMIC absent): dodo profond CPU.
     // On passe le RP2040 de 133 MHz à 2 MHz (fait chuter la conso du processeur à ~1mA)
-    set_sys_clock_khz(20000, true);
+        set_sys_clock_khz(2000, true);
 
     while (true) {
         watchdog_update();
@@ -1040,11 +1042,9 @@ void hardware_sleep() {
     // 2. Coupure de l'ampli Audio (Économie ~4mA)
     audio_amp_enable(false);
 
-    // 3. Demander au modem LTE de dormir (Exemple SIM800L / A7670E)
-    // NOTE: Assure-toi que la commande AT+CSCLK=1 a bien été envoyée 
-    // lors de l'init de ton LTE.h pour autoriser la mise en veille.
-    pinMode(A7670_PWRKEY, OUTPUT); // Parfois appelé DTR sur certains modems
-    digitalWrite(A7670_PWRKEY, HIGH); // Selon le câblage, permet au modem de dormir
+        // 3. (Retiré) La broche PWRKEY n'est PAS conçue pour le mode veille sur le A7670 !
+        // Cela forçait le modem à s'éteindre. La veille est désormais uniquement gérée
+        // en logiciel par la commande AT+CSCLK=1 déjà traitée par LTE::setLowPower(true).
 
     // 4. Réduire les sorties PMIC
     pmic_sleep_mode();

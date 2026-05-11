@@ -41,6 +41,7 @@
 #include "services/TelegramNotifyService.h"
 #include "services/TimerService.h"
 #include "services/SmsNotifyService.h"
+#include "services/WeatherService.h"
 #include "system/LTE.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -380,6 +381,7 @@ void setup() {
     background_services::manager().registerService(&timer_service::instance());
     background_services::manager().registerService(&sms_service::instance());
     background_services::manager().registerService(&cast_service::instance());
+    background_services::manager().registerService(&weather_service::instance());
 
     loadApp(APP_HOME);
     boot_stage("home loaded", TFT_GREEN);
