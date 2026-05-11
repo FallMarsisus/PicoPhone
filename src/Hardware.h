@@ -453,26 +453,32 @@ static inline void pmic_power_down_all_channels() {
     }
 
     Serial.println("[PMIC] Coupure des canaux non-essentiels...");
-    
-    // Désactiver les DCDC supplémentaires (garder DC1/DC2 si essentiels)
-    PMIC.disableDC3();
-    PMIC.disableDC4();
-    PMIC.disableDC5();
-    
-    // Désactiver tous les ALDO sauf ALDO1 pour les capteurs bas-débit
-    PMIC.disableALDO2();
-    PMIC.disableALDO3();
-    PMIC.disableALDO4();
-    
-    // Désactiver les autres sorties si disponibles
-    PMIC.disableBLDO1();
-    PMIC.disableBLDO2();
-    PMIC.disableCPUSLDO();
-    PMIC.disableDLDO1();
-    PMIC.disableDLDO2();
 
-    // En extinction logicielle, on coupe aussi ALDO1 pour eviter tout rail residuel.
-    PMIC.disableALDO1();
+    // Double passe: améliore la robustesse en cas de glitch I2C juste avant extinction.
+    for (uint8_t pass = 0; pass < 2; ++pass) {
+        // Désactiver les DCDC supplémentaires (garder DC1/DC2 si essentiels)
+        PMIC.disableDC3();
+        PMIC.disableDC4();
+        PMIC.disableDC5();
+        
+        // Désactiver tous les ALDO sauf ALDO1 pour les capteurs bas-débit
+        PMIC.disableALDO2();
+        PMIC.disableALDO3();
+        PMIC.disableALDO4();
+        
+        // Désactiver les autres sorties si disponibles
+        PMIC.disableBLDO1();
+        PMIC.disableBLDO2();
+        PMIC.disableCPUSLDO();
+        PMIC.disableDLDO1();
+        PMIC.disableDLDO2();
+
+        // En extinction logicielle, on coupe aussi ALDO1 pour eviter tout rail residuel.
+        PMIC.disableALDO1();
+        if (pass == 0) {
+            sleep_ms(2);
+        }
+    }
     
     Serial.println("[PMIC] Canaux non-essentiels désactivés");
 }
@@ -485,25 +491,30 @@ static inline void pmic_sleep_mode() {
 
     Serial.println("[PMIC] Passage en mode veille (réduction des sorties)...");
     
-    // Couper uniquement les canaux clairement non-essentiels en veille.
-    // Garder ALDO2/DC2 actifs pour preserver la marge d'alimentation systeme.
-    PMIC.disableALDO3();
-    PMIC.disableALDO4();
-    
-    // DCDC2 est conserve: sur certaines cartes il conditionne la stabilite
-    // de l'alimentation logique autour du modem.
-    PMIC.disableDC3();
-    PMIC.disableDC4();
-    PMIC.disableDC5();
+    for (uint8_t pass = 0; pass < 2; ++pass) {
+        // Couper uniquement les canaux clairement non-essentiels en veille.
+        // Garder ALDO2/DC2 actifs pour preserver la marge d'alimentation systeme.
+        PMIC.disableALDO3();
+        PMIC.disableALDO4();
+        
+        // DCDC2 est conserve: sur certaines cartes il conditionne la stabilite
+        // de l'alimentation logique autour du modem.
+        PMIC.disableDC3();
+        PMIC.disableDC4();
+        PMIC.disableDC5();
 
-    PMIC.disableBLDO1();
-    PMIC.disableBLDO2();
-    PMIC.disableCPUSLDO();
-    PMIC.disableDLDO1();
-    PMIC.disableDLDO2();
-    
-    // Garder une marge energie maximale en veille pour eviter les ratés modem.
-    PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+        PMIC.disableBLDO1();
+        PMIC.disableBLDO2();
+        PMIC.disableCPUSLDO();
+        PMIC.disableDLDO1();
+        PMIC.disableDLDO2();
+        
+        // Garder une marge energie maximale en veille pour eviter les ratés modem.
+        PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+        if (pass == 0) {
+            sleep_ms(2);
+        }
+    }
     
     Serial.println("[PMIC] Mode veille activé");
 }
@@ -516,16 +527,21 @@ static inline void pmic_wake_mode() {
 
     Serial.println("[PMIC] Sortie de mode veille (restauration des sorties)...");
 
-    PMIC.disableSleep();
-    PMIC.disableWakeup();
-    
-    // Réactiver les canaux essentiels
-    PMIC.enableALDO1();
-    PMIC.enableALDO2();
-    PMIC.enableDC2();
-    
-    // Restaurer le courant de charge normal
-    PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+    for (uint8_t pass = 0; pass < 2; ++pass) {
+        PMIC.disableSleep();
+        PMIC.disableWakeup();
+        
+        // Réactiver les canaux essentiels
+        PMIC.enableALDO1();
+        PMIC.enableALDO2();
+        PMIC.enableDC2();
+        
+        // Restaurer le courant de charge normal
+        PMIC.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_1000MA);
+        if (pass == 0) {
+            sleep_ms(2);
+        }
+    }
     
     Serial.println("[PMIC] Mode veille désactivé");
 }
@@ -599,7 +615,10 @@ void system_power_off() {
     if (g_pmic_available) {
         Serial.println("[PMIC] Shutdown matériel demandé");
         Serial.flush();
-        PMIC.shutdown();
+        for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+            PMIC.shutdown();
+            sleep_ms(20);
+        }
         sleep_ms(50);
     }
 

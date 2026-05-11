@@ -88,6 +88,8 @@ static constexpr float SAVER_EXIT_V = 3.78f;
 static constexpr float CRITICAL_ENTER_V = 3.52f;
 static constexpr float CRITICAL_EXIT_V = 3.64f;
 static constexpr float EMERGENCY_SHUTDOWN_V = 3.40f;
+static constexpr float ULTRA_EMERGENCY_SHUTDOWN_V = 3.34f;
+static constexpr uint8_t EMERGENCY_SHUTDOWN_CONFIRM_STREAK = 3;
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -119,6 +121,8 @@ inline bool    g_has_good_v = false;
 inline uint8_t g_last_percent = 0;
 inline bool    g_has_percent = false;
 inline uint8_t g_invalid_adc_streak = 0;
+inline uint8_t g_shutdown_critical_streak = 0;
+inline bool g_shutdown_latched = false;
 inline Telemetry g_last_sample = {100, 4.0f, true, false, false};
 inline bool g_has_sample = false;
 inline uint32_t g_last_sample_ms = 0;
@@ -139,6 +143,22 @@ static inline uint8_t min_u8(uint8_t a, uint8_t b) {
 
 static inline bool is_voltage_valid_for_policy(float v) {
     return (v >= 2.8f && v <= 4.5f);
+}
+
+static inline uint16_t median3_u16(uint16_t a, uint16_t b, uint16_t c) {
+    if ((a <= b && b <= c) || (c <= b && b <= a)) return b;
+    if ((b <= a && a <= c) || (c <= a && a <= b)) return a;
+    return c;
+}
+
+static inline int median3_i32(int a, int b, int c) {
+    if ((a <= b && b <= c) || (c <= b && b <= a)) return b;
+    if ((b <= a && a <= c) || (c <= a && a <= b)) return a;
+    return c;
+}
+
+static inline bool majority3_bool(bool a, bool b, bool c) {
+    return (a && b) || (a && c) || (b && c);
 }
 
 static inline bool attach_pmic(XPowersAXP2101* pmic) {
@@ -252,13 +272,45 @@ static inline uint8_t percent_from_lipo_volts(float v) {
 static inline bool read_from_pmic(Telemetry& out) {
     if (!g_pmic_ready || g_pmic == nullptr) return false;
 
-    const int pmic_percent = g_pmic->getBatteryPercent();
-    const uint16_t pmic_mv = g_pmic->getBattVoltage();
-    const bool external_power = g_pmic->isVbusIn();
-    const bool charging = g_pmic->isCharging();
+    int percent_samples[3] = {100, 100, 100};
+    uint16_t mv_samples[3] = {4000, 4000, 4000};
+    bool vbus_samples[3] = {false, false, false};
+    bool charging_samples[3] = {false, false, false};
 
-    const bool percent_valid = (pmic_percent >= 0 && pmic_percent <= 100);
-    const bool voltage_valid = (pmic_mv >= 2800 && pmic_mv <= 4600);
+    for (uint8_t i = 0; i < 3; ++i) {
+        percent_samples[i] = g_pmic->getBatteryPercent();
+        mv_samples[i] = g_pmic->getBattVoltage();
+        vbus_samples[i] = g_pmic->isVbusIn();
+        charging_samples[i] = g_pmic->isCharging();
+        if (i < 2) delayMicroseconds(900);
+    }
+
+    int pmic_percent = median3_i32(percent_samples[0], percent_samples[1], percent_samples[2]);
+    uint16_t pmic_mv = median3_u16(mv_samples[0], mv_samples[1], mv_samples[2]);
+    const bool external_power = majority3_bool(vbus_samples[0], vbus_samples[1], vbus_samples[2]);
+    const bool charging = majority3_bool(charging_samples[0], charging_samples[1], charging_samples[2]);
+
+    bool percent_valid = (pmic_percent >= 0 && pmic_percent <= 100);
+    bool voltage_valid = (pmic_mv >= 2800 && pmic_mv <= 4600);
+
+    if (!percent_valid) {
+        for (uint8_t i = 0; i < 3; ++i) {
+            if (percent_samples[i] >= 0 && percent_samples[i] <= 100) {
+                pmic_percent = percent_samples[i];
+                percent_valid = true;
+                break;
+            }
+        }
+    }
+    if (!voltage_valid) {
+        for (uint8_t i = 0; i < 3; ++i) {
+            if (mv_samples[i] >= 2800 && mv_samples[i] <= 4600) {
+                pmic_mv = mv_samples[i];
+                voltage_valid = true;
+                break;
+            }
+        }
+    }
 
     if (!percent_valid && !voltage_valid && !external_power) return false;
 
@@ -431,6 +483,35 @@ static inline PowerMode compute_mode(const Telemetry& t) {
     }
 }
 
+static inline bool evaluate_shutdown_request(const Telemetry& t) {
+    if (t.external_power || t.charging) {
+        g_shutdown_latched = false;
+        g_shutdown_critical_streak = 0;
+        return false;
+    }
+
+    const bool v_valid = is_voltage_valid_for_policy(t.voltage_v);
+    const bool emergency_now = (t.percent <= 2) || (v_valid && t.voltage_v <= EMERGENCY_SHUTDOWN_V);
+    const bool ultra_emergency_now = v_valid && (t.voltage_v <= ULTRA_EMERGENCY_SHUTDOWN_V);
+
+    if (ultra_emergency_now) {
+        g_shutdown_latched = true;
+        g_shutdown_critical_streak = EMERGENCY_SHUTDOWN_CONFIRM_STREAK;
+        return true;
+    }
+
+    if (emergency_now) {
+        if (g_shutdown_critical_streak < 255) g_shutdown_critical_streak++;
+    } else {
+        g_shutdown_critical_streak = 0;
+    }
+
+    if (g_shutdown_critical_streak >= EMERGENCY_SHUTDOWN_CONFIRM_STREAK) {
+        g_shutdown_latched = true;
+    }
+    return g_shutdown_latched;
+}
+
 static inline void update_energy_policy(bool force = false) {
     const uint32_t now = millis();
     if (!force && (now - g_last_policy_ms) < POLICY_INTERVAL_MS) return;
@@ -441,9 +522,13 @@ static inline void update_energy_policy(bool force = false) {
 
     switch (g_mode) {
         case PowerMode::NORMAL:
+            g_shutdown_critical_streak = 0;
+            g_shutdown_latched = false;
             g_policy = {PowerMode::NORMAL, 100, 100, false, false, false};
             break;
         case PowerMode::SAVER:
+            g_shutdown_critical_streak = 0;
+            g_shutdown_latched = false;
             g_policy = {PowerMode::SAVER, 60, 60, true, true, false};
             break;
         case PowerMode::CRITICAL:
@@ -454,7 +539,7 @@ static inline void update_energy_policy(bool force = false) {
                 0,
                 true,
                 true,
-                (!t.external_power && (t.percent <= 2 || (is_voltage_valid_for_policy(t.voltage_v) && t.voltage_v <= EMERGENCY_SHUTDOWN_V)))
+                evaluate_shutdown_request(t)
             };
             break;
     }
