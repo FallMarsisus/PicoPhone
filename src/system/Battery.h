@@ -83,6 +83,11 @@ static constexpr float ADC_MAX = 4095.0f;
 static constexpr float VSYS_DIVIDER = 3.0f;
 static constexpr uint32_t SAMPLE_INTERVAL_MS = 1200;
 static constexpr uint32_t POLICY_INTERVAL_MS = 1000;
+static constexpr float SAVER_ENTER_V = 3.66f;
+static constexpr float SAVER_EXIT_V = 3.78f;
+static constexpr float CRITICAL_ENTER_V = 3.52f;
+static constexpr float CRITICAL_EXIT_V = 3.64f;
+static constexpr float EMERGENCY_SHUTDOWN_V = 3.40f;
 
 enum class PowerMode : uint8_t {
     NORMAL = 0,
@@ -130,6 +135,10 @@ static inline uint8_t clamp_percent_int(int value) {
 
 static inline uint8_t min_u8(uint8_t a, uint8_t b) {
     return (a < b) ? a : b;
+}
+
+static inline bool is_voltage_valid_for_policy(float v) {
+    return (v >= 2.8f && v <= 4.5f);
 }
 
 static inline bool attach_pmic(XPowersAXP2101* pmic) {
@@ -379,6 +388,30 @@ static inline bool is_charging() { return read_sample(false).charging; }
 
 static inline PowerMode compute_mode(const Telemetry& t) {
     if (t.external_power || t.charging) return PowerMode::NORMAL;
+
+    const float v = t.voltage_v;
+    if (is_voltage_valid_for_policy(v)) {
+        switch (g_mode) {
+            case PowerMode::NORMAL:
+                if (v <= CRITICAL_ENTER_V) return PowerMode::CRITICAL;
+                if (v <= SAVER_ENTER_V) return PowerMode::SAVER;
+                break;
+            case PowerMode::SAVER:
+                if (v <= CRITICAL_ENTER_V) return PowerMode::CRITICAL;
+                if (v >= SAVER_EXIT_V) return PowerMode::NORMAL;
+                break;
+            case PowerMode::CRITICAL:
+            default:
+                if (v >= CRITICAL_EXIT_V) {
+                    if (v >= SAVER_EXIT_V) return PowerMode::NORMAL;
+                    return PowerMode::SAVER;
+                }
+                break;
+        }
+    }
+    // Si la tension est invalide/non disponible, on bascule proprement sur les
+    // seuils en pourcentage pour garantir un comportement déterministe.
+
     if (g_manual_saver) {
         if (t.percent <= 8) return PowerMode::CRITICAL;
         return PowerMode::SAVER;
@@ -415,7 +448,14 @@ static inline void update_energy_policy(bool force = false) {
             break;
         case PowerMode::CRITICAL:
         default:
-            g_policy = {PowerMode::CRITICAL, 35, 0, true, true, (!t.external_power && t.percent <= 2)};
+            g_policy = {
+                PowerMode::CRITICAL,
+                35,
+                0,
+                true,
+                true,
+                (!t.external_power && (t.percent <= 2 || (is_voltage_valid_for_policy(t.voltage_v) && t.voltage_v <= EMERGENCY_SHUTDOWN_V)))
+            };
             break;
     }
     g_last_policy_ms = now;
