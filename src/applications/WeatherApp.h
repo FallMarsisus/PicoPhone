@@ -8,11 +8,12 @@
 #include <vector>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
+#include "../system/Secrets.h"
 #include "../system/LTE.h"
 #include "../system/Logger.h"
 #include "../system/NetworkErrorHandler.h"
 
-#define API_KEY "8fdaebc1c5f040d39d2178f811adfeaa"
+#define API_KEY OPENWEATHER_API_KEY
 #define CITY_NAME "Paris"
 #define COUNTRY_CODE "fr"
 

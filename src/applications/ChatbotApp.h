@@ -7,12 +7,12 @@
 #include <vector>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
+#include "../system/Secrets.h"
 #include "../system/NetworkErrorHandler.h"
 #include "../system/LTE.h"
 #include "../AppManager.h"
 
 // --- CONFIGURATION GEMINI ---
-#define GEMINI_API_KEY "AIzaSyCuk6e8r-RmuoeJb77K8_Ja7lfqfXXV1XQ" // Remplace par ta vraie clé en prod
 #define GEMINI_MODEL "gemini-3-flash-preview"
 
 // Structure d'un message pour l'historique

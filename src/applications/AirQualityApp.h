@@ -7,6 +7,7 @@
 #include <math.h>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
+#include "../system/Secrets.h"
 #include "../system/LTE.h"
 #include "../system/NetworkErrorHandler.h"
 
@@ -14,7 +15,7 @@
 // Paris coordinates
 #define AQ_LAT      "48.8566"
 #define AQ_LON      "2.3522"
-#define AQ_API_KEY  "8fdaebc1c5f040d39d2178f811adfeaa"
+#define AQ_API_KEY  OPENWEATHER_API_KEY
 #define AQ_API_URL  "http://api.openweathermap.org/data/2.5/air_pollution?lat=" AQ_LAT "&lon=" AQ_LON "&appid=" AQ_API_KEY
 
 LV_FONT_DECLARE(lv_font_montserrat_12);

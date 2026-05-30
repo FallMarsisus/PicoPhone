@@ -7,12 +7,12 @@
 #include <vector>
 #include <pico/mutex.h>
 #include <hardware/watchdog.h>
+#include "../system/Secrets.h"
 #include "../system/LTE.h"
 #include "../system/NetworkErrorHandler.h"
 
 // --- NewsAPI.org (free tier, requires a free API key at newsapi.org) ---
 // Replace with your own key from https://newsapi.org/register
-#define NEWS_API_KEY   "3028730fa95248a79da671f75618581f"
 #define NEWS_API_URL   "http://newsapi.org/v2/top-headlines?sources=le-monde&apiKey=" NEWS_API_KEY
 #define NEWS_MAX_ITEMS 5
 

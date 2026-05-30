@@ -2,5 +2,6 @@
     "C_Cpp.errorSquiggles": "disabled",
     "chat.tools.terminal.autoApprove": {
         "$HOME/.platformio/penv/bin/platformio": true
-    }
+    },
+    "cmake.sourceDirectory": "/Users/marsisus/Documents/PlatformIO/Projects/TestDisplay/src/plugins/pika"
 }
