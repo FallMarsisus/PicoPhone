@@ -804,8 +804,8 @@ public:
         state = 0;
         s_line_buf = "";
         s_cmd_resp = "";
-        last_check = 0;
-        next_time_sync_try = 0;
+        last_check = millis();
+        next_time_sync_try = millis() + 5000UL;
         time_sync_fail_count = 0;
         s_last_operator_poll = 0;
         s_registered = false;
@@ -897,44 +897,22 @@ public:
     static bool isAirplaneMode() { return s_airplane_mode; }
     static int getSignal() { return signal_level; }
     static String getOperator() { return operator_name; }
-    static bool isReadyForData() { return s_enabled && !s_airplane_mode && s_modem_confirmed && signal_level > 0 && (last_time_sync > 0 || time_sync_fail_count > 0); }
+    static bool isReadyForData() { return s_enabled && !s_airplane_mode && s_modem_confirmed && signal_level > 0; }
     static void setLowPower(bool enable)
     {
         if (enable)
         {
-            // Mode economie sans couper la radio: CSCLK avec verification.
-            sendAT("AT", 800);
-            sendAT("AT+CFUN=1", 2000);
-
-            bool ok = false;
-            for (uint8_t i = 0; i < 3; ++i) {
-                String resp = sendAT("AT+CSCLK=1", 1200);
-                if (resp.indexOf("OK") != -1) {
-                    ok = true;
-                    break;
-                }
-                sleep_ms(120);
-            }
-            Serial.println(ok ? "[LTE] Mode Eco: CSCLK=1 (radio conservee)" : "[LTE] Mode Eco: CSCLK=1 non confirme");
+            // Mode économie : Désactive la RF (Radio Fréquence)
+            // Consommation chute drastiquement (~1.5mA au lieu de 20-40mA)
+            Serial1.println("AT+CFUN=0");
+            Serial.println("[LTE] RF OFF (Mode Eco)");
         }
         else
         {
-            // Mode normal: reveil UART + full function avec retries.
-            bool wake_ok = false;
-            for (uint8_t i = 0; i < 3; ++i) {
-                String resp = sendAT("AT+CSCLK=0", 1200);
-                if (resp.indexOf("OK") != -1) {
-                    wake_ok = true;
-                    break;
-                }
-                sendAT("AT", 800);
-                sleep_ms(120);
-            }
-
-            String cfun = sendAT("AT+CFUN=1", 2500);
-            String ping = sendAT("AT", 1000);
-            const bool ok = wake_ok && (cfun.indexOf("OK") != -1) && (ping.indexOf("OK") != -1);
-            Serial.println(ok ? "[LTE] Mode normal: CSCLK=0, RF ON" : "[LTE] Mode normal: reveil partiel, retry auto via loop");
+            // Mode normal : Réactive la 4G et la SIM
+            Serial1.println("AT+CFUN=1");
+            Serial.println("[LTE] RF ON (Full Function)");
+            // On peut ajouter un AT+CREG? après quelques secondes pour vérifier le réseau
         }
     }
 
@@ -1145,14 +1123,6 @@ public:
 
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed) return "";
 
-        // Donne la priorité absolue à la machine d'état AT (Heure et Signal)
-        if (last_check == 0 || millis() - last_check > 15000) update();
-        unsigned long sm_wait = millis();
-        while (state != 0 && millis() - sm_wait < 25000) {
-            update();
-            sleep_ms(10);
-        }
-
         s_http_busy = true;
 
         for (int attempt = 1; attempt <= 3; attempt++)
@@ -1175,7 +1145,6 @@ public:
             sendAT("AT+HTTPPARA=\"URL\",\"" + url + "\"", 2000);
             sendAT("AT+HTTPPARA=\"USERDATA\",\"User-Agent: Mozilla/5.0 (PicoPhone/1.0)\"", 1000);
 
-            Logger::println("[LTE->GSM] AT+HTTPACTION=0");
             Serial1.println("AT+HTTPACTION=0");
             
             unsigned long start = millis();
@@ -1187,16 +1156,13 @@ public:
                 while (Serial1.available()) action_resp += (char)Serial1.read();
                 int idx = action_resp.indexOf("+HTTPACTION:");
                 if (idx != -1) {
-                    int end_idx = action_resp.indexOf('\n', idx);
-                    if (end_idx != -1) { // S'assure que la ligne est completement chargee
-                        String part = action_resp.substring(idx + 12, end_idx);
-                        int c1 = part.indexOf(',');
-                        int c2 = part.indexOf(',', c1 + 1);
-                        if (c1 > 0 && c2 > c1) {
-                            http_code = part.substring(c1 + 1, c2).toInt();
-                            data_len = part.substring(c2 + 1).toInt();
-                            break;
-                        }
+                    String part = action_resp.substring(idx + 12);
+                    int c1 = part.indexOf(',');
+                    int c2 = part.indexOf(',', c1 + 1);
+                    if (c1 > 0 && c2 > c1) {
+                        http_code = part.substring(c1 + 1, c2).toInt();
+                        data_len = part.substring(c2 + 1).toInt();
+                        break;
                     }
                 }
                 sleep_ms(10);
@@ -1220,49 +1186,29 @@ public:
                 Serial1.print("AT+HTTPREAD=");
                 Serial1.println(to_read);
 
-                String header = "";
-                bool header_found = false;
                 unsigned long t0 = millis();
-                while (millis() - t0 < 4000) {
-                    watchdog_update();
-                    while (Serial1.available()) {
-                        char c = Serial1.read();
-                        header += c;
-                        if (header.indexOf("ERROR") != -1) break;
-                        if (c == '\n' && header.indexOf("+HTTPREAD:") != -1) {
-                            header_found = true;
-                            break;
-                        }
+                bool header_found = false;
+                while (millis() - t0 < 3000) {
+                    if (Serial1.available()) {
+                        String h = Serial1.readStringUntil('\n');
+                        if (h.indexOf("+HTTPREAD:") != -1) { header_found = true; break; }
                     }
-                    if (header_found || header.indexOf("ERROR") != -1) break;
-                    delayMicroseconds(500);
                 }
 
                 if (header_found) {
                     int chunk_received = 0;
                     unsigned long t1 = millis();
-                    while (chunk_received < to_read && millis() - t1 < 4000) {
-                        watchdog_update();
-                        while (Serial1.available() && chunk_received < to_read) {
+                    while (chunk_received < to_read && millis() - t1 < 3000) {
+                        if (Serial1.available()) {
                             body += (char)Serial1.read();
                             chunk_received++;
+                        } else {
+                            delayMicroseconds(150); // Sécurité buffer
                         }
-                        if (!Serial1.available()) delayMicroseconds(150);
                     }
                     total_read += chunk_received;
-                    
-                    // Consommer les fins de requetes residuelles (\r\nOK\r\n) pour le chunk suivant
-                    unsigned long t2 = millis();
-                    String tail = "";
-                    while (millis() - t2 < 1000) {
-                        watchdog_update();
-                        while (Serial1.available()) tail += (char)Serial1.read();
-                        if (tail.indexOf("OK\r\n") != -1 || tail.indexOf("ERROR") != -1) break;
-                        delayMicroseconds(200);
-                    }
-                } else {
-                    break; // Erreur de lecture, force le retry global
                 }
+                sleep_ms(20); 
             }
             sendAT("AT+HTTPTERM", 500);
 
@@ -1308,14 +1254,6 @@ public:
         if (!s_enabled || s_airplane_mode || !s_modem_confirmed)
         {
             return "";
-        }
-
-        // Donne la priorité absolue à la machine d'état AT (Heure et Signal)
-        if (last_check == 0 || millis() - last_check > 15000) update();
-        unsigned long sm_wait = millis();
-        while (state != 0 && millis() - sm_wait < 25000) {
-            update();
-            sleep_ms(10);
         }
 
         s_http_busy = true;
@@ -1696,7 +1634,7 @@ public:
 
         if (state == 0)
         {
-            if (last_check == 0 || millis() - last_check > 15000)
+            if (millis() - last_check > 15000)
             {
                 s_cmd_resp = "";
                 bool need_op = (operator_name == "Recherche..." || operator_name == "Aucun service" || millis() - s_last_operator_poll > 120000UL);
@@ -1840,7 +1778,6 @@ public:
 
         if (state == 3)
         {
-            Logger::printf("[LTE CCLK] raw: %s\n", s_cmd_resp.c_str());
             if (!applyTimeFromCclkResponse(s_cmd_resp, "4G/NITZ"))
             {
                 // Heure invalide ! Le pylône ne nous l'a pas envoyée.
@@ -1848,9 +1785,6 @@ public:
                 if (s_enabled && s_registered && signal_level > 0)
                 {
                     s_cmd_resp = "";
-                    preparePacketDataContext(); // Active la data avant le NTP
-                    sendAT("AT+CNACT=0,1", 3000); // Activation réseau applicatif SIMCom (requis pour NTP sur A7670)
-                    
                     // 4 = Fuseau UTC+1 (Paris Hiver). Pour l'été, tu peux mettre 8 (UTC+2)
                     Serial1.println("AT+CNTP=\"pool.ntp.org\",4");
                     state = 4;
