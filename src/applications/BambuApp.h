@@ -10,13 +10,14 @@
 #include <hardware/watchdog.h>
 #include "../system/NetworkErrorHandler.h"
 #include "../system/LTE.h"
+#include "../system/Secrets.h"
 
 namespace bambu_cfg {
-    static constexpr const char* DEVICE_ID = "0309DA542100818";
-    static constexpr const char* USER = "u_3437172096";
-    static constexpr const char* PASS = "AAD1T9SE-tA3m_0y9O_Nm794UWHhlN2Nv9wUGReyZvS_pXgK-un5qBSX-uFo4Qob9ksAKPi81R4t3jXoCkYoxSdTj4NJjtCeWE0oEjmnve-aTlB3Ip_kJzlysTyc4vZPf_MOLXdSvCpcvO9I";
-    static constexpr const char* HOST = "us.mqtt.bambulab.com";
-    static constexpr uint16_t PORT = 8883;
+    static constexpr const char* DEVICE_ID = BAMBU_DEVICE_ID;
+    static constexpr const char* USER = BAMBU_USER;
+    static constexpr const char* PASS = BAMBU_PASS;
+    static constexpr const char* HOST = BAMBU_HOST;
+    static constexpr uint16_t PORT = BAMBU_PORT;
 }
 
 // --- STRUCTURE DES DONNÉES (Boîte aux lettres Core 1 -> Core 0) ---

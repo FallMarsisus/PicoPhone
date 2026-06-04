@@ -23,4 +23,25 @@
 #define NEWS_API_KEY ""
 #endif
 
+// --- BAMBU LAB MQTT ---
+#ifndef BAMBU_DEVICE_ID
+#define BAMBU_DEVICE_ID ""
+#endif
+
+#ifndef BAMBU_USER
+#define BAMBU_USER ""
+#endif
+
+#ifndef BAMBU_PASS
+#define BAMBU_PASS ""
+#endif
+
+#ifndef BAMBU_HOST
+#define BAMBU_HOST "us.mqtt.bambulab.com"
+#endif
+
+#ifndef BAMBU_PORT
+#define BAMBU_PORT 8883
+#endif
+
 #endif
