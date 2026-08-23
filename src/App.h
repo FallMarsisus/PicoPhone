@@ -241,10 +241,10 @@ class App {
 public:
     virtual ~App() {}
 
-    // Appelé au lancement de l'app : Créez vos boutons/labels ici
+    // Appelé au lancement de l'app
     virtual void start(lv_obj_t* parent) = 0;
 
-    // Appelé à chaque tour de boucle (pour les animations ou la logique)
+    // Appelé à chaque tour de boucle (
     virtual void update() {}
 
     // Appelé AVANT lv_obj_clean() pour nettoyer timers/callbacks
